@@ -91,11 +91,20 @@ them before freezing N.
 
 ## Olmo-specific serving requirements (found the hard way)
 
-1. **`--no-jinja`** or an explicit `--chat-template`. llama.cpp b10488 parses
-   the GGUF's chat template at startup and rejects Olmo-3's (`tojson` filter
-   on `tools`), so the server exits before loading. The harness needs the real
-   template for chat-formatted turns, so supply one with `--chat-template` and
-   log its hash.
+1. **`--no-jinja --chat-template chatml`**. llama.cpp b10488 parses the GGUF's
+   chat template at startup and rejects Olmo-3's (`tojson` filter on `tools`),
+   so the server exits before loading. Every other arm runs `--jinja`, which
+   makes `/apply-template` use the model's own template; Olmo is the one
+   exception and runs an explicit ChatML template instead.
+
+   The harness renders prompts itself from the GGUF's template, so for this arm
+   the string it renders with and the string the server formats with are two
+   different objects. `harness check` reports that as
+   `warn server_chat_template` (expected) and **`template_parity` must still
+   pass** against the Olmo server. That parity check is the pre-pilot gate for
+   this arm: run it against the real Olmo server before any wave, because a
+   parity failure there invalidates the arm's prompts wholesale and the pilot
+   does not start. See `harness/README.md` and `docs/REPRODUCIBILITY.md`.
 2. **`--cache-ram 0`**. Olmo-3 uses sliding-window attention on three of every
    four layers. llama.cpp keeps a 4k-window KV cache for those layers (that is
    why 8 x 33k slots fit in 30 GiB), but the server's host-side prompt cache

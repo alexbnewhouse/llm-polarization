@@ -455,20 +455,19 @@ def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
         return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
-    write_judge_manifest(paths, entry, scope, judge.template.source)
+    write_judge_manifest(paths, entry, scope)
     n = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
                harness_commit=_git_commit()).score_run(paths, scope, manifest)
     print(f"scored {n} new rows ({scope})")
     return 0
 
 
-def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, template_source: str) -> Path:
+def write_judge_manifest(paths: RunPaths, entry: dict, scope: str) -> Path:
     """Record the judge's provenance beside the run, in its own small file. It cannot go into
     manifest.json: that file is written once when the run starts and is deliberately never rewritten, and
     scoring happens later -- often from a different harness commit and against a model the run never saw."""
-    judge = dict(entry)
-    judge.update({"template_source": template_source, "scope": scope,
-                  "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
+    judge = dict(entry)      # entry already carries url, alias, model_path, both hashes, the template
+    judge.update({"scope": scope, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
                   "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
                   "harness_commit": _git_commit(), "ts": now_iso()})
     path = paths.root / f"judge-{entry['model_sha256'][:12]}.json"

@@ -55,27 +55,42 @@ All files are JSONL, one object per line, under `data/<run_id>/`. Keys join on `
 ```
 
 **Run manifest** `manifest.json` (written once at start, refused to overwrite):
-`run_id, started_at, harness_commit, config` and for each of `seeker`, `mentor`: `url, alias, model_path,
-model_sha256, template_sha256, build_info, total_slots, default_generation_settings`.
+`run_id, started_at, harness_commit, harness_dirty, config, input_manifest {path, sha256},
+batteries {path, sha256, n_items, item_ids},
+environment {python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}` and for each
+of `seeker`, `mentor`: `url, alias, model_path, model_sha256, template_sha256, template_source,
+server_chat_template, build_info, model_ftype, total_slots, default_generation_settings`.
 
-**`dyads.jsonl`**, one row per attempt: the DyadSpec (`dyad_id, attempt, condition, persona_text, persona_reminder,
-persona_mode, seed, n_turns, ts`). The scorer reads persona and topic from here.
+**Judge manifest** `judge-<model_sha256[:12]>.json`, written by `score` (a separate file because
+`manifest.json` is written once at the start of a run and never rewritten): the same fields as a role
+block, plus `scope, temperature, n_predict, judge_system, judge_tasks, harness_commit, ts`. A second pass
+with a different scope writes `judge-<sha12>-<scope>.json`.
+
+**`dyads.jsonl`**, one row per attempt: the DyadSpec (`run_id, dyad_id, attempt, condition, persona_text,
+persona_reminder, persona_mode, seed, n_turns, ts`). The scorer reads persona, topic and the per-dyad
+seed from here.
 
 **`turns.jsonl`**, one row per message:
 
 ```
 {"run_id", "dyad_id", "attempt", "turn", "agent": "seeker|mentor", "model_sha256", "persona_mode",
- "prompt_sha256", "prompt_chars", "prompt_n", "predicted_n", "finish_reason": "stop|length|error",
- "text", "seed", "timings": {...server timings...}, "cache_warning": bool, "adherence": null, "ts"}
+ "id_slot", "temperature", "top_p", "n_predict", "prompt_sha256", "prompt_chars", "seed",
+ "prompt_n", "predicted_n", "expected_new", "cache_warning": bool,
+ "truncated", "tokens_evaluated", "tokens_cached", "finish_reason": "stop|length|error",
+ "text", "timings": {...server timings...}, "adherence": null, "ts", "error" (on failure only)}
 ```
 
-**`surveys.jsonl`**, one row per item: `run_id, dyad_id, attempt, phase: pre|post, item_id, scale: {min, max},
-answer (int or null), raw_text, prompt_sha256, prompt_n, seed, ts`.
+**`surveys.jsonl`**, one row per item: `run_id, dyad_id, attempt, phase: pre|post, origin: run|readministered,
+item_id, battery, scale: {min, max}, batteries_sha256, model_sha256, template_sha256, id_slot,
+turn (0 pre, n_turns+1 post: a sentinel, so the phases derive different seeds), temperature, n_predict,
+prompt_sha256, prompt_chars, seed, answer (int or null), raw_text, prompt_n, ts, error (on failure only)`.
 
 **`scores.jsonl`**, one row per (turn, agent, metric): `run_id, dyad_id, attempt, turn, agent, metric,
-score (0.0-1.0), rationale, judge_sha256, judge_prompt_sha256, ts`.
+judge_sha256, id_slot, harness_commit, seed, judge_prompt_sha256, prompt_chars, score (0.0-1.0 or null),
+rationale, raw_text, ts, error (on failure only)`.
 
-**`status.jsonl`**: `run_id, dyad_id, attempt, status: started|complete|failed, reason, ts`. Resume reads this.
+**`status.jsonl`**: `run_id, dyad_id, attempt, status: started|complete|failed, reason (on failure only),
+ts`. Resume reads this.
 
 ## 4. Dialogue engine
 
@@ -94,7 +109,10 @@ score (0.0-1.0), rationale, judge_sha256, judge_prompt_sha256, ts`.
   by `prompt_sha256` and `template_sha256`.
 - **Generation settings** (config, logged in the manifest): `temperature 0.7`, `top_p 0.95`, `n_predict 300`
   (turns are budgeted at 200; the cap protects the context), `cache_prompt true`, `id_slot = worker index`.
-  `seed = sha256(run_seed, dyad_id, attempt, turn, agent)[:8]` as an integer, logged per row.
+  `seed = sha256(run_seed, dyad_seed, dyad_id, attempt, turn, agent)[:8]` as an integer, logged per row.
+  `dyad_seed` is the manifest row's own `seed`, so two dyads differing only in `seed` are independent
+  replicates; surveys and the judge derive their seeds the same way, with the agent component naming the
+  phase and item or the metric.
 - **Cache accounting.** Expected `prompt_n` for a turn is the token count of what is new since the last
   generation on that slot: the partner's line, the template wrapping, and in reinforced mode the reminder
   plus the seeker's own previous line (the reminder sits before it, so the cached prefix ends there).
@@ -148,15 +166,28 @@ listed in `instruments/survey-batteries.md`; the US adaptation task replaces the
   models); the override exists for remote servers. Also `gguf_py_path`, generation settings, `run_seed`,
   `concurrency` (default `min(seeker.total_slots, mentor.total_slots)`), `data_dir`, and the
   `strftime_now` date string.
-- **`run.py check --config`**: health of both servers, `/props` build and slots, GGUF hash, template parity
-  check, reminder-placement check. Prints a table and exits non-zero on any failure. `run` runs `check` first.
+- **`run.py check --config [--manifest]`**: health of every configured server (the judge too, when
+  `judge.url` is set), `/props` build and slots, GGUF hash, template parity twice (a system-first fixture
+  and a user-first one, which is the mentor's only shape), whether the template the server reports matches
+  the GGUF's, the reminder-placement check for the seeker, and — with `--manifest` — whether the longest
+  dialogue fits in a slot's `n_ctx`. Prints a table and exits non-zero on any failure; rows that warn
+  (a server that reports a different template, an unknown `n_ctx`) print and do not block. `run` runs
+  `check` first, with the manifest.
 - **`run.py run --config --manifest --run-id`**: writes `manifest.json` (refuses if it exists with a different
   config), builds the work list, skips dyads whose latest attempt is `complete` in `status.jsonl`, restarts
   `started` or `failed` dyads as a new `attempt` (earlier rows stay; analysis takes the highest complete
-  attempt). Worker `w` uses slot `w` on both servers. Ctrl-C finishes in-flight generations then stops.
+  attempt). Worker `w` uses slot `w` on both servers. It refuses to start when `seeker.url == mentor.url`,
+  when the dyad manifest is malformed (duplicate `dyad_id`, unknown `persona_mode`, non-positive
+  `n_turns`, an empty reminder under `reinforced`), when the harness commit cannot be read, or when a
+  served model or template no longer matches the manifest's. Ctrl-C lets in-flight dyads finish, never
+  starts a queued one, and exits 130; the exit code is 0 only when every dyad completed and 2 when any
+  failed.
 - **Timeouts**: 600 s per generation (a 32k cold prefill on the slowest arm is about 250 s).
-- **Servers** are started outside the harness with the flags in `models/RUN_APPROACH.md` (Olmo: `--no-jinja
-  --cache-ram 0`). The harness never starts or stops servers.
+- **Servers** are started outside the harness with the flags in `models/RUN_APPROACH.md`. Every server
+  used with the harness runs `--jinja`, except the Olmo arm, whose template llama.cpp's parser rejects:
+  it runs `--no-jinja --chat-template chatml --cache-ram 0`, `check` reports its served template as a
+  warning, and its `template_parity` row must still pass — that is the pre-pilot gate for the arm. The
+  harness never starts or stops servers.
 
 ## 8. Testing
 

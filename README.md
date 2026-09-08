@@ -21,6 +21,7 @@ Full draft due 2026-11-30. Funded by IHS. Task tracking lives in Notion
 
 ```
 docs/
+  REPRODUCIBILITY.md             the standard every run is held to, and how to reproduce one dialogue
   design/research-design.md      the design, terminology, runway, descope plan
   design/persona-stability.md    research pass on drift; harness requirements
   decisions/model-arm.md         which four models form the architecture arm
@@ -31,12 +32,14 @@ models/
   parallel_scaling.csv           the parallel-slot scaling data behind it
   benchmarks/                    scripts + raw results (llama-bench sweeps, parallel scaling)
   serving/                       llama-server watchdog scripts used on the box
-harness/                         dyad harness requirements (code not yet written)
+harness/                         the dyad harness: dialogues, surveys, scoring (see harness/README.md)
 prompts/                         seeker persona templates (to be written)
 instruments/survey-batteries.md  ideological + affective batteries (from de Jong 2024)
 analysis/                        analysis code (to be written)
 paper/references.bib             running bibliography
-data/                            experiment output, git-ignored
+data/                            experiment output, git-ignored except each run's manifest.json
+                                 and judge-*.json (see data/README.md for every file and field)
+LICENSE, CITATION.cff            MIT; cite the repository as in CITATION.cff
 ```
 
 ## Status (2026-09-08)
@@ -50,6 +53,9 @@ data/                            experiment output, git-ignored
   Olmo-3-7B (41.5 tok/s, 6.0 days per arm) at the operating point; the other
   two arms are still extrapolated. See `models/RUN_APPROACH.md`.
 - Pipeline: `harness/` runs dialogues, surveys and scoring (unit-tested; live-tested on the desktop 5080). No pilot data yet.
+- Reproducibility standard: `docs/REPRODUCIBILITY.md`. Same seed does not mean same tokens under
+  prompt caching and continuous batching; what is and is not reproducible is written down there,
+  and the appendix checklist lives at the end of it.
 - Pilot 2026-09-18, baseline W5, waves W7 to W9, checkpoint 2026-10-19.
 
 ## The two machines

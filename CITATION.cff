@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software or its data, please cite it as below."
+title: "llm-polarization: dyad harness for LLM-to-LLM political dialogue"
+abstract: >-
+  A harness for running seeker/mentor dialogues between locally served LLMs, administering
+  pre/post survey batteries to the mentor, and scoring persona adherence offline, with
+  hash-pinned models, chat templates, prompts and seeds on every logged row.
+authors:
+  - family-names: Newhouse
+    given-names: Alex
+    orcid: ""
+repository-code: "https://github.com/alexbnewhouse/llm-polarization"
+license: MIT
+version: "0.1.0"
+date-released: "2026-09-08"
+keywords:
+  - large language models
+  - political polarization
+  - reproducibility
+  - llama.cpp
