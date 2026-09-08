@@ -97,9 +97,10 @@ class DialogueRunner:
         h = self.agents[agent]
         s = self.settings
         prompt = render(h.template, transcript.view_for(agent), now=s.now, enable_thinking=s.enable_thinking)
-        seed = derive_seed(self.run_seed, spec.dyad_id, attempt, turn, agent)
+        seed = derive_seed(self.run_seed, spec.seed, spec.dyad_id, attempt, turn, agent)
         row = {"run_id": self.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "turn": turn, "agent": agent,
                "model_sha256": h.model_sha256, "persona_mode": spec.persona_mode,
+               "id_slot": h.slot, "temperature": s.temperature, "top_p": s.top_p, "n_predict": s.n_predict,
                "prompt_sha256": sha256_text(prompt), "prompt_chars": len(prompt), "seed": seed}
         try:
             expected = expected_new_tokens(h.client, prompt, last_prompt[agent])

@@ -77,7 +77,7 @@ def test_seeds_distinct_and_logged(tmp_path):
     rows = log.read_jsonl(tmp_path / "turns.jsonl")
     seeds = [r["seed"] for r in rows]
     assert len(set(seeds)) == 4
-    assert rows[0]["seed"] == log.derive_seed(99, "d1", 1, 1, SEEKER)
+    assert rows[0]["seed"] == log.derive_seed(99, 5, "d1", 1, 1, SEEKER)   # 5 = the spec's per-dyad seed
     assert [c["seed"] for c in sc.calls] == [rows[0]["seed"], rows[2]["seed"]]
 
 
@@ -88,6 +88,8 @@ def test_provenance_fields(tmp_path):
     assert r["model_sha256"] == "seekerhash" and r["persona_mode"] == "reinforced"
     assert r["prompt_sha256"] == log.sha256_text(sc.calls[0]["prompt"]) and r["prompt_chars"] == len(sc.calls[0]["prompt"])
     assert r["finish_reason"] == "stop" and r["attempt"] == 2 and r["predicted_n"] > 0
+    assert r["id_slot"] == 2                                    # the slot whose KV cache this turn reused
+    assert (r["temperature"], r["top_p"], r["n_predict"]) == (0.7, 0.95, 300)
 
 
 def test_cache_warning_is_false_when_cache_holds(tmp_path):

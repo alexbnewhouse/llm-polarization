@@ -22,6 +22,14 @@ def test_batteries_file_loads_13_unique_items():
     assert {i["battery"] for i in it} == {"ideological", "thermometer", "agreement"}
 
 
+def test_batteries_file_declares_a_version_and_whether_it_is_adapted():
+    # The wording is a placeholder until the US-adaptation task lands; a run that cannot say which
+    # wording it administered cannot be interpreted afterwards.
+    data = json.loads((REPO / "instruments" / "batteries.json").read_text(encoding="utf-8"))
+    assert isinstance(data["version"], str) and data["version"]
+    assert data["adapted"] is False
+
+
 def test_load_batteries_rejects_bad_item(tmp_path):
     p = tmp_path / "b.json"
     p.write_text(json.dumps({"items": [{"id": "x", "battery": "b", "text": "t"}]}))
@@ -44,7 +52,8 @@ def make(tmp_path, replies=None, fail_on=None):
     mc = FakeClient(replies or ['{"answer": 3}'], fail_on=fail_on)
     mentor = AgentHandle(MENTOR, mc, tpl, "mentorhash", slot=1)
     w = log.JsonlWriter(tmp_path / "surveys.jsonl")
-    return SurveyRunner("run1", 99, mentor, w, GenSettings(), clock=lambda: "T"), mc
+    return SurveyRunner("run1", 99, mentor, w, GenSettings(), clock=lambda: "T",
+                        batteries_sha256="BATT"), mc
 
 
 def spec():
@@ -87,12 +96,33 @@ def test_rows_and_seeds(tmp_path):
     logged = log.read_jsonl(tmp_path / "surveys.jsonl")
     assert logged == rows
     assert rows[0]["answer"] == 2 and rows[1]["answer"] is None and rows[1]["raw_text"] == "nonsense"
-    assert rows[0]["seed"] == log.derive_seed(99, "d1", 1, 0, f"survey:pre:{items()[0]['id']}")
+    assert rows[0]["seed"] == log.derive_seed(99, 5, "d1", 1, 0, f"survey:pre:{items()[0]['id']}")
     assert rows[0]["seed"] != rows[1]["seed"]
     assert set(rows[0]) >= {"run_id", "dyad_id", "attempt", "phase", "item_id", "battery", "scale", "answer",
                             "raw_text", "prompt_sha256", "prompt_n", "seed", "ts"}
     post = runner.administer(spec(), 1, "post", Transcript("d1", "s", None, "once"), items()[:1])
-    assert post[0]["seed"] == log.derive_seed(99, "d1", 1, 3, f"survey:post:{items()[0]['id']}")
+    assert post[0]["seed"] == log.derive_seed(99, 5, "d1", 1, 3, f"survey:post:{items()[0]['id']}")
+
+
+def test_rows_carry_model_instrument_and_slot_identity(tmp_path):
+    runner, mc = make(tmp_path)
+    rows = runner.administer(spec(), 1, "pre", None, items()[:1])
+    r = rows[0]
+    assert r["model_sha256"] == "mentorhash" and r["template_sha256"] == ChatTemplate.from_source(CHATML).sha256
+    assert r["batteries_sha256"] == "BATT" and r["id_slot"] == 1 and r["turn"] == 0
+    assert r["temperature"] == 0.0 and r["n_predict"] == 32 and r["prompt_chars"] == len(mc.calls[0]["prompt"])
+    assert r["origin"] == "run"
+
+
+def test_origin_marks_a_readministered_pass(tmp_path):
+    runner, _ = make(tmp_path)
+    rows = runner.administer(spec(), 1, "pre", None, items()[:1], origin="readministered")
+    assert rows[0]["origin"] == "readministered"
+    # The key (run_id, dyad_id, attempt, phase, item_id) is identical to the in-run row; origin is what
+    # tells the two passes apart in analysis.
+    assert rows[0]["seed"] == log.derive_seed(99, 5, "d1", 1, 0, f"survey:pre:{items()[0]['id']}")
+    with pytest.raises(ValueError):
+        runner.administer(spec(), 1, "pre", None, items()[:1], origin="again")
 
 
 def test_server_error_logs_and_raises(tmp_path):

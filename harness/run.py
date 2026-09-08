@@ -8,7 +8,8 @@ from harness import log
 from harness.client import LlamaClient, ServerError
 from harness.dialogue import AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
-from harness.scorer import Scorer
+from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, Scorer,
+                            latest_complete_attempts)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import FIXTURE_MESSAGES, TemplateError, parity_check, read_template_from_gguf, render
 from harness.transcript import MENTOR, SEEKER, Transcript
@@ -21,6 +22,7 @@ DEFAULT_CONFIG = {
     "judge": {"url": None, "gguf_path": None},
 }
 HASH_CACHE = Path.home() / ".cache" / "llm-polarization" / "gguf-hashes.json"
+HARNESS_DIR = Path(__file__).resolve().parent
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -119,6 +121,7 @@ class RunContext:
     items: list[dict]
     logs: dict
     clock: object = now_iso
+    batteries_sha256: str = ""
 
 
 def _with_slot(h: AgentHandle, slot: int) -> AgentHandle:
@@ -136,7 +139,8 @@ def run_dyad(worker_slot: int, spec: DyadSpec, attempt: int, ctx: RunContext) ->
                              "persona_mode": spec.persona_mode, "seed": spec.seed, "n_turns": spec.n_turns, "ts": ctx.clock()})
     ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "started", "ts": ctx.clock()})
     dialogue = DialogueRunner(ctx.run_id, ctx.run_seed, seeker, mentor, ctx.settings, ctx.logs["turns"], clock=ctx.clock)
-    surveys = SurveyRunner(ctx.run_id, ctx.run_seed, mentor, ctx.logs["surveys"], ctx.settings, clock=ctx.clock)
+    surveys = SurveyRunner(ctx.run_id, ctx.run_seed, mentor, ctx.logs["surveys"], ctx.settings, clock=ctx.clock,
+                           batteries_sha256=ctx.batteries_sha256)
     try:
         surveys.administer(spec, attempt, "pre", None, ctx.items)
         transcript = dialogue.run(spec, attempt)
@@ -182,6 +186,26 @@ def cmd_check(cfg: dict) -> int:
     return 0 if ok_all else 1
 
 
+def _load_manifest(paths: RunPaths) -> dict:
+    """Read a run's manifest.json, or refuse with the message a missing run directory deserves."""
+    if not paths.manifest.exists():
+        raise ManifestMismatch(f"{paths.manifest} does not exist; this run has never been started")
+    return json.loads(paths.manifest.read_text(encoding="utf-8"))
+
+
+def _verify_identity(existing: dict, entries: dict, roles=(SEEKER, MENTOR)) -> None:
+    """Refuse to add rows to a run whose models are no longer the ones its manifest records. A GGUF
+    re-quantized at the same path, a server restarted on another model, or a llama.cpp upgrade that changed
+    the served template would otherwise be accepted in silence, and only the rows -- never the manifest --
+    would carry the evidence."""
+    for role in roles:
+        was, now = existing.get(role) or {}, entries[role]
+        for key in ("model_sha256", "template_sha256"):
+            if was.get(key) and was[key] != now[key]:
+                raise ManifestMismatch(f"{role}.{key} is now {now[key][:12]} but manifest.json records "
+                                       f"{was[key][:12]}; use a new run_id")
+
+
 def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
     """Reconstruct a dyad's Transcript from its dyads.jsonl row and turns.jsonl rows, in turn/agent order,
     so the post survey can be re-administered without re-running the dialogue."""
@@ -201,8 +225,18 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     agents = _agents(cfg)
     (seeker, s_entry), (mentor, m_entry) = agents[SEEKER], agents[MENTOR]
     paths = run_paths(cfg["data_dir"], run_id)
-    log.write_manifest(paths, {"run_id": run_id, "started_at": now_iso(), "harness_commit": _git_commit(),
-                               "config": cfg, "seeker": s_entry, "mentor": m_entry})
+    commit = _git_commit()
+    if not commit:
+        print("error: cannot read this repository's git commit; a run with unknown provenance is refused",
+              file=sys.stderr)
+        return 1
+    manifest = {"run_id": run_id, "started_at": now_iso(), "harness_commit": commit,
+                "harness_dirty": _git_dirty(), "config": cfg,
+                "input_manifest": _file_provenance(manifest_path), "batteries": _batteries_provenance(cfg),
+                "seeker": s_entry, "mentor": m_entry}
+    if manifest["harness_dirty"]:
+        print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
+    log.write_manifest(paths, manifest)
     concurrency = cfg["concurrency"] or min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
     rows = read_jsonl(Path(manifest_path))
     work = plan_work(rows, read_jsonl(paths.status))
@@ -211,7 +245,8 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
         return 0
     logs = {k: JsonlWriter(getattr(paths, k)) for k in ("dyads", "status", "turns", "surveys")}
     ctx = RunContext(run_id, int(cfg["run_seed"]), seeker, mentor, _settings(cfg),
-                     load_batteries(cfg["batteries"]), logs)
+                     load_batteries(cfg["batteries"]), logs,
+                     batteries_sha256=manifest["batteries"]["sha256"])
     free = list(range(concurrency))
     lock = threading.Lock()
 
@@ -236,15 +271,17 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
 
 def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     """Run the `survey` subcommand: re-administer one survey phase for every complete dyad in a run,
-    rebuilding the transcript from turns.jsonl for the post phase."""
-    agents = _agents(cfg)
-    mentor = agents[MENTOR][0]
+    rebuilding the transcript from turns.jsonl for the post phase. Only the mentor is built: the seeker's
+    server has nothing to do with a re-administration and need not even be running."""
+    mentor, entry = _agents(cfg, roles=(MENTOR,))[MENTOR]
     paths = run_paths(cfg["data_dir"], run_id)
+    _verify_identity(_load_manifest(paths), {MENTOR: entry}, roles=(MENTOR,))
     items = load_batteries(cfg["batteries"])
-    complete = {d: v["attempt"] for d, v in log.resume_index(read_jsonl(paths.status)).items() if v["status"] == "complete"}
+    complete = latest_complete_attempts(read_jsonl(paths.status))
     dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
     turns = read_jsonl(paths.turns)
-    runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, 0), JsonlWriter(paths.surveys), _settings(cfg))
+    runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, 0), JsonlWriter(paths.surveys),
+                          _settings(cfg), batteries_sha256=log.sha256_file(cfg["batteries"]))
     n = 0
     for dyad_id, attempt in complete.items():
         spec = DyadSpec.from_row(dyads[(dyad_id, attempt)])
@@ -253,7 +290,7 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
             transcript = _rebuild_transcript(dyads[(dyad_id, attempt)],
                                              [r for r in turns if r["dyad_id"] == dyad_id and r.get("attempt", 1) == attempt])
         try:
-            n += len(runner.administer(spec, attempt, phase, transcript, items))
+            n += len(runner.administer(spec, attempt, phase, transcript, items, origin="readministered"))
         except SurveyError as e:
             print(f"  {dyad_id}: {e}", file=sys.stderr)
     print(f"{phase} survey: {n} rows for {len(complete)} dyads")
@@ -265,21 +302,72 @@ def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
     if not cfg["judge"].get("url"):
         print("config needs judge.url", file=sys.stderr)
         return 1
-    judge, _ = build_agent("judge", cfg["judge"], 0, cfg)
+    judge, entry = build_agent("judge", cfg["judge"], 0, cfg)
     paths = run_paths(cfg["data_dir"], run_id)
-    manifest = json.loads(paths.manifest.read_text(encoding="utf-8"))
-    n = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg)).score_run(paths, scope, manifest)
+    manifest = _load_manifest(paths)
+    write_judge_manifest(paths, entry, scope, judge.template.source)
+    n = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
+               harness_commit=_git_commit()).score_run(paths, scope, manifest)
     print(f"scored {n} new rows ({scope})")
     return 0
 
 
-def _git_commit() -> str:
-    """Return the current git commit hash for provenance, or '' if git is unavailable or this isn't a repo."""
+def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, template_source: str) -> Path:
+    """Record the judge's provenance beside the run, in its own small file. It cannot go into
+    manifest.json: that file is written once when the run starts and is deliberately never rewritten, and
+    scoring happens later -- often from a different harness commit and against a model the run never saw."""
+    judge = dict(entry)
+    judge.update({"template_source": template_source, "scope": scope,
+                  "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
+                  "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
+                  "harness_commit": _git_commit(), "ts": now_iso()})
+    path = paths.root / f"judge-{entry['model_sha256'][:12]}.json"
+    if path.exists():
+        old = json.loads(path.read_text(encoding="utf-8"))
+        if {k: v for k, v in old.items() if k != "ts"} == {k: v for k, v in judge.items() if k != "ts"}:
+            return path
+        # Same judge, different scoring pass (another scope, or another harness commit): keep both records.
+        path = paths.root / f"judge-{entry['model_sha256'][:12]}-{scope}.json"
+    path.write_text(json.dumps(judge, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _git(args: list[str], cwd: Path) -> str | None:
+    """Run a read-only git command in `cwd`; return its stripped output, or None if git could not answer."""
     try:
         import subprocess
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(["git", *args], cwd=str(cwd), stderr=subprocess.DEVNULL, text=True).strip()
     except Exception:  # noqa: BLE001
-        return ""
+        return None
+
+
+def _git_commit() -> str:
+    """The commit of THIS harness, read in the harness's own directory rather than the process's working
+    directory -- running the CLI from elsewhere used to record whatever repository happened to be there."""
+    return _git(["rev-parse", "HEAD"], HARNESS_DIR) or ""
+
+
+def _git_dirty() -> bool:
+    """True when the harness's repository has uncommitted changes, so harness_commit does not fully
+    describe the code that ran. Recorded, not refused: the pilot may legitimately run from a dirty tree."""
+    out = _git(["status", "--porcelain"], HARNESS_DIR)
+    return bool(out)
+
+
+def _file_provenance(path: str | Path) -> dict:
+    """{path, sha256} for an input file, so 'the dyads we meant to run' is separable from what started."""
+    p = Path(path)
+    return {"path": str(p), "sha256": log.sha256_file(p) if p.exists() else ""}
+
+
+def _batteries_provenance(cfg: dict) -> dict:
+    """Pin the survey instrument to the run: its path, its sha256, and the item ids in file order (which is
+    the administration order, pre and post). The wording is a placeholder until the US-adaptation task
+    lands, so a run that cannot name the exact file it used cannot be interpreted afterwards."""
+    items = load_batteries(cfg["batteries"])
+    prov = _file_provenance(cfg["batteries"])
+    prov.update({"n_items": len(items), "item_ids": [it["id"] for it in items]})
+    return prov
 
 
 def main(argv: list[str] | None = None) -> int:

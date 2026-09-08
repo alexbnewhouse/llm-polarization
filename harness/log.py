@@ -56,8 +56,8 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def derive_seed(run_seed: int, dyad_id: str, attempt: int, turn: int, agent: str) -> int:
-    return int(sha256_text(f"{run_seed}|{dyad_id}|{attempt}|{turn}|{agent}")[:8], 16)
+def derive_seed(run_seed: int, dyad_seed: int, dyad_id: str, attempt: int, turn: int, agent: str) -> int:
+    return int(sha256_text(f"{run_seed}|{dyad_seed}|{dyad_id}|{attempt}|{turn}|{agent}")[:8], 16)
 
 
 def now_iso() -> str:

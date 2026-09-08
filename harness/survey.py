@@ -9,7 +9,9 @@ from harness.templates import render
 from harness.transcript import Transcript, MENTOR
 
 PHASES = ("pre", "post")
+ORIGINS = ("run", "readministered")
 SURVEY_N_PREDICT = 32
+SURVEY_TEMPERATURE = 0.0
 
 
 class SurveyError(Exception):
@@ -59,32 +61,43 @@ def parse_answer(text: str, item: dict) -> int | None:
 class SurveyRunner:
     """Administers survey batteries to a mentor model, branching each item off the dialogue context and logging results."""
     def __init__(self, run_id: str, run_seed: int, mentor: AgentHandle, surveys_log: JsonlWriter,
-                 settings: GenSettings, clock=now_iso):
-        """Initialize with run metadata, mentor client, and logging writer."""
+                 settings: GenSettings, clock=now_iso, batteries_sha256: str = ""):
+        """Initialize with run metadata, mentor client, logging writer and the sha256 of the batteries file
+        whose items are being administered (written onto every row so an item-wording change is visible)."""
         self.run_id, self.run_seed, self.mentor = run_id, run_seed, mentor
         self.surveys_log, self.settings, self.clock = surveys_log, settings, clock
+        self.batteries_sha256 = batteries_sha256
 
     def administer(self, spec: DyadSpec, attempt: int, phase: str, transcript: Transcript | None,
-                   items: list[dict]) -> list[dict]:
-        """Administer survey items to the mentor, one per prompt, logging and returning answer rows; raise SurveyError on server failure."""
+                   items: list[dict], origin: str = "run") -> list[dict]:
+        """Administer survey items to the mentor, one per prompt, logging and returning answer rows; raise
+        SurveyError on server failure. `origin` is "run" for the pass the dialogue run itself makes and
+        "readministered" for a later `harness survey` pass, whose rows otherwise share the same key."""
         if phase not in PHASES:
             raise ValueError(f"phase must be one of {PHASES}")
+        if origin not in ORIGINS:
+            raise ValueError(f"origin must be one of {ORIGINS}")
         if phase == "post" and transcript is None:
             raise ValueError("post survey needs the dialogue transcript")
         base = transcript.view_for(MENTOR) if phase == "post" else []
+        # Not a real turn: a sentinel so the pre and post seeds differ. 0 = before turn 1,
+        # n_turns+1 = after the last turn.
         turn = 0 if phase == "pre" else spec.n_turns + 1
         rows = []
         for it in items:
             messages = base + [{"role": "user", "content": it["text"]}]
             prompt = render(self.mentor.template, messages, now=self.settings.now,
                             enable_thinking=self.settings.enable_thinking)
-            seed = derive_seed(self.run_seed, spec.dyad_id, attempt, turn, f"survey:{phase}:{it['id']}")
+            seed = derive_seed(self.run_seed, spec.seed, spec.dyad_id, attempt, turn, f"survey:{phase}:{it['id']}")
             row = {"run_id": self.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "phase": phase,
-                   "item_id": it["id"], "battery": it["battery"], "scale": it["scale"],
-                   "prompt_sha256": sha256_text(prompt), "seed": seed}
+                   "origin": origin, "item_id": it["id"], "battery": it["battery"], "scale": it["scale"],
+                   "batteries_sha256": self.batteries_sha256, "model_sha256": self.mentor.model_sha256,
+                   "template_sha256": self.mentor.template.sha256, "id_slot": self.mentor.slot, "turn": turn,
+                   "temperature": SURVEY_TEMPERATURE, "n_predict": SURVEY_N_PREDICT,
+                   "prompt_sha256": sha256_text(prompt), "prompt_chars": len(prompt), "seed": seed}
             try:
                 comp = self.mentor.client.complete(prompt, id_slot=self.mentor.slot, seed=seed,
-                                                   n_predict=SURVEY_N_PREDICT, temperature=0.0,
+                                                   n_predict=SURVEY_N_PREDICT, temperature=SURVEY_TEMPERATURE,
                                                    json_schema=answer_schema(it), cache_prompt=True)
             except ServerError as e:
                 row.update({"answer": None, "raw_text": "", "prompt_n": None, "error": str(e), "ts": self.clock()})

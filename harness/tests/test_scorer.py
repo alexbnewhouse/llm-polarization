@@ -57,6 +57,7 @@ def test_parse_score():
     assert scorer.parse_score('{"score": 0.8, "rationale": "fits"}') == (0.8, "fits")
     assert scorer.parse_score('{"score": 2, "rationale": "x"}') == (None, "x")
     assert scorer.parse_score('garbage') == (None, "")
+    assert scorer.parse_score('{"score": 0.5, "rationale": null}') == (0.5, "")   # not the string "None"
 
 
 def make_run(tmp_path):
@@ -78,7 +79,8 @@ def make_scorer(tmp_path, judge_hash="J", replies=None):
     jc = FakeClient(replies or ['{"score": 0.75, "rationale": "ok"}'])
     judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), judge_hash, slot=0)
     p, manifest = make_run(tmp_path)
-    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
+    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T",
+                harness_commit="COMMIT")
     return sc, jc, p, manifest
 
 
@@ -91,7 +93,9 @@ def test_score_run_pilot_writes_rows_and_skips_done(tmp_path):
     r0 = rows_[0]
     assert set(r0) >= {"run_id", "dyad_id", "attempt", "turn", "agent", "metric", "score", "rationale", "raw_text",
                        "judge_sha256", "judge_prompt_sha256", "seed", "ts"}
-    assert r0["seed"] == log.derive_seed(99, "d", 1, r0["turn"], f"judge:{r0['agent']}:{r0['metric']}")
+    assert r0["seed"] == log.derive_seed(99, 1, "d", 1, r0["turn"], f"judge:{r0['agent']}:{r0['metric']}")
+    assert all(r["id_slot"] == 0 and r["harness_commit"] == "COMMIT" for r in rows_)
+    assert r0["prompt_chars"] == len(jc.calls[0]["prompt"])
     assert sc.score_run(p, "pilot", manifest) == 0            # idempotent
     for c in jc.calls:
         assert c["json_schema"] == scorer.score_schema() and c["temperature"] == 0.0 and c["n_predict"] == 160

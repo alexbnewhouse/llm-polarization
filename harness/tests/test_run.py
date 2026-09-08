@@ -124,7 +124,14 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
     assert clients["http://s"].timeout == 600
     paths = log.run_paths(tmp_path / "data", "r1")
-    assert json.loads(paths.manifest.read_text())["seeker"]["model_sha256"] == "HASH-s.gguf"
+    mf = json.loads(paths.manifest.read_text())
+    assert mf["seeker"]["model_sha256"] == "HASH-s.gguf"
+    assert mf["harness_commit"] and isinstance(mf["harness_dirty"], bool)
+    assert mf["input_manifest"]["path"] == str(man) and mf["input_manifest"]["sha256"] == log.sha256_file(man)
+    batteries = mf["batteries"]
+    assert batteries["n_items"] == 13 and len(batteries["item_ids"]) == 13
+    assert batteries["sha256"] == log.sha256_file(REPO / "instruments" / "batteries.json")
+    assert all(s["batteries_sha256"] == batteries["sha256"] for s in log.read_jsonl(paths.surveys))
     assert len(log.read_jsonl(paths.turns)) == 3 * 4
     assert sorted(s["status"] for s in log.read_jsonl(paths.status)).count("complete") == 3
     assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0   # resume: nothing to do
@@ -133,7 +140,18 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     scores = log.read_jsonl(paths.scores)
     assert len(scores) == 3 * 1 * 2 and all(s["score"] == 0.5 for s in scores)      # main: seeker, last turn (2), 2 metrics
     assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "post"]) == 0
-    assert len([s for s in log.read_jsonl(paths.surveys) if s["phase"] == "post"]) == 3 * 13 * 2
+    post = [s for s in log.read_jsonl(paths.surveys) if s["phase"] == "post"]
+    assert len(post) == 3 * 13 * 2
+    # The re-administered rows share the in-run rows' key; `origin` is what tells them apart.
+    assert sorted({s["origin"] for s in post}) == ["readministered", "run"]
+    assert len([s for s in post if s["origin"] == "readministered"]) == 3 * 13
+    judge_files = sorted(pth.name for pth in paths.root.glob("judge-*.json"))
+    assert judge_files == ["judge-" + "HASH-j.gguf"[:12] + ".json"]
+    judge = json.loads((paths.root / judge_files[0]).read_text())
+    assert judge["scope"] == "main" and judge["n_predict"] == 160 and judge["temperature"] == 0.0
+    assert judge["model_sha256"] == "HASH-j.gguf" and judge["template_source"] == CHATML
+    assert judge["harness_commit"] and judge["judge_system"] and judge["judge_tasks"]
+    assert all(s["harness_commit"] == judge["harness_commit"] for s in scores)
 
 
 def test_main_check_reports_dead_server_without_traceback(tmp_path, monkeypatch, capsys):

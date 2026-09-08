@@ -30,11 +30,13 @@ def test_jsonl_writer_is_thread_safe(tmp_path):
 
 
 def test_derive_seed_is_stable_and_distinct():
-    a = log.derive_seed(7, "d1", 1, 3, "seeker")
-    assert a == log.derive_seed(7, "d1", 1, 3, "seeker")
-    assert a != log.derive_seed(7, "d1", 1, 3, "mentor")
-    assert a != log.derive_seed(7, "d1", 1, 4, "seeker")
-    assert a != log.derive_seed(7, "d1", 2, 3, "seeker")
+    a = log.derive_seed(7, 42, "d1", 1, 3, "seeker")
+    assert a == log.derive_seed(7, 42, "d1", 1, 3, "seeker")
+    assert a != log.derive_seed(7, 42, "d1", 1, 3, "mentor")
+    assert a != log.derive_seed(7, 42, "d1", 1, 4, "seeker")
+    assert a != log.derive_seed(7, 42, "d1", 2, 3, "seeker")
+    assert a != log.derive_seed(8, 42, "d1", 1, 3, "seeker")
+    assert a != log.derive_seed(7, 43, "d1", 1, 3, "seeker")   # the per-dyad seed is live, not decorative
     assert 0 <= a < 2 ** 32
 
 

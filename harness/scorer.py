@@ -10,11 +10,12 @@ from harness.transcript import SEEKER, MENTOR
 METRICS = {"prompt_to_line": SEEKER, "line_to_line": SEEKER, "alignment": MENTOR}
 SCOPES = ("pilot", "main")
 JUDGE_N_PREDICT = 160
+JUDGE_TEMPERATURE = 0.0
 
-_SYSTEM = ("You are a careful annotator for a study of LLM-to-LLM political dialogue. You score one line at a "
+JUDGE_SYSTEM = ("You are a careful annotator for a study of LLM-to-LLM political dialogue. You score one line at a "
            "time on a 0.0 to 1.0 scale and give a one-sentence rationale. Respond only with JSON.")
 
-_TASKS = {
+JUDGE_TASKS = {
     "prompt_to_line": ("Does the LINE fit the PERSONA (backstory, values, stance anchors, openness)? "
                        "1.0 = fully in character, 0.0 = contradicts the persona."),
     "line_to_line": ("Is the LINE consistent with the speaker's own EARLIER LINES (positions, facts about themselves, tone)? "
@@ -36,7 +37,7 @@ def build_judge_messages(metric: str, persona_text: str, topic: str, line: str,
     """Build the system+user chat messages that ask the judge to score one line on the given metric."""
     if metric not in METRICS:
         raise ValueError(f"unknown metric {metric!r}")
-    parts = [f"TASK: {_TASKS[metric]}", f"TOPIC: {topic}", f"PERSONA:\n{persona_text}"]
+    parts = [f"TASK: {JUDGE_TASKS[metric]}", f"TOPIC: {topic}", f"PERSONA:\n{persona_text}"]
     if metric == "line_to_line":
         earlier = "\n".join(f"- {l}" for l in prior_own_lines) or "- (none yet)"
         parts.append(f"EARLIER LINES by the same speaker:\n{earlier}")
@@ -44,7 +45,7 @@ def build_judge_messages(metric: str, persona_text: str, topic: str, line: str,
         parts.append(f"PARTNER'S PRECEDING LINE:\n{partner_line}")
     parts.append(f"LINE to score:\n{line}")
     parts.append('Return JSON: {"score": <0.0-1.0>, "rationale": "<one sentence>"}')
-    return [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
+    return [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
 
 
 def select_targets(turn_rows: list[dict], scope: str) -> list[tuple[dict, str]]:
@@ -83,7 +84,7 @@ def parse_score(text: str) -> tuple[float | None, str]:
     try:
         d = json.loads(text)
         score = d.get("score")
-        rationale = str(d.get("rationale", ""))
+        rationale = str(d.get("rationale") or "")   # a JSON null rationale must not land as "None"
     except (ValueError, AttributeError):
         return None, ""
     if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:
@@ -94,10 +95,12 @@ def parse_score(text: str) -> tuple[float | None, str]:
 class Scorer:
     """Scores a finished run's logged turns with a third judge model and appends the results to scores.jsonl."""
     def __init__(self, run_id: str, run_seed: int, judge: AgentHandle, scores_log: JsonlWriter,
-                 settings: GenSettings, clock=now_iso):
-        """Wire up the run identity, judge agent, output log, generation settings and clock this scorer will use."""
+                 settings: GenSettings, clock=now_iso, harness_commit: str = ""):
+        """Wire up the run identity, judge agent, output log, generation settings, clock and the harness
+        commit that is doing the scoring (scoring can happen long after the run, from different code)."""
         self.run_id, self.run_seed, self.judge = run_id, run_seed, judge
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
+        self.harness_commit = harness_commit
 
     def score_run(self, paths: RunPaths, scope: str, manifest: dict) -> int:
         """Score every not-yet-scored target for the run's complete dyads and return how many rows were written."""
@@ -121,13 +124,17 @@ class Scorer:
             key = (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric)
             if key in done:
                 continue
-            seed = derive_seed(self.run_seed, row["dyad_id"], key[1], row["turn"], f"judge:{row['agent']}:{metric}")
-            out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
-                   "agent": row["agent"], "metric": metric, "judge_sha256": self.judge.model_sha256, "seed": seed}
+            # The dyad row carries the per-dyad seed the run used, so a score seed is derived from the same
+            # (run_seed, dyad_seed) pair the dialogue was: look the row up before deriving the seed.
             spec = dyads.get(key[:2])
+            seed = derive_seed(self.run_seed, int((spec or {}).get("seed", 0)), row["dyad_id"], key[1],
+                               row["turn"], f"judge:{row['agent']}:{metric}")
+            out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
+                   "agent": row["agent"], "metric": metric, "judge_sha256": self.judge.model_sha256,
+                   "id_slot": self.judge.slot, "harness_commit": self.harness_commit, "seed": seed}
             if spec is None:
-                out.update({"judge_prompt_sha256": "", "score": None, "rationale": "", "raw_text": "",
-                            "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
+                out.update({"judge_prompt_sha256": "", "prompt_chars": None, "score": None, "rationale": "",
+                            "raw_text": "", "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
                 self.scores_log.write(out)
                 continue
             history = histories[key[:2]]
@@ -138,9 +145,11 @@ class Scorer:
                                             row["text"], prior_own, partner)
             prompt = render(self.judge.template, messages, now=self.settings.now, enable_thinking=self.settings.enable_thinking)
             out["judge_prompt_sha256"] = sha256_text(prompt)
+            out["prompt_chars"] = len(prompt)
             try:
                 comp = self.judge.client.complete(prompt, id_slot=self.judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
-                                                  temperature=0.0, json_schema=score_schema(), cache_prompt=True)
+                                                  temperature=JUDGE_TEMPERATURE, json_schema=score_schema(),
+                                                  cache_prompt=True)
             except ServerError as e:
                 out.update({"score": None, "rationale": "", "raw_text": "", "error": str(e), "ts": self.clock()})
                 self.scores_log.write(out)

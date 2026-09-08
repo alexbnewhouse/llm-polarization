@@ -1,4 +1,6 @@
 {
+  "version": "0.1.0-placeholder",
+  "adapted": false,
   "_note": "Placeholder wording for the de Jong (2024) categories. The US-adaptation task replaces text, not ids or scales.",
   "items": [
     {"id": "ideo_gender_racial_equality", "battery": "ideological", "scale": {"min": 1, "max": 5},
