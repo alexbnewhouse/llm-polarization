@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import pytest
 from harness import log, run as R
+from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings, DyadSpec
 from harness.templates import ChatTemplate
 from harness.transcript import SEEKER, MENTOR
@@ -133,3 +134,30 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert len(scores) == 3 * 1 * 2 and all(s["score"] == 0.5 for s in scores)      # main: seeker, last turn (2), 2 metrics
     assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "post"]) == 0
     assert len([s for s in log.read_jsonl(paths.surveys) if s["phase"] == "post"]) == 3 * 13 * 2
+
+
+def test_main_check_reports_dead_server_without_traceback(tmp_path, monkeypatch, capsys):
+    def factory(url, timeout=None):
+        raise ServerError(f"connection refused: {url}")
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    cfg = write_cfg(tmp_path)
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL health" in out
+
+
+def test_main_run_manifest_mismatch_returns_1_without_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path.split("/")[-1])
+    def factory(url, timeout=None):
+        c = FakeClient(['{"answer": 2}', "line"])
+        c.props = lambda: {"model_path": f"/{url[7:]}.gguf", "total_slots": 2, "build_info": "b",
+                           "model_alias": url[7:], "default_generation_settings": {}}
+        return c
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(1)))
+    cfg1 = write_cfg(tmp_path, run_seed=5)
+    assert R.main(["run", "--config", str(cfg1), "--manifest", str(man), "--run-id", "r1"]) == 0
+    cfg2 = write_cfg(tmp_path, run_seed=6)
+    assert R.main(["run", "--config", str(cfg2), "--manifest", str(man), "--run-id", "r1"]) == 1

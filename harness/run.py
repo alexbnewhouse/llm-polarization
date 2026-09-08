@@ -5,9 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from harness import log
-from harness.client import LlamaClient
+from harness.client import LlamaClient, ServerError
 from harness.dialogue import AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings
-from harness.log import JsonlWriter, RunPaths, now_iso, read_jsonl, run_paths
+from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
 from harness.scorer import Scorer
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import FIXTURE_MESSAGES, TemplateError, parity_check, read_template_from_gguf, render
@@ -164,9 +164,17 @@ def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
 
 
 def cmd_check(cfg: dict) -> int:
-    """Build the seeker and mentor agents, print each one's check_agent results, and return 0 iff all pass."""
+    """Build the seeker and mentor agents, print each one's check_agent results, and return 0 iff all pass;
+    a role whose server is unreachable prints a FAIL health line instead of letting build_agent's
+    ServerError traceback out, since a down server is exactly the failure `check` exists to report."""
     ok_all = True
-    for role, (handle, entry) in _agents(cfg).items():
+    for role in (SEEKER, MENTOR):
+        try:
+            handle, entry = build_agent(role, cfg[role], 0, cfg)
+        except ServerError as e:
+            print(f"FAIL health {role} {cfg[role].get('url')}: {e}")
+            ok_all = False
+            continue
         print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} slots={entry['total_slots']}")
         for name, ok, detail in check_agent(handle, cfg):
             ok_all &= ok
@@ -275,7 +283,8 @@ def _git_commit() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point: parse the check/run/survey/score subcommands and dispatch to the matching cmd_* function."""
+    """Entry point: parse the check/run/survey/score subcommands, dispatch to the matching cmd_* function,
+    and turn a ServerError or ManifestMismatch into a clean error line and exit code 1 instead of a traceback."""
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("check", "run", "survey", "score"):
@@ -288,13 +297,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.choices["score"].add_argument("--scope", choices=("pilot", "main"), default="pilot")
     a = ap.parse_args(argv)
     cfg = load_config(a.config)
-    if a.cmd == "check":
-        return cmd_check(cfg)
-    if a.cmd == "run":
-        return cmd_run(cfg, a.manifest, a.run_id)
-    if a.cmd == "survey":
-        return cmd_survey(cfg, a.run_id, a.phase)
-    return cmd_score(cfg, a.run_id, a.scope)
+    try:
+        if a.cmd == "check":
+            return cmd_check(cfg)
+        if a.cmd == "run":
+            return cmd_run(cfg, a.manifest, a.run_id)
+        if a.cmd == "survey":
+            return cmd_survey(cfg, a.run_id, a.phase)
+        return cmd_score(cfg, a.run_id, a.scope)
+    except (ServerError, ManifestMismatch) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
