@@ -446,6 +446,7 @@ def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
         print("config needs judge.url", file=sys.stderr)
         return 1
     judge, entry = build_agent("judge", cfg["judge"], 0, cfg)
+    print(f"[judge] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]}")
     ok_all = True
     for name, ok, detail in check_agent(judge, cfg):
         ok_all = ok_all and ok is not False
@@ -558,7 +559,8 @@ def _batteries_provenance(cfg: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point: parse the check/run/survey/score subcommands, dispatch to the matching cmd_* function,
-    and turn a ServerError or ManifestMismatch into a clean error line and exit code 1 instead of a traceback."""
+    and turn a ServerError, ManifestMismatch or ValueError into a clean error line and exit code 1 instead
+    of a traceback. Other exit codes come from the cmd_* function: 2 (a dyad failed), 130 (Ctrl-C)."""
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     parsers = {}
