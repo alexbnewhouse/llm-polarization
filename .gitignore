@@ -22,3 +22,6 @@ env/
 .idea/
 # secrets
 .env
+# pytest caches
+harness/.pytest_cache/
+.pytest_cache/
