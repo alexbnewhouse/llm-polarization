@@ -1,12 +1,15 @@
-model,depth,n_parallel,kv,ctx_total,load_s,streams_ok,cold_wall_s,cold_pp_tokens,cold_agg_prefill_tps,warm_wall_s,warm_gen_tokens,warm_agg_tps,warm_per_stream_tps,warm_prefill_per_turn,gtt_gib
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",8192,1,f16,9216,6.0,1,6.0,6638,1104.5,3.54,200,56.45,68.73,8.0,21.7
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",8192,2,f16,18432,6.0,2,12.2,13276,1088.9,5.36,358,66.84,52.19,8.0,22.0
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",8192,4,f16,36864,4.0,4,22.2,26552,1195.7,6.92,800,115.61,32.02,8.0,22.5
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",8192,8,f16,73728,6.0,8,45.0,53104,1180.8,11.94,1600,134.04,18.76,8.0,23.4
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,1,f16,33792,4.0,1,25.8,26535,1029.7,3.93,200,50.94,60.89,8.0,22.2
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,2,f16,67584,4.0,2,51.8,53070,1025.4,6.5,400,61.57,41.55,8.0,22.9
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,4,f16,135168,6.0,4,101.1,106140,1050.2,8.7,800,91.94,26.08,8.0,24.4
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,8,f16,270336,6.0,8,210.3,212280,1009.5,15.79,1600,101.34,14.8,8.0,27.2
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,4,q8_0,135168,6.0,4,115.4,106140,920.0,7.46,800,107.21,29.1,8.0,23.2
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,8,q8_0,270336,6.0,8,234.6,212280,904.7,13.75,1600,116.4,16.1,8.0,24.8
-"qwen3.6:35b-a3b (Q4_K_M, MTP)",32768,16,q8_0,540672,6.0,16,459.5,424566,924.0,33.53,3152,94.0,6.7,8.0,28.0
+model,run,depth,n_parallel,kv,ctx_total,load_s,streams_ok,cold_wall_s,cold_pp_tokens,cold_agg_prefill_tps,warm_wall_s,warm_gen_tokens,warm_agg_tps,warm_per_stream_tps,warm_prefill_per_turn,gtt_gib,note
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,8192,1,f16,9216,6.0,1,6.0,6638,1104.5,3.54,200,56.45,68.73,8.0,21.7,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,8192,2,f16,18432,6.0,2,12.2,13276,1088.9,5.36,358,66.84,52.19,8.0,22.0,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,8192,4,f16,36864,4.0,4,22.2,26552,1195.7,6.92,800,115.61,32.02,8.0,22.5,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,8192,8,f16,73728,6.0,8,45.0,53104,1180.8,11.94,1600,134.04,18.76,8.0,23.4,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,1,f16,33792,4.0,1,25.8,26535,1029.7,3.93,200,50.94,60.89,8.0,22.2,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,2,f16,67584,4.0,2,51.8,53070,1025.4,6.5,400,61.57,41.55,8.0,22.9,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,4,f16,135168,6.0,4,101.1,106140,1050.2,8.7,800,91.94,26.08,8.0,24.4,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,8,f16,270336,6.0,8,210.3,212280,1009.5,15.79,1600,101.34,14.8,8.0,27.2,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,4,q8_0,135168,6.0,4,115.4,106140,920.0,7.46,800,107.21,29.1,8.0,23.2,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,8,q8_0,270336,6.0,8,234.6,212280,904.7,13.75,1600,116.4,16.1,8.0,24.8,default server flags; no early EOS
+"qwen3.6:35b-a3b Q4_K_M (MoE, GQA)",2026-08-25,32768,16,q8_0,540672,6.0,16,459.5,424566,924.0,33.53,3152,94.0,6.7,8.0,28.0,default server flags; no early EOS
+"Olmo-3-7B-Instruct Q4_K_M (dense, MHA, SWA 3:1)",2026-09-08,32768,1,q8_0,33792,4.0,1,30.6,26535,867.9,7.1,200,28.17,29.7,5.0,58.1,--cache-ram 0 --no-jinja; ignore_eos; slot pinned
+"Olmo-3-7B-Instruct Q4_K_M (dense, MHA, SWA 3:1)",2026-09-08,32768,4,q8_0,135168,4.0,4,123.7,106140,858.2,19.32,800,41.41,11.23,5.0,67.4,--cache-ram 0 --no-jinja; ignore_eos; slot pinned
+"Olmo-3-7B-Instruct Q4_K_M (dense, MHA, SWA 3:1)",2026-09-08,32768,8,q8_0,270336,8.0,8,249.2,212280,851.9,38.55,1600,41.51,5.64,5.0,79.7,--cache-ram 0 --no-jinja; ignore_eos; slot pinned

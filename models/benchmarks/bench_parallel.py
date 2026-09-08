@@ -35,6 +35,7 @@ import argparse, json, os, subprocess, sys, threading, time, urllib.request
 FILLER = ("The delegate reviewed the proposal, noted objections from the "
           "committee, and asked that the record reflect a formal dissent. ")
 GTT = "/sys/class/drm/card1/device/mem_info_gtt_used"
+IGNORE_EOS = False   # set by --ignore-eos
 
 
 def prompt_of(tokens, seed):
@@ -58,9 +59,14 @@ def wait_ready(proc, port, timeout=600):
     return False
 
 
-def call(port, prompt, n_predict, cache):
-    body = json.dumps({"prompt": prompt, "n_predict": n_predict,
-                       "temperature": 0.7, "cache_prompt": cache}).encode()
+def call(port, prompt, n_predict, cache, slot):
+    # id_slot pins stream i to slot i for both rounds, exactly as the harness
+    # keeps one dialogue per slot. Without it the server picks a slot by prompt
+    # similarity, and a mismatch triggers a prompt-cache save that crashes on
+    # sliding-window models (Olmo-3, llama.cpp b10488; see results/).
+    body = json.dumps({"prompt": prompt, "n_predict": n_predict, "id_slot": slot,
+                       "temperature": 0.7, "cache_prompt": cache,
+                       "ignore_eos": IGNORE_EOS}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", data=body,
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
@@ -78,7 +84,7 @@ def run_round(port, prompts, n_predict, cache):
 
     def work(i):
         try:
-            res[i] = call(port, prompts[i], n_predict, cache)
+            res[i] = call(port, prompts[i], n_predict, cache, i)
         except Exception as e:                       # noqa: BLE001
             res[i] = {"error": str(e)[:120]}
 
@@ -101,11 +107,18 @@ def run_config(args, depth, npar, kv):
            # filter the parser rejects, so disable it; throughput is unaffected.
            "--no-jinja"] + args.extra
     print(f"\n### depth={depth} np={npar} kv={kv} ctx={ctx}", flush=True)
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if args.server_log:
+        slog = open(args.server_log, "ab")
+        slog.write(f"\n===== {time.strftime('%Y-%m-%dT%H:%M:%S')} {' '.join(cmd)}\n".encode())
+        slog.flush()
+    else:
+        slog = subprocess.DEVNULL
+    proc = subprocess.Popen(cmd, stdout=slog, stderr=subprocess.STDOUT)
     rec = {"label": args.label, "model": os.path.basename(args.model),
            "llama_build": os.path.basename(os.path.dirname(args.lcpp)),
            "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-           "depth": depth, "n_parallel": npar, "kv": kv, "ctx_total": ctx, "gen": args.gen}
+           "depth": depth, "n_parallel": npar, "kv": kv, "ctx_total": ctx, "gen": args.gen,
+           "ignore_eos": IGNORE_EOS, "extra": " ".join(args.extra)}
     try:
         t_load = time.time()
         if not wait_ready(proc, args.port):
@@ -171,9 +184,17 @@ def main():
     ap.add_argument("--port", type=int, default=8199)
     ap.add_argument("--gen", type=int, default=200, help="tokens per turn; 200 matches the study design")
     ap.add_argument("--extra", default="", help="extra llama-server flags, space-separated")
+    ap.add_argument("--ignore-eos", action="store_true",
+                    help="force every stream to generate the full --gen tokens. Olmo-3 stops early on the "
+                         "filler prompt, which leaves slots idle and understates aggregate throughput; "
+                         "qwen3.6 never stopped early, so this makes the two runs comparable.")
+    ap.add_argument("--server-log", default=None,
+                    help="append llama-server stdout/stderr here (default: discard). Use it when a config fails.")
     args = ap.parse_args()
     args.model = os.path.expanduser(args.model)
     args.extra = args.extra.split()
+    global IGNORE_EOS
+    IGNORE_EOS = args.ignore_eos
     plan = parse_plan(args.plan)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

@@ -1,0 +1,12 @@
+model=/home/alex/llm-serving/gguf/Olmo-3-7B-Instruct-Q4_K_M.gguf
+label=olmo3-7b-instruct-q4km
+llama-server=/home/alex/.local/llamacpp/llama-b10488/llama-server
+plan=[(32768, 8, 'q8_0'), (32768, 16, 'q8_0')]
+
+### depth=32768 np=8 kv=q8_0 ctx=270336
+   agg=28.81 tok/s  per-stream=7.03  gtt=79.5GiB  ok=8/8
+
+### depth=32768 np=16 kv=q8_0 ctx=540672
+   agg=0.0 tok/s  per-stream=None  gtt=100.1GiB  ok=0/16
+
+PARALLEL BENCH COMPLETE

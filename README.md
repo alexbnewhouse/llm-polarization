@@ -46,8 +46,9 @@ data/                            experiment output, git-ignored
 - Model arm decided: qwen3.6:35b-a3b, gpt-oss:20b, glm-4.7-flash,
   Olmo-3-7B-Instruct. Olmo is the only arm with public training data and is
   not to be cut under schedule pressure.
-- Compute budget measured for qwen3.6 and Olmo at the operating point; the
-  other two arms are still extrapolated. See `models/RUN_APPROACH.md`.
+- Compute budget measured for qwen3.6 (116.4 tok/s, 2.15 days per arm) and
+  Olmo-3-7B (41.5 tok/s, 6.0 days per arm) at the operating point; the other
+  two arms are still extrapolated. See `models/RUN_APPROACH.md`.
 - Pipeline: nothing written yet. Requirements in `harness/README.md`.
 - Pilot 2026-09-18, baseline W5, waves W7 to W9, checkpoint 2026-10-19.
 

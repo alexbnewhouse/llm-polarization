@@ -1,0 +1,44 @@
+assert at line 182 of 252
+# llama-server b10488 crash, Olmo-3-7B-Instruct Q4_K_M, -np 8 -c 270336 -ctk q8_0 -ctv q8_0 -fa on, default --cache-ram.
+# Triggered in the warm round of bench_parallel.py (2026-09-08 11:15 MDT). Excerpt of the server log around the abort.
+
+4.03.742.120 I slot print_timing: id  7 | task 0 | prompt processing, n_tokens =  21103, progress = 0.80, t = 235.71 s / 89.53 tokens per second
+4.06.521.030 I slot print_timing: id  7 | task 0 | prompt processing, n_tokens =  23151, progress = 0.87, t = 238.49 s / 97.07 tokens per second
+4.09.389.277 I slot print_timing: id  7 | task 0 | prompt processing, n_tokens =  25199, progress = 0.95, t = 241.36 s / 104.41 tokens per second
+4.10.843.034 I slot print_timing: id  7 | task 0 | prompt processing, n_tokens =  26019, progress = 0.98, t = 242.81 s / 107.16 tokens per second
+4.11.423.109 I slot print_timing: id  7 | task 0 | prompt processing, n_tokens =  26531, progress = 1.00, t = 243.39 s / 109.01 tokens per second
+4.12.255.628 I slot print_timing: id  7 | task 0 | prompt eval time =  244222.24 ms / 26535 tokens (    9.20 ms per token,   108.65 tokens per second)
+4.12.255.635 I slot print_timing: id  7 | task 0 |        eval time =       0.00 ms /     1 tokens (    0.00 ms per token,     0.00 tokens per second)
+4.12.255.636 I slot print_timing: id  7 | task 0 |       total time =  244222.24 ms / 26536 tokens
+4.12.255.638 I slot print_timing: id  7 | task 0 |    graphs reused =          1
+4.12.256.545 I slot      release: id  7 | task 0 | stop processing: n_tokens = 26535, truncated = 0
+4.12.289.777 I slot get_availabl: id  7 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 1.000
+4.12.289.842 I slot launch_slot_: id  7 | task 114 | processing task, is_child = 0
+/home/runner/work/llama.cpp/llama.cpp/ggml/src/ggml-backend.cpp:348: GGML_ASSERT(tensor->data != NULL && "tensor not allocated") failed
+⚠️ warning: The current terminal doesn't support styling.  Styled output might not appear as expected.
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <ima:enforcing>
+  <ima:ignore>
+0x00007ff7b7a82312 in __syscall_cancel_arch () from /lib64/libc.so.6
+#0  0x00007ff7b7a82312 in __syscall_cancel_arch () from /lib64/libc.so.6
+#1  0x00007ff7b7a7652c in __internal_syscall_cancel () from /lib64/libc.so.6
+#2  0x00007ff7b7a76574 in __syscall_cancel () from /lib64/libc.so.6
+#3  0x00007ff7b7ae614f in wait4 () from /lib64/libc.so.6
+#4  0x00007ff7b7f4fcdb in ggml_print_backtrace () from /home/alex/.local/llamacpp/llama-b10488/libggml-base.so.0
+#5  0x00007ff7b7f4fe72 in ggml_abort () from /home/alex/.local/llamacpp/llama-b10488/libggml-base.so.0
+#6  0x00007ff7b7f68aba in ggml_backend_tensor_get () from /home/alex/.local/llamacpp/llama-b10488/libggml-base.so.0
+#7  0x00007ff7b6f002f9 in llama_io_write_host::~llama_io_write_host() () from /home/alex/.local/llamacpp/llama-b10488/libllama.so.0
+#8  0x00007ff7b6ef4a77 in llama_context::state_seq_get_data(int, unsigned char*, unsigned long, unsigned int) () from /home/alex/.local/llamacpp/llama-b10488/libllama.so.0
+#9  0x00007ff7b819f34f in server_slot::prompt_save(server_prompt_cache&) const () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#10 0x00007ff7b81b1641 in server_context_impl::process_single_task(server_task&&, bool) () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#11 0x00007ff7b8155aa5 in server_queue::process_new_tasks(bool) () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#12 0x00007ff7b8155fa8 in server_queue::start_loop(long) () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#13 0x00007ff7b80eed54 in llama_server(common_params&, int, char**) () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#14 0x00007ff7b80efe8f in llama_server(int, char**) () from /home/alex/.local/llamacpp/llama-b10488/libllama-server-impl.so
+#15 0x00007ff7b7a0a681 in __libc_start_call_main () from /lib64/libc.so.6
+#16 0x00007ff7b7a0a798 in __libc_start_main_impl () from /lib64/libc.so.6
+#17 0x00005580ebe54295 in _start ()
+[Inferior 1 (process 176088) detached]
+
+===== 2026-09-08T11:11:21 /home/alex/.local/llamacpp/llama-b10488/llama-server -m /home/alex/llm-serving/gguf/Olmo-3-7B-Instruct-Q4_K_M.gguf --host 127.0.0.1 --port 8199 -ngl 999 -fa on -np 8 -c 270336 -ctk q8_0 -ctv q8_0 --cache-reuse 256 --no-jinja

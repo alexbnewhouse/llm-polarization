@@ -23,7 +23,10 @@ in `models/RUN_APPROACH.md` can be re-derived from raw numbers.
 | `bench_ollama*.jsonl`, `bench_ollama*.log`, `chain.log`, `bench_nohup.log` | 2026-08-24 | ollama/ROCm passes of the same sweep. |
 | `olmo_bench.jsonl` | 2026-08-25 | `llama-bench` for Olmo-3-7B-Instruct Q4_K_M, f16 KV: 48.8 tok/s at d0, 27.4 at d8k, **18.1 at d32k** single stream. This is the number the first compute budget extrapolated from. |
 | `parallel_results.jsonl`, `parallel_bench.log` | 2026-08-25 | `bench_parallel.py` on qwen3.6:35b-a3b: depth x slots x KV type. Peak **116.4 tok/s aggregate at 32k, np=8, q8_0**. Also shows np=16 is slower than np=8. Flattened to `models/parallel_scaling.csv`. |
-| `olmo3_7b_parallel.jsonl`, `olmo3_7b_parallel.log` | 2026-09-08 | `bench_parallel.py` on Olmo-3-7B-Instruct Q4_K_M at 32k depth, q8_0 KV, np = 1/4/8/16. The re-measurement at the operating point. See `models/RUN_APPROACH.md`. |
+| `olmo3_7b_parallel.jsonl`, `olmo3_7b_parallel.log` | 2026-09-08 | **The re-measurement at the operating point.** `bench_parallel.py` on Olmo-3-7B-Instruct Q4_K_M at 32k depth, q8_0 KV, np = 1/4/8, `--cache-ram 0`, `--ignore-eos`, slots pinned. 28.2 / 41.4 / 41.5 tok/s aggregate. See `models/RUN_APPROACH.md`. |
+| `olmo3_7b_parallel_run1.jsonl`, `_run1.log` | 2026-09-08 | First attempt, default server flags: np=1 and np=4 fine (23.4 / 34.8 tok/s, Olmo hit EOS early so idle slots understate the aggregate); np=8 and np=16 crashed in the warm round. |
+| `olmo3_7b_np8_prompt_cache_crash.log` | 2026-09-08 | Server log excerpt of that crash: `GGML_ASSERT(tensor->data != NULL)` in `server_slot::prompt_save`, the host prompt cache trying to serialize the sliding-window KV cache. |
+| `olmo3_7b_parallel_run2.jsonl`, `_run2.log` | 2026-09-08 | np=8 and np=16 with `--cache-ram 0`: np=8 works (28.8 tok/s with early EOS); np=16 needs ~100 GiB GTT and was OOM-killed by the kernel along with two resident tiers. |
 
 ## Rerunning
 
