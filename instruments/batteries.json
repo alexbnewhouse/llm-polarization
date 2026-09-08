@@ -1,0 +1,31 @@
+{
+  "_note": "Placeholder wording for the de Jong (2024) categories. The US-adaptation task replaces text, not ids or scales.",
+  "items": [
+    {"id": "ideo_gender_racial_equality", "battery": "ideological", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): the government should do more to advance gender and racial equality. Answer with a single number."},
+    {"id": "ideo_immigration", "battery": "ideological", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): immigration policy should be made more restrictive. Answer with a single number."},
+    {"id": "ideo_redistribution", "battery": "ideological", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): the government should redistribute income from the better-off to the less well-off. Answer with a single number."},
+    {"id": "ideo_multiculturalism", "battery": "ideological", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): multiculturalism makes the country a better place to live. Answer with a single number."},
+    {"id": "ideo_gun_control", "battery": "ideological", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): gun laws should be made stricter. Answer with a single number."},
+    {"id": "therm_dem_voters", "battery": "thermometer", "scale": {"min": 0, "max": 10},
+     "text": "On a feeling thermometer from 0 (very cold) to 10 (very warm), how do you feel about Democratic voters? Answer with a single number."},
+    {"id": "therm_dem_politicians", "battery": "thermometer", "scale": {"min": 0, "max": 10},
+     "text": "On a feeling thermometer from 0 (very cold) to 10 (very warm), how do you feel about Democratic politicians? Answer with a single number."},
+    {"id": "therm_rep_voters", "battery": "thermometer", "scale": {"min": 0, "max": 10},
+     "text": "On a feeling thermometer from 0 (very cold) to 10 (very warm), how do you feel about Republican voters? Answer with a single number."},
+    {"id": "therm_rep_politicians", "battery": "thermometer", "scale": {"min": 0, "max": 10},
+     "text": "On a feeling thermometer from 0 (very cold) to 10 (very warm), how do you feel about Republican politicians? Answer with a single number."},
+    {"id": "therm_independents", "battery": "thermometer", "scale": {"min": 0, "max": 10},
+     "text": "On a feeling thermometer from 0 (very cold) to 10 (very warm), how do you feel about Independent voters? Answer with a single number."},
+    {"id": "agree_democracy", "battery": "agreement", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): democracy is the best form of government even when it produces outcomes I dislike. Answer with a single number."},
+    {"id": "agree_protest_rights", "battery": "agreement", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): people should be free to protest against the government, even in ways I find objectionable. Answer with a single number."},
+    {"id": "agree_cross_partisan", "battery": "agreement", "scale": {"min": 1, "max": 5},
+     "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): I am comfortable discussing politics with people who hold the opposite partisan view. Answer with a single number."}
+  ]
+}
