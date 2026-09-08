@@ -77,8 +77,11 @@ context before the run starts.
 | `seeker`, `mentor` | `{url, gguf_path?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's. |
 
-`concurrency` and `data_dir` are operational: changing them and resuming the same `run_id` is allowed.
-Everything else in the table is run-affecting, and changing it means a new `run_id`.
+`concurrency`, `data_dir` and `gguf_py_path` are operational: changing them and resuming the same
+`run_id` is allowed. What a resume actually compares — `RUN_AFFECTING_CONFIG` in `harness/log.py` — is
+exactly `seeker`, `mentor`, `judge`, `generation` (the whole block, so `generation.timeout` is compared
+too, even though it changes no prompt), `run_seed`, `batteries` and `now`; changing any of those means a
+new `run_id`.
 
 ## Retries, attempts and which rows count
 

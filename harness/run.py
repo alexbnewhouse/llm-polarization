@@ -93,7 +93,7 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
 CONTEXT_HEADROOM = 2048
 
 
-def _context_budget(handle: AgentHandle, cfg: dict, props: dict, max_n_turns: int) -> tuple[str, bool | None, str]:
+def _context_budget(cfg: dict, props: dict, max_n_turns: int) -> tuple[str, bool | None, str]:
     """Does the longest dialogue in the manifest fit in one slot's context? A turn is two messages and each
     can run to n_predict tokens, so a dyad needs max_n_turns * 2 * n_predict plus headroom for the persona
     and the template's own wrapping. llama.cpp does not shift context by default: a slot that runs out stops
@@ -148,7 +148,7 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
                         f"gguf {handle.template.sha256[:12]}) -- expected for an arm served with "
                         "--chat-template; template parity is the gate"))
     if max_n_turns:
-        results.append(_context_budget(handle, cfg, props, max_n_turns))
+        results.append(_context_budget(cfg, props, max_n_turns))
     if handle.name == SEEKER:
         try:
             render(handle.template, FIXTURE_MESSAGES, now=now)
@@ -256,13 +256,16 @@ def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
     return out
 
 
-def cmd_check(cfg: dict, manifest_path: str | None = None) -> int:
-    """Build every configured agent (the judge too, when `judge.url` is set: its output is grammar-forced,
-    so a mis-rendered judge prompt still yields well-formed but meaningless scores) and print each one's
-    check_agent rows. Returns 0 iff nothing FAILed; `warn` rows are printed and do not block. A role whose
-    server is unreachable prints a FAIL health line instead of letting build_agent's ServerError traceback
-    out, since a down server is exactly the failure `check` exists to report. With --manifest, also checks
-    that the manifest's longest dialogue fits in a slot's context."""
+def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...] | None = None) -> int:
+    """Build every requested agent and print each one's check_agent rows. `roles` defaults to seeker,
+    mentor, and the judge when `judge.url` is set: its output is grammar-forced, so a mis-rendered judge
+    prompt still yields well-formed but meaningless scores, which is worth catching here too. `run` passes
+    `(SEEKER, MENTOR)` explicitly so a down judge server does not block a dialogue run -- the judge is
+    checked by `check` on its own (this default) and again by `score` before it scores anything. Returns 0
+    iff nothing FAILed; `warn` rows are printed and do not block. A role whose server is unreachable prints
+    a FAIL health line instead of letting build_agent's ServerError traceback out, since a down server is
+    exactly the failure `check` exists to report. With --manifest, also checks that the manifest's longest
+    dialogue fits in a slot's context."""
     ok_all = True
     max_n_turns = None
     if manifest_path:
@@ -270,7 +273,8 @@ def cmd_check(cfg: dict, manifest_path: str | None = None) -> int:
     if cfg[SEEKER].get("url") == cfg[MENTOR].get("url"):
         print(f"WARN seeker and mentor share {cfg[SEEKER].get('url')}: both pin the same slot, so every "
               "turn would evict the other agent's KV cache. `run` refuses this.")
-    roles = [SEEKER, MENTOR] + (["judge"] if (cfg.get("judge") or {}).get("url") else [])
+    if roles is None:
+        roles = [SEEKER, MENTOR] + (["judge"] if (cfg.get("judge") or {}).get("url") else [])
     for role in roles:
         try:
             handle, entry = build_agent(role, cfg[role], 0, cfg)
@@ -318,13 +322,15 @@ def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
 def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     """Run the `run` subcommand: check the servers, write/verify the run manifest, plan the outstanding
     (dyad, attempt) work, and execute it across a thread pool with one slot per worker. Returns 0 when
-    every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it, 1 when it refused to start."""
+    every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it, 1 when it refused to start.
+    Pre-flight checks only seeker and mentor -- a dialogue run never talks to the judge, so a down judge
+    server must not block one; `check` and `score` are what verify the judge."""
     if cfg[SEEKER]["url"] == cfg[MENTOR]["url"]:
         print(f"error: seeker.url and mentor.url are both {cfg[SEEKER]['url']}; both agents pin the same "
               "slot, so they would evict each other's KV cache every turn. Serve them separately.",
               file=sys.stderr)
         return 1
-    if cmd_check(cfg, manifest_path) != 0:
+    if cmd_check(cfg, manifest_path, roles=(SEEKER, MENTOR)) != 0:
         print("check failed; not running", file=sys.stderr)
         return 1
     # check built its own handles and threw them away; build fresh ones so the manifest records /props as
@@ -415,16 +421,27 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
 def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     """Run the `survey` subcommand: re-administer one survey phase for every complete dyad in a run,
     rebuilding the transcript from turns.jsonl for the post phase. Only the mentor is built: the seeker's
-    server has nothing to do with a re-administration and need not even be running."""
+    server has nothing to do with a re-administration and need not even be running. Refuses if the live
+    `batteries` file no longer hashes to what the run's manifest recorded: re-administering with an edited
+    instrument is a different measurement, silently mislabelled under the same battery/item ids, and needs
+    a new run_id rather than a `readministered` row that looks comparable to the original but is not."""
     mentor, entry = _agents(cfg, roles=(MENTOR,))[MENTOR]
     paths = run_paths(cfg["data_dir"], run_id)
-    _verify_identity(_load_manifest(paths), {MENTOR: entry}, roles=(MENTOR,))
+    manifest = _load_manifest(paths)
+    _verify_identity(manifest, {MENTOR: entry}, roles=(MENTOR,))
+    live_sha256 = log.sha256_file(Path(cfg["batteries"]))
+    manifest_sha256 = manifest["batteries"]["sha256"]
+    if live_sha256 != manifest_sha256:
+        print(f"error: {cfg['batteries']} now hashes to {live_sha256[:12]} but manifest.json records "
+              f"{manifest_sha256[:12]}; re-administering with a changed instrument is a different "
+              "measurement and needs a new run_id", file=sys.stderr)
+        return 1
     items = load_batteries(cfg["batteries"])
     complete = latest_complete_attempts(read_jsonl(paths.status))
     dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
     turns = read_jsonl(paths.turns)
     runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, 0), JsonlWriter(paths.surveys),
-                          _settings(cfg), batteries_sha256=log.sha256_file(cfg["batteries"]))
+                          _settings(cfg), batteries_sha256=live_sha256)
     n = 0
     for dyad_id, attempt in complete.items():
         spec = DyadSpec.from_row(dyads[(dyad_id, attempt)])
@@ -535,9 +552,12 @@ def _git_commit() -> str:
 
 
 def _git_dirty() -> bool:
-    """True when the harness's repository has uncommitted changes, so harness_commit does not fully
-    describe the code that ran. Recorded, not refused: the pilot may legitimately run from a dirty tree."""
-    out = _git(["status", "--porcelain"], HARNESS_DIR)
+    """True when tracked files under harness/ or instruments/ have uncommitted modifications, so
+    harness_commit does not fully describe the code (or instrument) that ran. Recorded, not refused: the
+    pilot may legitimately run from a dirty tree. Untracked files are not considered: every run writes its
+    own un-ignored data/<run_id>/manifest.json, and a plain `git status --porcelain` would flag that as
+    dirt on essentially every run. Run output under data/ is not scoped in at all, tracked or not."""
+    out = _git(["status", "--porcelain", "--untracked-files=no", "--", "harness", "instruments"], HARNESS_DIR)
     return bool(out)
 
 

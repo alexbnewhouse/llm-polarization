@@ -57,6 +57,12 @@ The field-by-field data dictionary is `data/README.md`, derived from the code. I
 | `scores.jsonl` | (turn, agent, metric) | judge hash, scoring commit, seed, judge prompt hash, score, rationale, raw text |
 | `status.jsonl` | status transition | `started` / `complete` / `failed` + reason. Resume and analysis both read it |
 
+`surveys.jsonl`'s `origin` is `run` for the pass the dialogue run itself makes and `readministered` for a
+later `harness survey` pass. A re-administration refuses (`error:`, exit 1) if the live `batteries` file's
+sha256 no longer matches `manifest.json` → `batteries.sha256`: a changed instrument is a different
+measurement, and mixing its rows under the same battery/item ids as the original pass would be silently
+wrong. Use a new `run_id` against the new instrument instead.
+
 If you re-run the same `run_id` with a changed run-affecting config, or against a model or template whose
 hash differs from the manifest's, the harness stops with a `ManifestMismatch` rather than writing over or
 into the record. Use a new `run_id`.
@@ -130,7 +136,9 @@ check a reviewer will actually run.
    `manifest.json`. If you hold the GGUF, `sha256sum <model>.gguf` must equal it too.
 4. Confirm the code: `git checkout <manifest.harness_commit>` in this repository. Check
    `manifest.harness_dirty` is `false`; if it is `true`, the commit does not fully describe the code
-   that ran and the appendix has to say so.
+   that ran and the appendix has to say so. `harness_dirty` covers tracked files under `harness/` and
+   `instruments/` only (`git status --porcelain --untracked-files=no -- harness instruments`) — it is not
+   affected by run output, including the run's own un-ignored `data/<run_id>/manifest.json`.
 5. **Rebuild any prompt and check its hash.** This is the real test. For turn `t`, agent `a`:
    - Take the messages before that generation from `turns.jsonl`, in order (sort by `turn`, seeker
      before mentor within a turn — `harness.transcript.message_order`).
@@ -269,7 +277,8 @@ so anything still open is closed before the last wave rather than after.
 
 **Every run in the paper**
 
-- [ ] `manifest.harness_commit` is a real commit and `manifest.harness_dirty` is `false`.
+- [ ] `manifest.harness_commit` is a real commit and `manifest.harness_dirty` is `false` (it covers
+      tracked files under `harness/` and `instruments/` only, and is not affected by run output).
 - [ ] `manifest.build_info` matches the llama.cpp build named in the methods section.
 - [ ] Model SHA-256s in the manifest match the GGUF files in the archive.
 - [ ] The `run_seed` is stated in the paper.
@@ -335,3 +344,20 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
 - **Test-level minors** left as they are: `test_cache_warning_true` asserts only the second seeker row,
   the error-row test does not assert `prompt_n is None`, and one docstring says "if None" where the code
   means "if falsy".
+- **The `Message` docstring says "turn message"** (`harness/transcript.py`) for what is actually one
+  agent's utterance within a turn — a turn is the seeker's line and the mentor's reply together. Left as
+  worded: it does not affect what the class holds or how it is used.
+- **`import os, sys` on one line** in `harness/templates.py`. A style nit; both names are used nearby and
+  splitting the import onto two lines changes nothing about the code.
+- **`_gguf_module` mutates `sys.path`** for the life of the process (`harness/templates.py`), once per
+  unique `gguf_py_path`. Acceptable here: the harness is a single-purpose CLI invocation, not a library
+  loaded into a longer-lived process where that mutation could collide with something else.
+- **Task 4's RED-phase evidence was prose, not pasted output.** The fix-wave record describes what the
+  failing test showed rather than including its console output verbatim. Left as is: the passing
+  GREEN-phase run is what a reviewer checks today, and it is pasted in full.
+- **The redundant `pass` in `ServerError`** (`harness/client.py`). Its docstring already makes the class
+  body non-empty; the `pass` is a no-op left over from before the docstring was added.
+- **`run.py` is broad** (about 600 lines) but cohesive as planned: it is the one place that owns the
+  check/run/survey/score subcommands and the plumbing (`RunContext`, `_agents`, `_verify_identity`,
+  provenance capture) they share. Splitting it was considered and rejected — the shared machinery would
+  then cross a module boundary for no isolation gained.

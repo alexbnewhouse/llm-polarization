@@ -35,8 +35,10 @@ class FakeClient:
             while common < min(len(prev), len(prompt)) and prev[common] == prompt[common]:
                 common += 1
         prompt_n = len(prompt[common:].split()) if prev else len(prompt.split())
+        cached_n = len(prompt[:common].split())     # words in the matched leading prefix: 0 with no prev
         self._last_prompt[slot] = prompt
         reply = self.replies[(len(self.calls) - 1) % len(self.replies)]
         return Completion(text=reply, finish_reason="stop", prompt_n=prompt_n,
                           predicted_n=len(reply.split()),
-                          timings={"prompt_n": prompt_n, "predicted_n": len(reply.split())}, raw={})
+                          timings={"prompt_n": prompt_n, "predicted_n": len(reply.split())}, raw={},
+                          truncated=False, tokens_evaluated=prompt_n, tokens_cached=cached_n)

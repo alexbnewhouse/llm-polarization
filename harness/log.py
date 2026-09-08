@@ -29,8 +29,9 @@ class JsonlWriter:
     """Append-only writer for one JSONL file, safe to share across the run's worker threads."""
 
     def __init__(self, path: Path):
-        """Take the path and the lock that serialises this process's writers; the file itself is opened
-        per write, and only when there is a line to add."""
+        """Take the path and create a lock private to this instance, serialising writes to this one file
+        only -- a second JsonlWriter on a different path has its own lock and is unaffected. The file
+        itself is opened per write, and only when there is a line to add."""
         self.path = Path(path)
         self._lock = threading.Lock()
 

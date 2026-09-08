@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 import jinja2
@@ -222,6 +223,30 @@ def test_main_check_reports_dead_server_without_traceback(tmp_path, monkeypatch,
     assert "FAIL health" in out
 
 
+def test_run_ignores_a_down_judge_but_check_still_reports_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path.split("/")[-1])
+    def factory(url, timeout=None):
+        c = FakeClient(['{"answer": 2}', "line"])
+        if url == "http://j":
+            def down():
+                raise ServerError("judge is down")
+            c.props = down
+        else:
+            c.props = lambda: {"model_path": f"/{url[7:]}.gguf", "total_slots": 2, "build_info": "b",
+                               "model_alias": url[7:], "default_generation_settings": {}}
+        return c
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    # run only talks to seeker/mentor pre-flight, so a dead judge does not block it.
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    # check on its own still covers the judge and reports it as down.
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    assert "FAIL health judge" in capsys.readouterr().out
+
+
 def test_main_run_manifest_mismatch_returns_1_without_raising(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
     monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path.split("/")[-1])
@@ -253,6 +278,32 @@ def test_model_sha256_cache_hit_is_keyed_by_path_size_and_mtime_ns(tmp_path):
     f.write_bytes(b"xyz")
     st = f.stat(); os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
     assert R.model_sha256_cached(str(f), cache) == log.sha256_text("xyz")
+
+
+def _git_repo_with_one_tracked_harness_file(tmp_path):
+    """A throwaway git repo, isolated from the operator's real git identity/signing config, with one
+    commit tracking harness/x.py -- the fixture _git_dirty's new scoping is tested against."""
+    repo = tmp_path / "repo"
+    (repo / "harness").mkdir(parents=True)
+    (repo / "harness" / "x.py").write_text("x = 1\n")
+    run = lambda *args: subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    run("init", "-q")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "test")
+    run("config", "commit.gpgsign", "false")
+    run("add", "harness/x.py")
+    run("commit", "-q", "-m", "init")
+    return repo
+
+
+def test_git_dirty_ignores_untracked_but_flags_tracked_source_changes(tmp_path, monkeypatch):
+    repo = _git_repo_with_one_tracked_harness_file(tmp_path)
+    monkeypatch.setattr(R, "HARNESS_DIR", repo)
+    assert R._git_dirty() is False                              # clean tree
+    (repo / "harness" / "manifest.json").write_text("{}")       # stands in for data/<run_id>/manifest.json
+    assert R._git_dirty() is False                               # untracked: not flagged
+    (repo / "harness" / "x.py").write_text("x = 2\n")            # a tracked source file, modified
+    assert R._git_dirty() is True
 
 
 def test_validate_manifest_rows_rejects_what_would_mislabel_or_break_a_wave():
@@ -395,6 +446,23 @@ def test_check_reports_the_context_budget_for_the_manifest(tmp_path, monkeypatch
     monkeypatch.setattr(R, "LlamaClient", small_ctx)
     assert R.main(["check", "--config", str(cfg), "--manifest", str(man)]) == 1
     assert "FAIL context_budget" in capsys.readouterr().out
+
+
+def test_survey_refuses_when_the_instrument_changed(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    original = json.loads((REPO / "instruments" / "batteries.json").read_text())
+    original["items"][0]["text"] += " (edited wording)"
+    modified = tmp_path / "batteries-modified.json"
+    modified.write_text(json.dumps(original))
+    cfg2 = write_cfg(tmp_path, batteries=str(modified))
+    assert R.main(["survey", "--config", str(cfg2), "--run-id", "r1", "--phase", "post"]) == 1
+    assert "error:" in capsys.readouterr().err
+    # nothing was written for the refused re-administration
+    assert not any(s["origin"] == "readministered" for s in log.read_jsonl(log.run_paths(tmp_path / "data", "r1").surveys))
 
 
 def test_score_refuses_when_the_judge_fails_its_check(tmp_path, monkeypatch, capsys):

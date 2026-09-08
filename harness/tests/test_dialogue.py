@@ -92,6 +92,17 @@ def test_provenance_fields(tmp_path):
     assert (r["temperature"], r["top_p"], r["n_predict"]) == (0.7, 0.95, 300)
 
 
+def test_turn_row_carries_context_accounting_fields(tmp_path):
+    runner, sc, mc, _ = make_runner(tmp_path)
+    runner.run(spec(n_turns=2), attempt=1)
+    rows = log.read_jsonl(tmp_path / "turns.jsonl")
+    assert all(r["truncated"] is False for r in rows)
+    assert all(r["tokens_evaluated"] == r["prompt_n"] for r in rows)
+    seeker_rows = [r for r in rows if r["agent"] == SEEKER]
+    assert seeker_rows[0]["tokens_cached"] == 0                 # no previous prompt on the slot yet
+    assert seeker_rows[1]["tokens_cached"] > 0                  # the second turn reuses the cached prefix
+
+
 def test_cache_warning_is_false_when_cache_holds(tmp_path):
     runner, _, _, _ = make_runner(tmp_path)
     runner.run(spec("reinforced", n_turns=3), attempt=1)
