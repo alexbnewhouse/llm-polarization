@@ -24,8 +24,8 @@ so days = 21.6e6 / (aggregate tok/s) / 86,400 = 250 / tok/s.
 | Arm | tok/s at 32k, np=8, q8_0 | Days per arm | Basis |
 |---|---|---|---|
 | qwen3.6:35b-a3b | 116.4 | 2.15 | measured 2026-08-25 |
-| gpt-oss:20b | ~98 | ~2.6 | extrapolated: 42.9 single-stream x 2.29 |
-| glm-4.7-flash | ~60 | ~4.5 | extrapolated: 26.4 single-stream x 2.29 |
+| gpt-oss:20b | 83.4 | 3.0 | **measured 2026-09-08** on the HIP build (no Vulkan path for MXFP4); was ~98 / ~2.6 extrapolated |
+| glm-4.7-flash | 29.1 | 8.6 | **measured 2026-09-08** on the HIP build (Vulkan 25.9); was ~60 / ~4.5 extrapolated. Weakest arm; prefill ~250 tok/s |
 | Olmo-3-7B-Instruct | 41.5 | 6.0 | **measured 2026-09-08** (was ~41 / ~6.3 days extrapolated from 18.1 x 2.29; single-stream is faster than assumed, parallel factor only 1.47x, the two cancel) |
 
 The 2026-08-25 four-arm total was about 15.6 days against 21 allocated to the
@@ -42,12 +42,12 @@ still inside the window once the pilot and baseline are excluded.
 
 ## Caveats
 
-- Only qwen3.6 and (since 2026-09-08) Olmo are measured at the operating
-  point. The 2.29x parallel factor was fitted on one MoE model; Olmo, a dense
-  full-attention 7B, only reaches 1.47x, and np=4 already delivers all of it.
-  gpt-oss:20b and glm-4.7-flash remain extrapolations; both are MoE with
-  grouped-query attention so 2.29x is more plausible for them, but measure
-  them (eight minutes each) before freezing N.
+- All four arms are measured at the operating point as of 2026-09-08. The
+  four-arm total is about 19.8 days at 20 turns (fits the 21-day wave window)
+  and about 40 at 40 turns (does not; dropping glm-4.7-flash gives about 22).
+  Parallel factors at np=8: qwen3.6 2.29x, gpt-oss 1.6x, Olmo 1.47x, glm
+  1.29x. The ollama blobs for gpt-oss and glm do not load in upstream
+  llama.cpp; the ggml-org GGUFs do. gpt-oss needs the HIP build.
 - The single largest lever is **KV cache reuse**: a turn at 32k prefills a
   handful of tokens, not 32,768. If the harness loses it, every number here
   is wrong by about three orders of magnitude. Log `prompt_n` on every call.

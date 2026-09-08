@@ -1,0 +1,15 @@
+model=/home/alex/llm-serving/gguf/gpt-oss-20b-MXFP4.gguf
+label=gpt-oss-20b-mxfp4
+llama-server=/home/alex/.local/llamacpp/src/build-hip/bin/llama-server
+plan=[(32768, 1, 'q8_0'), (32768, 4, 'q8_0'), (32768, 8, 'q8_0')]
+
+### depth=32768 np=1 kv=q8_0 ctx=33792
+   agg=52.18 tok/s  per-stream=53.63  gtt=62.1GiB  ok=1/1
+
+### depth=32768 np=4 kv=q8_0 ctx=135168
+   agg=82.54 tok/s  per-stream=21.13  gtt=63.5GiB  ok=4/4
+
+### depth=32768 np=8 kv=q8_0 ctx=270336
+   agg=83.41 tok/s  per-stream=10.65  gtt=65.4GiB  ok=8/8
+
+PARALLEL BENCH COMPLETE

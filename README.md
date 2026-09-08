@@ -49,9 +49,10 @@ LICENSE, CITATION.cff            MIT; cite the repository as in CITATION.cff
 - Model arm decided: qwen3.6:35b-a3b, gpt-oss:20b, glm-4.7-flash,
   Olmo-3-7B-Instruct. Olmo is the only arm with public training data and is
   not to be cut under schedule pressure.
-- Compute budget measured for qwen3.6 (116.4 tok/s, 2.15 days per arm) and
-  Olmo-3-7B (41.5 tok/s, 6.0 days per arm) at the operating point; the other
-  two arms are still extrapolated. See `models/RUN_APPROACH.md`.
+- Compute budget measured for all four arms at the operating point: qwen3.6
+  116.4 tok/s (2.15 days per arm), gpt-oss:20b 83.4 (3.0), Olmo-3-7B 41.5
+  (6.0), glm-4.7-flash 29.1 (8.6). About 19.8 days for four arms at 20 turns.
+  See `models/RUN_APPROACH.md`.
 - Pipeline: `harness/` runs dialogues, surveys and scoring (unit-tested; live-tested on the desktop 5080). No pilot data yet.
 - Reproducibility standard: `docs/REPRODUCIBILITY.md`. Same seed does not mean same tokens under
   prompt caching and continuous batching; what is and is not reproducible is written down there,

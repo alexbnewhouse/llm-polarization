@@ -42,10 +42,27 @@ llama-server -m <gguf> -ngl 999 -fa on \
 | Olmo-3-7B-Instruct | **4** | **41.4** | 11.2 | 858 | 67 GiB |
 | Olmo-3-7B-Instruct | 8 | 41.5 | 5.6 | 852 | 80 GiB |
 | Olmo-3-7B-Instruct | 16 | crashed | | 803 | 100 GiB |
+| gpt-oss-20b MXFP4 (MoE, GQA), **HIP build** | 1 | 52.2 | 53.6 | 1325 | 62 GiB |
+| gpt-oss-20b | 4 | 82.5 | 21.1 | 1288 | 64 GiB |
+| gpt-oss-20b | **8** | **83.4** | 10.7 | 1281 | 65 GiB |
+| GLM-4.7-Flash Q4_K (MoE, GQA), Vulkan | 1 | 18.1 | 18.7 | 120 | 69 GiB |
+| GLM-4.7-Flash, Vulkan | 4 | 19.2 | 4.9 | 122 | 72 GiB |
+| GLM-4.7-Flash, Vulkan | 8 | 25.9 | 3.4 | 121 | 75 GiB |
+| GLM-4.7-Flash, **HIP build** | 1 | 22.6 | 22.9 | 252 | 69 GiB |
+| GLM-4.7-Flash, HIP | 4 | 25.6 | 6.5 | 253 | 72 GiB |
+| GLM-4.7-Flash, HIP | **8** | **29.1** | 3.7 | 248 | 75 GiB |
 
 The qwen3.6 rows are from 2026-08-25 (resident tiers were stopped, so GTT is
-the server alone). The Olmo rows are from 2026-09-08 with the four resident
-tiers up (about 50 GiB), so subtract 50 GiB for the server's own footprint.
+the server alone). The Olmo, gpt-oss and GLM rows are from 2026-09-08 with the
+four resident tiers up (about 50 GiB), so subtract 50 GiB for the server's own
+footprint. gpt-oss and GLM were measured on the ggml-org GGUFs
+(`gpt-oss-20b-MXFP4.gguf`, `GLM-4.7-Flash-Q4_K.gguf`, downloaded to
+`~/llm-serving/gguf/` on the box): the ollama blobs for both carry architecture
+names (`gptoss`, `glm4moelite`) that upstream llama.cpp does not know and fail
+to load on either backend. gpt-oss has no Vulkan path for MXFP4 on this box and
+runs on the HIP build (`~/.local/llamacpp/src/build-hip/bin/llama-server`, same
+commit). GLM runs on both; HIP is faster and both are slow: its prefill is an
+order of magnitude below the other arms, and its parallel factor is 1.29x.
 
 ## What the Olmo re-measurement changed
 
@@ -73,21 +90,24 @@ tokens per arm, so days = 250 / (aggregate tok/s).
 | Arm | tok/s at the operating point | Days, 20 turns | Days, 40 turns | Basis |
 |---|---|---|---|---|
 | qwen3.6:35b-a3b | 116.4 | 2.15 | 4.3 | measured 2026-08-25 |
-| gpt-oss:20b | ~98 | ~2.6 | ~5.1 | extrapolated (42.9 x 2.29) |
-| glm-4.7-flash | ~60 | ~4.5 | ~8.3 | extrapolated (26.4 x 2.29) |
+| gpt-oss:20b (HIP) | 83.4 | **3.0** | **6.0** | measured 2026-09-08 |
+| glm-4.7-flash (HIP) | 29.1 | **8.6** | **17.2** | measured 2026-09-08 (Vulkan: 25.9, 9.7 days) |
 | Olmo-3-7B-Instruct | 41.5 | **6.0** | **12.0** | measured 2026-09-08 |
-| **Four arms** | | **~15.3** | **~30** | |
+| **Four arms** | | **~19.8** | **~39.5** | |
+| **Three arms (no glm)** | | **~11.2** | **~22.3** | |
 
-Twenty-one days are allocated to waves W7 to W9. Twenty turns fits with
-slack; forty turns for all four arms does not fit in the wave window alone
-and needs the W6 machine-only week or the descope list (drop glm-4.7-flash
-first, never Olmo).
+All four arms are now measured; nothing in this table is extrapolated. The
+parallel factors at np=8 over np=1 are qwen3.6 2.29x, gpt-oss 1.6x, Olmo
+1.47x, glm 1.29x, so the old habit of multiplying a single-stream number by
+2.29 would have been wrong for three of the four.
 
-The two extrapolated arms are both MoE models with grouped-query attention,
-so the 2.29x factor is more plausible for them than it was for Olmo, but they
-are still unmeasured. Each takes about eight minutes with
-`bench_parallel.py --plan 32768:1:q8_0,32768:4:q8_0,32768:8:q8_0`; measure
-them before freezing N.
+Twenty-one days are allocated to waves W7 to W9. Twenty turns for all four
+arms fits, barely. Forty turns for all four does not fit in the wave window
+even with the W6 machine-only week; the pre-committed descope (drop
+glm-4.7-flash first, never Olmo) brings forty turns to about 22 days, which
+fits. glm-4.7-flash is the weakest arm on this box by every measure and its
+slow prefill also makes every cold start expensive, so if it is cut nothing
+else in the plan changes.
 
 ## Olmo-specific serving requirements (found the hard way)
 

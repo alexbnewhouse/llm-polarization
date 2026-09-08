@@ -1,0 +1,15 @@
+model=/home/alex/llm-serving/gguf/GLM-4.7-Flash-Q4_K.gguf
+label=glm-4.7-flash-q4k-hip
+llama-server=/home/alex/.local/llamacpp/src/build-hip/bin/llama-server
+plan=[(32768, 1, 'q8_0'), (32768, 4, 'q8_0'), (32768, 8, 'q8_0')]
+
+### depth=32768 np=1 kv=q8_0 ctx=33792
+   agg=22.55 tok/s  per-stream=22.85  gtt=68.8GiB  ok=1/1
+
+### depth=32768 np=4 kv=q8_0 ctx=135168
+   agg=25.62 tok/s  per-stream=6.47  gtt=71.6GiB  ok=4/4
+
+### depth=32768 np=8 kv=q8_0 ctx=270336
+   agg=29.12 tok/s  per-stream=3.67  gtt=75.4GiB  ok=8/8
+
+PARALLEL BENCH COMPLETE

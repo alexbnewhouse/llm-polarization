@@ -27,6 +27,10 @@ in `models/RUN_APPROACH.md` can be re-derived from raw numbers.
 | `olmo3_7b_parallel_run1.jsonl`, `_run1.log` | 2026-09-08 | First attempt, default server flags: np=1 and np=4 fine (23.4 / 34.8 tok/s, Olmo hit EOS early so idle slots understate the aggregate); np=8 and np=16 crashed in the warm round. |
 | `olmo3_7b_np8_prompt_cache_crash.log` | 2026-09-08 | Server log excerpt of that crash: `GGML_ASSERT(tensor->data != NULL)` in `server_slot::prompt_save`, the host prompt cache trying to serialize the sliding-window KV cache. |
 | `olmo3_7b_parallel_run2.jsonl`, `_run2.log` | 2026-09-08 | np=8 and np=16 with `--cache-ram 0`: np=8 works (28.8 tok/s with early EOS); np=16 needs ~100 GiB GTT and was OOM-killed by the kernel along with two resident tiers. |
+| `gptoss20b_parallel.jsonl`, `.log` | 2026-09-08 | gpt-oss-20b MXFP4 (ggml-org GGUF) on the **HIP build**, np = 1/4/8: 52.2 / 82.5 / 83.4 tok/s. `llama_build` reads `bin` in these rows because the HIP binary lives in `src/build-hip/bin/`. |
+| `glm47flash_parallel.jsonl`, `.log` | 2026-09-08 | GLM-4.7-Flash Q4_K (ggml-org GGUF) on Vulkan, np = 1/4/8: 18.1 / 19.2 / 25.9 tok/s; cold prefill only ~120 tok/s. |
+| `glm47flash_hip_parallel.jsonl`, `.log` | 2026-09-08 | The same on the HIP build: 22.6 / 25.6 / 29.1 tok/s; prefill ~250 tok/s. |
+| `followup_chain3.sh`, `followup_chain4.sh`, `followup_chain5.sh` | 2026-09-08 | The sequencing scripts that ran the two follow-ups behind the GGUF downloads. Provenance only. |
 
 ## Rerunning
 
@@ -44,6 +48,14 @@ as GTT has room (`/sys/class/drm/card1/device/mem_info_gtt_used`); each record
 stores the GTT reading at the end of the warm round.
 
 Gotchas found so far:
+
+- The ollama blobs for gpt-oss:20b and glm-4.7-flash carry architecture names
+  (`gptoss`, `glm4moelite`) that upstream llama.cpp b10488 does not know, so
+  they fail to load on any backend. Use the ggml-org GGUFs in
+  `~/llm-serving/gguf/` (`gpt-oss-20b-MXFP4.gguf`, `GLM-4.7-Flash-Q4_K.gguf`).
+- gpt-oss (MXFP4) has no Vulkan path on this box; pass
+  `--lcpp ~/.local/llamacpp/src/build-hip/bin/llama-server` to use the HIP
+  build of the same commit. GLM runs on both and is faster on HIP.
 
 - llama.cpp b10488 parses the chat template at startup and rejects Olmo-3's
   (`tojson` filter). `bench_parallel.py` passes `--no-jinja`; harness code
