@@ -1,0 +1,12 @@
+# Qwen3-4B-Instruct-2507 (dense 4B)       2.5 GB
+# llama3.1:8b (dense 8B)                  4.9 GB
+# gpt-oss:20b (MoE 3.6B act)             13.8 GB
+# mistral-small (dense 24B)              14.3 GB
+# qwen3.8:27b (dense 27.8B)              16.8 GB
+# gemma3:27b (dense 27B)                 17.4 GB
+# Qwen3-30B-A3B-2507 (MoE 3B act)        18.6 GB
+# glm-4.7-flash (MoE)                    19.0 GB
+# qwen3.6:35b-a3b MTP (MoE 3B act)       21.7 GB
+# mixtral:8x7b (MoE 12.9B act)           26.4 GB
+# llama3.1:70b (dense 70B)               42.5 GB
+# gpt-oss:120b (MoE 5.1B act)            65.4 GB

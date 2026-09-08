@@ -1,0 +1,66 @@
+=== gpt-oss:20b 2026-08-24T13:52:19-06:00 ===
+  depth ~0
+{"model": "gpt-oss:20b", "target_depth": 0, "error": "model 'gpt-oss:20b' not found"}
+  depth ~8192
+{"model": "gpt-oss:20b", "target_depth": 8192, "error": "model 'gpt-oss:20b' not found"}
+  depth ~32768
+{"model": "gpt-oss:20b", "target_depth": 32768, "error": "model 'gpt-oss:20b' not found"}
+=== gemma4:31b 2026-08-24T13:52:28-06:00 ===
+  depth ~0
+{"model": "gemma4:31b", "target_depth": 0, "actual_prompt_tokens": 24, "prefill_tps": 69.82, "gen_tokens": 128, "gen_tps": 10.27, "load_s": 7.6, "backend": "ollama-rocm"}
+  depth ~8192
+{"model": "gemma4:31b", "target_depth": 8192, "actual_prompt_tokens": 5530, "prefill_tps": 289.09, "gen_tokens": 128, "gen_tps": 8.89, "load_s": 4.8, "backend": "ollama-rocm"}
+  depth ~32768
+{"model": "gemma4:31b", "target_depth": 32768, "actual_prompt_tokens": 22046, "prefill_tps": 231.77, "gen_tokens": 128, "gen_tps": 7.39, "load_s": 5.0, "backend": "ollama-rocm"}
+=== gemma3:27b 2026-08-24T13:55:34-06:00 ===
+  depth ~0
+{"model": "gemma3:27b", "target_depth": 0, "actual_prompt_tokens": 18, "prefill_tps": 71.38, "gen_tokens": 49, "gen_tps": 11.94, "load_s": 6.4, "backend": "ollama-rocm"}
+  depth ~8192
+{"model": "gemma3:27b", "target_depth": 8192, "actual_prompt_tokens": 5524, "prefill_tps": 372.65, "gen_tokens": 81, "gen_tps": 11.44, "load_s": 3.9, "backend": "ollama-rocm"}
+  depth ~32768
+{"model": "gemma3:27b", "target_depth": 32768, "actual_prompt_tokens": 22040, "prefill_tps": 355.31, "gen_tokens": 81, "gen_tps": 10.72, "load_s": 4.3, "backend": "ollama-rocm"}
+=== glm-4.7-flash:q4_K_M 2026-08-24T13:57:34-06:00 ===
+  depth ~0
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 0, "error": "model 'glm-4.7-flash:q4_K_M' not found"}
+  depth ~8192
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 8192, "error": "model 'glm-4.7-flash:q4_K_M' not found"}
+  depth ~32768
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 32768, "error": "model 'glm-4.7-flash:q4_K_M' not found"}
+=== qwen3.6:35b 2026-08-24T13:57:43-06:00 ===
+  depth ~0
+{"model": "qwen3.6:35b", "target_depth": 0, "actual_prompt_tokens": 19, "prefill_tps": 169.17, "gen_tokens": 128, "gen_tps": 57.74, "load_s": 5.0, "backend": "ollama-rocm"}
+  depth ~8192
+{"model": "qwen3.6:35b", "target_depth": 8192, "actual_prompt_tokens": 5525, "prefill_tps": 1280.29, "gen_tokens": 128, "gen_tps": 54.41, "load_s": 4.5, "backend": "ollama-rocm"}
+  depth ~32768
+{"model": "qwen3.6:35b", "target_depth": 32768, "actual_prompt_tokens": 22040, "prefill_tps": 1096.63, "gen_tokens": 128, "gen_tps": 45.51, "load_s": 4.8, "backend": "ollama-rocm"}
+=== gpt-oss:120b 2026-08-24T13:58:38-06:00 ===
+  depth ~0
+{"model": "gpt-oss:120b", "target_depth": 0, "error": "timed out waiting for llama-server to start - "}
+  depth ~8192
+{"model": "gpt-oss:120b", "target_depth": 8192, "error": "timed out waiting for llama-server to start - "}
+  depth ~32768
+{"model": "gpt-oss:120b", "target_depth": 32768, "error": "bad json"}
+=== done 2026-08-24T14:33:02-06:00 ===
+=== SECOND PASS on :11435 2026-08-24T16:14:48-06:00 ===
+=== gpt-oss:20b (:11435) 2026-08-24T16:14:48-06:00 ===
+  depth ~0
+{"model": "gpt-oss:20b", "target_depth": 0, "actual_prompt_tokens": 77, "prefill_tps": 205.88, "gen_tokens": 128, "gen_tps": 49.82, "load_s": 8.5, "backend": "ollama-rocm:11435"}
+  depth ~8192
+{"model": "gpt-oss:20b", "target_depth": 8192, "error": "error parsing tool call: raw='{\"path\":\"docs/guide/architecture.html\",\"line_start\":1, \"line_end\":200}\nWe still cannot open because of size. Let's open near the part with 'add' maybe.{\"path\":\"docs\",\"que", "backend": "ollama-rocm:11435"}
+  depth ~32768
+{"model": "gpt-oss:20b", "target_depth": 32768, "actual_prompt_tokens": 22097, "prefill_tps": 1654.34, "gen_tokens": 128, "gen_tps": 42.9, "load_s": 4.6, "backend": "ollama-rocm:11435"}
+=== gemma3:27b (:11435) 2026-08-24T16:15:39-06:00 ===
+  depth ~0
+{"model": "gemma3:27b", "target_depth": 0, "actual_prompt_tokens": 18, "prefill_tps": 70.96, "gen_tokens": 48, "gen_tps": 12.16, "load_s": 5.9, "backend": "ollama-rocm:11435"}
+  depth ~8192
+{"model": "gemma3:27b", "target_depth": 8192, "actual_prompt_tokens": 5524, "prefill_tps": 385.59, "gen_tokens": 109, "gen_tps": 11.55, "load_s": 5.6, "backend": "ollama-rocm:11435"}
+  depth ~32768
+{"model": "gemma3:27b", "target_depth": 32768, "actual_prompt_tokens": 22040, "prefill_tps": 360.29, "gen_tokens": 74, "gen_tps": 10.88, "load_s": 5.6, "backend": "ollama-rocm:11435"}
+=== glm-4.7-flash:q4_K_M (:11435) 2026-08-24T16:17:42-06:00 ===
+  depth ~0
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 0, "actual_prompt_tokens": 15, "prefill_tps": 175.92, "gen_tokens": 128, "gen_tps": 53.3, "load_s": 5.0, "backend": "ollama-rocm:11435"}
+  depth ~8192
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 8192, "actual_prompt_tokens": 5520, "prefill_tps": 719.55, "gen_tokens": 128, "gen_tps": 42.81, "load_s": 5.0, "backend": "ollama-rocm:11435"}
+  depth ~32768
+{"model": "glm-4.7-flash:q4_K_M", "target_depth": 32768, "actual_prompt_tokens": 22035, "prefill_tps": 283.98, "gen_tokens": 128, "gen_tps": 26.43, "load_s": 5.0, "backend": "ollama-rocm:11435"}
+SECOND PASS COMPLETE 2026-08-24T16:19:41-06:00

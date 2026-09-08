@@ -1,0 +1,63 @@
+2026-08-24T13:05:07-06:00 waiting for bench-ctx.sh to finish...
+2026-08-24T13:51:49-06:00 main sweep done after 2800s wait; settling 30s
+2026-08-24T13:52:19-06:00 gtt before ollama sweep = 1.6GiB
+2026-08-24T13:52:19-06:00 starting ollama sweep
+=== gpt-oss:20b 2026-08-24T13:52:19-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== gemma4:31b 2026-08-24T13:52:28-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== gemma3:27b 2026-08-24T13:55:34-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== glm-4.7-flash:q4_K_M 2026-08-24T13:57:34-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== qwen3.6:35b 2026-08-24T13:57:43-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== gpt-oss:120b 2026-08-24T13:58:38-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== done 2026-08-24T14:33:02-06:00 ===
+2026-08-24T14:33:02-06:00 OLLAMA SWEEP COMPLETE
+2026-08-24T16:14:48-06:00 FINISH-BENCH START
+=== SECOND PASS on :11435 2026-08-24T16:14:48-06:00 ===
+=== gpt-oss:20b (:11435) 2026-08-24T16:14:48-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== gemma3:27b (:11435) 2026-08-24T16:15:39-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+=== glm-4.7-flash:q4_K_M (:11435) 2026-08-24T16:17:42-06:00 ===
+  depth ~0
+  depth ~8192
+  depth ~32768
+SECOND PASS COMPLETE 2026-08-24T16:19:41-06:00
+2026-08-24T16:19:41-06:00 pass2 done
+=== gemma4:31b on :11434 2026-08-24T16:19:41-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=8217
+{"model": "gemma4:31b", "target_depth": 8192, "actual_prompt_tokens": 8217, "prefill_tps": 279.15, "gen_tokens": 128, "gen_tps": 8.64, "backend": "ollama-rocm", "calibrated": true}
+  target=32768 attempt=1 cpt=6.25 actual=32793
+{"model": "gemma4:31b", "target_depth": 32768, "actual_prompt_tokens": 32793, "prefill_tps": 206.17, "gen_tokens": 128, "gen_tps": 6.8, "backend": "ollama-rocm", "calibrated": true}
+=== gpt-oss:120b on :11434 2026-08-24T16:23:42-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=0
+{"model": "gpt-oss:120b", "target_depth": 8192, "error": "timed out waiting for llama-server to start - "}
+  target=32768 attempt=1 cpt=6.25 actual=0
+{"model": "gpt-oss:120b", "target_depth": 32768, "error": "timed out waiting for llama-server to start - "}
+=== qwen3.6:35b on :11434 2026-08-24T16:40:23-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=8212
+{"model": "qwen3.6:35b", "target_depth": 8192, "actual_prompt_tokens": 8212, "prefill_tps": 1267.19, "gen_tokens": 128, "gen_tps": 53.03, "backend": "ollama-rocm", "calibrated": true}
+  target=32768 attempt=1 cpt=6.25 actual=32788
+{"model": "qwen3.6:35b", "target_depth": 32768, "actual_prompt_tokens": 32788, "prefill_tps": 1013.6, "gen_tokens": 128, "gen_tps": 41.22, "backend": "ollama-rocm", "calibrated": true}
+CALIB PASS COMPLETE 2026-08-24T16:41:25-06:00
+2026-08-24T16:41:25-06:00 EVERYTHING COMPLETE

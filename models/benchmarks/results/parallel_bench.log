@@ -1,0 +1,35 @@
+
+### depth=8192 np=1 kv=f16 ctx=9216
+   agg=56.45 tok/s  per-stream=68.73  gtt=21.7GiB  ok=1/1
+
+### depth=8192 np=2 kv=f16 ctx=18432
+   agg=66.84 tok/s  per-stream=52.19  gtt=22.0GiB  ok=2/2
+
+### depth=8192 np=4 kv=f16 ctx=36864
+   agg=115.61 tok/s  per-stream=32.02  gtt=22.5GiB  ok=4/4
+
+### depth=8192 np=8 kv=f16 ctx=73728
+   agg=134.04 tok/s  per-stream=18.76  gtt=23.4GiB  ok=8/8
+
+### depth=32768 np=1 kv=f16 ctx=33792
+   agg=50.94 tok/s  per-stream=60.89  gtt=22.2GiB  ok=1/1
+
+### depth=32768 np=2 kv=f16 ctx=67584
+   agg=61.57 tok/s  per-stream=41.55  gtt=22.9GiB  ok=2/2
+
+### depth=32768 np=4 kv=f16 ctx=135168
+   agg=91.94 tok/s  per-stream=26.08  gtt=24.4GiB  ok=4/4
+
+### depth=32768 np=8 kv=f16 ctx=270336
+   agg=101.34 tok/s  per-stream=14.8  gtt=27.2GiB  ok=8/8
+
+### depth=32768 np=4 kv=q8_0 ctx=135168
+   agg=107.21 tok/s  per-stream=29.1  gtt=23.2GiB  ok=4/4
+
+### depth=32768 np=8 kv=q8_0 ctx=270336
+   agg=116.4 tok/s  per-stream=16.1  gtt=24.8GiB  ok=8/8
+
+### depth=32768 np=16 kv=q8_0 ctx=540672
+   agg=94.0 tok/s  per-stream=6.7  gtt=28.0GiB  ok=16/16
+
+PARALLEL BENCH COMPLETE

@@ -1,0 +1,10 @@
+=== gemma4:31b on :11434 2026-08-24T16:19:41-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=8217
+  target=32768 attempt=1 cpt=6.25 actual=32793
+=== gpt-oss:120b on :11434 2026-08-24T16:23:42-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=0
+  target=32768 attempt=1 cpt=6.25 actual=0
+=== qwen3.6:35b on :11434 2026-08-24T16:40:23-06:00 ===
+  target=8192 attempt=1 cpt=6.25 actual=8212
+  target=32768 attempt=1 cpt=6.25 actual=32788
+CALIB PASS COMPLETE 2026-08-24T16:41:25-06:00

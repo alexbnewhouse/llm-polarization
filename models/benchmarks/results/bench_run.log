@@ -1,0 +1,104 @@
+=== bench start 2026-08-24T12:58:02-06:00 ===
+host: fedora  llama-bench: llama-b10488
+# Qwen3-4B-Instruct-2507 (dense 4B)       2.5 GB
+# llama3.1:8b (dense 8B)                  4.9 GB
+# gpt-oss:20b (MoE 3.6B act)             13.8 GB
+# mistral-small (dense 24B)              14.3 GB
+# qwen3.8:27b (dense 27.8B)              16.8 GB
+# gemma3:27b (dense 27B)                 17.4 GB
+# Qwen3-30B-A3B-2507 (MoE 3B act)        18.6 GB
+# glm-4.7-flash (MoE)                    19.0 GB
+# qwen3.6:35b-a3b MTP (MoE 3B act)       21.7 GB
+# mixtral:8x7b (MoE 12.9B act)           26.4 GB
+# llama3.1:70b (dense 70B)               42.5 GB
+# gpt-oss:120b (MoE 5.1B act)            65.4 GB
+--- [1/12] 2026-08-24T12:58:02-06:00  Qwen3-4B-Instruct-2507 (dense 4B)  (2.4 GB, timeout 900s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=6 gtt=1.6GiB
+--- [2/12] 2026-08-24T13:00:44-06:00  llama3.1:8b (dense 8B)  (4.9 GB, timeout 900s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=12 gtt=1.6GiB
+--- [3/12] 2026-08-24T13:03:32-06:00  gpt-oss:20b (MoE 3.6B act)  (13.7 GB, timeout 1200s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+llama_bench: error: failed to load model '/home/alex/.ollama/models/blobs/sha256-e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb'
+    rc=1 rows_so_far=12 gtt=1.6GiB
+--- [4/12] 2026-08-24T13:03:37-06:00  mistral-small (dense 24B)  (14.3 GB, timeout 1500s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=18 gtt=1.6GiB
+--- [5/12] 2026-08-24T13:08:29-06:00  qwen3.8:27b (dense 27.8B)  (16.8 GB, timeout 1800s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=24 gtt=1.6GiB
+--- [6/12] 2026-08-24T13:12:47-06:00  gemma3:27b (dense 27B)  (17.3 GB, timeout 1800s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+llama_bench: error: failed to load model '/home/alex/.ollama/models/blobs/sha256-e796792eba26c4d3b04b0ac5adb01a453dd9ec2dfd83b6c59cbf6fe5f30b0f68'
+    rc=1 rows_so_far=24 gtt=1.6GiB
+--- [7/12] 2026-08-24T13:12:52-06:00  Qwen3-30B-A3B-2507 (MoE 3B act)  (18.5 GB, timeout 1200s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=30 gtt=1.6GiB
+--- [8/12] 2026-08-24T13:14:57-06:00  glm-4.7-flash (MoE)  (19.0 GB, timeout 1200s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+llama_bench: error: failed to load model '/home/alex/.ollama/models/blobs/sha256-9eba2761cf0b88b8bc11a065a7b5b47f1b13ce820e8e492cb1010b450f9ec950'
+    rc=1 rows_so_far=30 gtt=1.6GiB
+--- [9/12] 2026-08-24T13:15:03-06:00  qwen3.6:35b-a3b MTP (MoE 3B act)  (21.7 GB, timeout 1200s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=36 gtt=1.6GiB
+--- [10/12] 2026-08-24T13:16:15-06:00  mixtral:8x7b (MoE 12.9B act)  (26.4 GB, timeout 1500s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=42 gtt=1.6GiB
+--- [11/12] 2026-08-24T13:20:04-06:00  llama3.1:70b (dense 70B)  (42.5 GB, timeout 3000s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+    rc=0 rows_so_far=48 gtt=1.6GiB
+--- [12/12] 2026-08-24T13:51:39-06:00  gpt-oss:120b (MoE 5.1B act)  (65.3 GB, timeout 2400s)
+load_backend: loaded RPC backend from /home/alex/.local/llamacpp/llama-b10488/libggml-rpc.so
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = AMD Radeon 8060S Graphics (RADV STRIX_HALO) (radv) | uma: 1 | fp16: dot2 | bf16: 0 | fp4: 0 | warp size: 64 | shared memory: 65536 | int dot: 1 | matrix cores: KHR_coopmat
+load_backend: loaded Vulkan backend from /home/alex/.local/llamacpp/llama-b10488/libggml-vulkan.so
+load_backend: loaded CPU backend from /home/alex/.local/llamacpp/llama-b10488/libggml-cpu-zen4.so
+llama_bench: error: failed to load model '/home/alex/.ollama/models/blobs/sha256-6be6d66a3f546d8c19b130dc41dc24b2fc159f84ffbc76a0ee0676205083cf5a'
+    rc=1 rows_so_far=48 gtt=1.6GiB
+=== bench done 2026-08-24T13:51:44-06:00 ===
+total rows: 48

@@ -1,0 +1,24 @@
+# model weights and caches never go in git
+*.gguf
+*.safetensors
+*.bin
+.ollama/
+# experiment output: dialogues, logs, transcripts (large; archived separately)
+data/**
+!data/README.md
+!data/.gitkeep
+# huge llama-server logs
+llama-*.log
+*.nohup.log
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+# editor / os
+.DS_Store
+.vscode/
+.idea/
+# secrets
+.env

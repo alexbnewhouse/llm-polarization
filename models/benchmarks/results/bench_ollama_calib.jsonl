@@ -1,0 +1,6 @@
+{"model": "gemma4:31b", "target_depth": 8192, "actual_prompt_tokens": 8217, "prefill_tps": 279.15, "gen_tokens": 128, "gen_tps": 8.64, "backend": "ollama-rocm", "calibrated": true}
+{"model": "gemma4:31b", "target_depth": 32768, "actual_prompt_tokens": 32793, "prefill_tps": 206.17, "gen_tokens": 128, "gen_tps": 6.8, "backend": "ollama-rocm", "calibrated": true}
+{"model": "gpt-oss:120b", "target_depth": 8192, "error": "timed out waiting for llama-server to start - "}
+{"model": "gpt-oss:120b", "target_depth": 32768, "error": "timed out waiting for llama-server to start - "}
+{"model": "qwen3.6:35b", "target_depth": 8192, "actual_prompt_tokens": 8212, "prefill_tps": 1267.19, "gen_tokens": 128, "gen_tps": 53.03, "backend": "ollama-rocm", "calibrated": true}
+{"model": "qwen3.6:35b", "target_depth": 32768, "actual_prompt_tokens": 32788, "prefill_tps": 1013.6, "gen_tokens": 128, "gen_tps": 41.22, "backend": "ollama-rocm", "calibrated": true}

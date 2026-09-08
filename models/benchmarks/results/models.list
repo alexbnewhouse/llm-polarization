@@ -1,0 +1,12 @@
+Qwen3-4B-Instruct-2507 (dense 4B)|/home/alex/llm-serving/gguf/Qwen3-4B-Instruct-2507-Q4_K_M.gguf|900
+llama3.1:8b (dense 8B)|/home/alex/.ollama/models/blobs/sha256-667b0c1932bc6ffc593ed1d03f895bf2dc8dc6df21db3042284a6f4416b06a29|900
+gpt-oss:20b (MoE 3.6B act)|/home/alex/.ollama/models/blobs/sha256-e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb|1200
+mistral-small (dense 24B)|/home/alex/.ollama/models/blobs/sha256-102a747c137683e81d431dab05d8f2158df4ab6f162f8f9019425a43d51e0e9f|1500
+qwen3.8:27b (dense 27.8B)|/home/alex/.ollama/models/blobs/sha256-f5f1dd8920d417aac2718b0bda3403da274301efdd6760b4f0f4b864ff2ad57d|1800
+gemma3:27b (dense 27B)|/home/alex/.ollama/models/blobs/sha256-e796792eba26c4d3b04b0ac5adb01a453dd9ec2dfd83b6c59cbf6fe5f30b0f68|1800
+Qwen3-30B-A3B-2507 (MoE 3B act)|/home/alex/llm-serving/gguf/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf|1200
+glm-4.7-flash (MoE)|/home/alex/.ollama/models/blobs/sha256-9eba2761cf0b88b8bc11a065a7b5b47f1b13ce820e8e492cb1010b450f9ec950|1200
+qwen3.6:35b-a3b MTP (MoE 3B act)|/home/alex/.ollama/models/blobs/sha256-d372de8e934898a59e6ccfabc3368474711384d8f1fd4d22d87a3f0a45400cdc|1200
+mixtral:8x7b (MoE 12.9B act)|/home/alex/.ollama/models/blobs/sha256-f2dc41fa964b42bfe34e9fb09c0acdcfbfd6e52f1332930b4eacc9d6ad1c6cd2|1500
+llama3.1:70b (dense 70B)|/home/alex/.ollama/models/blobs/sha256-de20d2cf2dc430b1717a8b07a9df029d651f3895dbffec4729a3902a6fe344c9|3000
+gpt-oss:120b (MoE 5.1B act)|/home/alex/.ollama/models/blobs/sha256-6be6d66a3f546d8c19b130dc41dc24b2fc159f84ffbc76a0ee0676205083cf5a|2400
