@@ -1,0 +1,135 @@
+import json
+from pathlib import Path
+import pytest
+from harness import log, run as R
+from harness.dialogue import AgentHandle, GenSettings, DyadSpec
+from harness.templates import ChatTemplate
+from harness.transcript import SEEKER, MENTOR
+from harness.tests.fakes import FakeClient
+from harness.tests.conftest import CHATML, REJECTS_TRAILING_SYSTEM
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def write_cfg(tmp_path, **over):
+    cfg = {"data_dir": str(tmp_path / "data"), "gguf_py_path": None, "run_seed": 5, "now": "2026-09-08",
+           "batteries": str(REPO / "instruments" / "batteries.json"),
+           "seeker": {"url": "http://s"}, "mentor": {"url": "http://m"}, "judge": {"url": "http://j"}}
+    cfg.update(over)
+    p = tmp_path / "config.json"; p.write_text(json.dumps(cfg)); return p
+
+
+def test_load_config_merges_defaults_and_requires_urls(tmp_path):
+    cfg = R.load_config(write_cfg(tmp_path))
+    assert cfg["generation"]["temperature"] == 0.7 and cfg["generation"]["n_predict"] == 300 and cfg["concurrency"] is None
+    bad = tmp_path / "bad.json"; bad.write_text(json.dumps({"seeker": {"url": "x"}}))
+    with pytest.raises(ValueError):
+        R.load_config(bad)
+
+
+def test_model_sha256_cached(tmp_path):
+    f = tmp_path / "m.gguf"; f.write_bytes(b"abc")
+    cache = tmp_path / "hashes.json"
+    h1 = R.model_sha256_cached(str(f), cache)
+    assert h1 == log.sha256_text("abc") and json.loads(cache.read_text())
+    f.write_bytes(b"abcd")
+    assert R.model_sha256_cached(str(f), cache) == log.sha256_text("abcd")
+
+
+def fake_factory(url):
+    return FakeClient(['{"answer": 3}'] if url in ("http://m", "http://j") else ["line"])
+
+
+def test_build_agent_uses_props_model_path_and_template(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path)
+    cfg = R.load_config(write_cfg(tmp_path))
+    handle, entry = R.build_agent(SEEKER, cfg["seeker"], 3, cfg, client_factory=fake_factory)
+    assert handle.slot == 3 and handle.model_sha256 == "HASH-/fake/model.gguf" and handle.name == SEEKER
+    assert entry["model_path"] == "/fake/model.gguf" and entry["total_slots"] == 4 and entry["template_sha256"] == handle.template.sha256
+
+
+def test_check_agent_reports_parity_and_trailing_system(tmp_path):
+    ok_tpl = ChatTemplate.from_source(CHATML)
+    h = AgentHandle(SEEKER, FakeClient(), ok_tpl, "h", 0)
+    results = R.check_agent(h, {"now": "2026-09-08"})
+    assert all(ok for _, ok, _ in results) and {n for n, _, _ in results} >= {"health", "template_parity", "trailing_system"}
+    bad = AgentHandle(SEEKER, FakeClient(), ChatTemplate.from_source(REJECTS_TRAILING_SYSTEM), "h", 0)
+    results = dict((n, ok) for n, ok, _ in R.check_agent(bad, {"now": "2026-09-08"}))
+    assert results["trailing_system"] is False and results["template_parity"] is False
+    m = AgentHandle(MENTOR, FakeClient(), ChatTemplate.from_source(REJECTS_TRAILING_SYSTEM), "h", 0)
+    assert "trailing_system" not in dict((n, ok) for n, ok, _ in R.check_agent(m, {"now": "2026-09-08"}))
+
+
+def manifest_rows(n=3):
+    return [{"dyad_id": f"d{i}", "condition": {"topic": "t"}, "persona_text": "P", "persona_reminder": "R",
+             "persona_mode": "reinforced", "seed": i, "n_turns": 2} for i in range(n)]
+
+
+def test_plan_work_resumes():
+    status = [{"dyad_id": "d0", "attempt": 1, "status": "complete"}, {"dyad_id": "d1", "attempt": 1, "status": "failed"}]
+    work = R.plan_work(manifest_rows(3), status)
+    assert [(s.dyad_id, a) for s, a in work] == [("d1", 2), ("d2", 1)]
+
+
+def make_ctx(tmp_path, seeker_client=None, mentor_client=None):
+    tpl = ChatTemplate.from_source(CHATML)
+    sc = seeker_client or FakeClient(["seeker line"])
+    mc = mentor_client or FakeClient(['{"answer": 4}', "mentor line"])
+    paths = log.run_paths(tmp_path, "r1")
+    logs = {k: log.JsonlWriter(getattr(paths, k)) for k in ("dyads", "status", "turns", "surveys")}
+    items = R.load_batteries(REPO / "instruments" / "batteries.json")[:2]
+    ctx = R.RunContext("r1", 5, AgentHandle(SEEKER, sc, tpl, "S", 0), AgentHandle(MENTOR, mc, tpl, "M", 0),
+                       GenSettings(), items, logs, clock=lambda: "T")
+    return ctx, paths, sc, mc
+
+
+def test_run_dyad_full_lifecycle(tmp_path):
+    ctx, paths, sc, mc = make_ctx(tmp_path)
+    spec = DyadSpec.from_row(manifest_rows(1)[0])
+    assert R.run_dyad(2, spec, 1, ctx) == "complete"
+    st = log.read_jsonl(paths.status)
+    assert [s["status"] for s in st] == ["started", "complete"] and st[0]["attempt"] == 1
+    d = log.read_jsonl(paths.dyads)[0]
+    assert d["dyad_id"] == "d0" and d["attempt"] == 1 and d["persona_text"] == "P"
+    turns = log.read_jsonl(paths.turns); surveys = log.read_jsonl(paths.surveys)
+    assert len(turns) == 4 and len(surveys) == 4
+    assert [s["phase"] for s in surveys] == ["pre", "pre", "post", "post"]
+    assert all(c["id_slot"] == 2 for c in sc.calls + mc.calls)
+
+
+def test_run_dyad_failure_marks_status(tmp_path):
+    ctx, paths, sc, mc = make_ctx(tmp_path, seeker_client=FakeClient(["x"], fail_on=1))
+    spec = DyadSpec.from_row(manifest_rows(1)[0])
+    assert R.run_dyad(0, spec, 3, ctx) == "failed"
+    st = log.read_jsonl(paths.status)
+    assert st[-1]["status"] == "failed" and st[-1]["attempt"] == 3 and "fake failure" in st[-1]["reason"]
+
+
+def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path.split("/")[-1])
+    clients = {}
+    def factory(url, timeout=None):
+        clients[url] = FakeClient(['{"answer": 2}', "line"] if url != "http://j" else ['{"score": 0.5, "rationale": "r"}'])
+        clients[url].props = lambda: {"model_path": f"/{url[7:]}.gguf", "total_slots": 2, "build_info": "b", "model_alias": url[7:], "default_generation_settings": {}}
+        clients[url].timeout = timeout
+        return clients[url]
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    cfg = write_cfg(tmp_path, concurrency=2)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(3)))
+    assert R.main(["check", "--config", str(cfg)]) == 0
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    assert clients["http://s"].timeout == 600
+    paths = log.run_paths(tmp_path / "data", "r1")
+    assert json.loads(paths.manifest.read_text())["seeker"]["model_sha256"] == "HASH-s.gguf"
+    assert len(log.read_jsonl(paths.turns)) == 3 * 4
+    assert sorted(s["status"] for s in log.read_jsonl(paths.status)).count("complete") == 3
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0   # resume: nothing to do
+    assert len(log.read_jsonl(paths.turns)) == 3 * 4
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "main"]) == 0
+    scores = log.read_jsonl(paths.scores)
+    assert len(scores) == 3 * 1 * 2 and all(s["score"] == 0.5 for s in scores)      # main: seeker, last turn (2), 2 metrics
+    assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "post"]) == 0
+    assert len([s for s in log.read_jsonl(paths.surveys) if s["phase"] == "post"]) == 3 * 13 * 2

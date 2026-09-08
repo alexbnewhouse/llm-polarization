@@ -1,0 +1,12 @@
+{
+  "data_dir": "data",
+  "gguf_py_path": "/home/alex/.local/llamacpp/src/gguf-py",
+  "batteries": "instruments/batteries.json",
+  "run_seed": 20260908,
+  "concurrency": null,
+  "now": "2026-09-08",
+  "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600, "enable_thinking": false},
+  "seeker": {"url": "http://127.0.0.1:8201", "gguf_path": null},
+  "mentor": {"url": "http://127.0.0.1:8202", "gguf_path": null},
+  "judge":  {"url": "http://127.0.0.1:8099", "gguf_path": null}
+}
