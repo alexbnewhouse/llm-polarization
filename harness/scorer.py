@@ -112,23 +112,32 @@ class Scorer:
         by_dyad: dict[tuple, list[dict]] = {}
         for r in turns:
             by_dyad.setdefault((r["dyad_id"], r.get("attempt", 1)), []).append(r)
+        histories: dict[tuple, list[dict]] = {
+            k: sorted(v, key=lambda r: (r["turn"], 0 if r["agent"] == SEEKER else 1)) for k, v in by_dyad.items()}
+        positions: dict[tuple, dict[tuple, int]] = {
+            k: {(r["turn"], r["agent"]): i for i, r in enumerate(v)} for k, v in histories.items()}
         written = 0
         for row, metric in select_targets(turns, scope):
             key = (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric)
             if key in done:
                 continue
-            spec = dyads.get(key[:2], {})
-            history = sorted(by_dyad[key[:2]], key=lambda r: (r["turn"], 0 if r["agent"] == SEEKER else 1))
-            idx = history.index(row)
+            seed = derive_seed(self.run_seed, row["dyad_id"], key[1], row["turn"], f"judge:{row['agent']}:{metric}")
+            out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
+                   "agent": row["agent"], "metric": metric, "judge_sha256": self.judge.model_sha256, "seed": seed}
+            spec = dyads.get(key[:2])
+            if spec is None:
+                out.update({"judge_prompt_sha256": "", "score": None, "rationale": "", "raw_text": "",
+                            "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
+                self.scores_log.write(out)
+                continue
+            history = histories[key[:2]]
+            idx = positions[key[:2]][(row["turn"], row["agent"])]
             prior_own = [r["text"] for r in history[:idx] if r["agent"] == row["agent"]]
             partner = next((r["text"] for r in reversed(history[:idx]) if r["agent"] != row["agent"]), None)
             messages = build_judge_messages(metric, spec.get("persona_text", ""), spec.get("condition", {}).get("topic", ""),
                                             row["text"], prior_own, partner)
             prompt = render(self.judge.template, messages, now=self.settings.now, enable_thinking=self.settings.enable_thinking)
-            seed = derive_seed(self.run_seed, row["dyad_id"], key[1], row["turn"], f"judge:{row['agent']}:{metric}")
-            out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
-                   "agent": row["agent"], "metric": metric, "judge_sha256": self.judge.model_sha256,
-                   "judge_prompt_sha256": sha256_text(prompt), "seed": seed}
+            out["judge_prompt_sha256"] = sha256_text(prompt)
             try:
                 comp = self.judge.client.complete(prompt, id_slot=self.judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
                                                   temperature=0.0, json_schema=score_schema(), cache_prompt=True)

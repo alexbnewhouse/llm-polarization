@@ -110,3 +110,53 @@ def test_score_run_logs_errors_and_continues(tmp_path):
     n = sc.score_run(p, "pilot", manifest)
     rows_ = log.read_jsonl(p.scores)
     assert n == 5 and len(rows_) == 6 and sum(1 for r in rows_ if r.get("error")) == 1
+
+
+def test_score_run_duplicate_row_uses_position_not_value_equality(tmp_path):
+    # Two seeker rows at turn 2 are value-identical (a duplicate append after a crash-retry, or
+    # identical text at a repeated turn number): dict equality can't tell them apart, so a lookup
+    # by `history.index(row)` silently resolves both to the position of the FIRST match. A
+    # position lookup keyed by (turn, agent) does not have that failure mode: verified below by
+    # checking the second occurrence's own judge prompt includes the earlier bulleted bullet line
+    # "- DUP" (from history[:idx] correctly reaching past the first duplicate before it).
+    p = log.run_paths(tmp_path, "r1")
+    log.JsonlWriter(p.dyads).write({"dyad_id": "d", "attempt": 1, "condition": {"topic": "immigration"},
+                                    "persona_text": "PERSONA", "persona_reminder": "", "persona_mode": "once",
+                                    "seed": 1, "n_turns": 3})
+    st = log.JsonlWriter(p.status)
+    st.write({"dyad_id": "d", "attempt": 1, "status": "started"}); st.write({"dyad_id": "d", "attempt": 1, "status": "complete"})
+    tw = log.JsonlWriter(p.turns)
+    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 1, "agent": SEEKER, "text": "S1", "finish_reason": "stop"})
+    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
+    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
+    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 3, "agent": SEEKER, "text": "S3", "finish_reason": "stop"})
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
+    jc = FakeClient(['{"score": 0.5, "rationale": "x"}'])
+    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0)
+    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
+    sc.score_run(p, "pilot", manifest)
+    # pilot order (seeker rows only here): S1(prompt_to_line, line_to_line), DUP#1(prompt_to_line,
+    # line_to_line), DUP#2(prompt_to_line, line_to_line), S3(prompt_to_line, line_to_line) ->
+    # index 5 is DUP#2's line_to_line call, the one a value-based lookup would misresolve.
+    call = jc.calls[5]
+    assert "- DUP" in call["prompt"]  # prior_own reached past the first DUP row, not just ["S1"]
+
+
+def test_score_run_missing_dyads_row_errors_without_judge_call(tmp_path):
+    p = log.run_paths(tmp_path, "r1")
+    # deliberately no dyads.jsonl row written for this dyad/attempt
+    st = log.JsonlWriter(p.status)
+    st.write({"dyad_id": "d", "attempt": 1, "status": "started"}); st.write({"dyad_id": "d", "attempt": 1, "status": "complete"})
+    tw = log.JsonlWriter(p.turns)
+    for turn in (1, 2):
+        tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": SEEKER, "text": f"s{turn}", "finish_reason": "stop"})
+        tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": MENTOR, "text": f"m{turn}", "finish_reason": "stop"})
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
+    jc = FakeClient(['{"score": 0.75, "rationale": "ok"}'])
+    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0)
+    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
+    n = sc.score_run(p, "pilot", manifest)
+    assert n == 0 and len(jc.calls) == 0
+    rows_ = log.read_jsonl(p.scores)
+    assert len(rows_) == 2 * 2 + 2 * 1
+    assert all(r.get("error") == "no dyads.jsonl row for this dyad/attempt" and r["score"] is None for r in rows_)
