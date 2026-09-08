@@ -14,7 +14,7 @@ from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TE
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
                                read_template_from_gguf, render)
-from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript
+from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript, message_order
 
 DEFAULT_CONFIG = {
     "data_dir": "data", "gguf_py_path": None, "batteries": "instruments/batteries.json", "run_seed": 0,
@@ -28,7 +28,8 @@ HARNESS_DIR = Path(__file__).resolve().parent
 
 
 def _merge(base: dict, over: dict) -> dict:
-    """Deep-merge override dict `over` onto a deep copy of `base`, recursing into nested dicts."""
+    """Deep-merge override dict `over` onto a deep copy of `base`, recursing into nested dicts. Recursion
+    is what lets a config that sets only generation.n_predict keep the other generation defaults."""
     out = copy.deepcopy(base)
     for k, v in over.items():
         out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
@@ -308,7 +309,7 @@ def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
     """Reconstruct a dyad's Transcript from its dyads.jsonl row and turns.jsonl rows, in turn/agent order,
     so the post survey can be re-administered without re-running the dialogue."""
     t = Transcript(dyad_row["dyad_id"], dyad_row["persona_text"], dyad_row.get("persona_reminder") or None, dyad_row["persona_mode"])
-    for r in sorted(turn_rows, key=lambda r: (r["turn"], 0 if r["agent"] == SEEKER else 1)):
+    for r in sorted(turn_rows, key=message_order):
         if r.get("finish_reason") != "error":
             t.append(r["turn"], r["agent"], r["text"])
     return t
@@ -326,6 +327,8 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     if cmd_check(cfg, manifest_path) != 0:
         print("check failed; not running", file=sys.stderr)
         return 1
+    # check built its own handles and threw them away; build fresh ones so the manifest records /props as
+    # it is at the moment the run starts.
     agents = _agents(cfg)
     (seeker, s_entry), (mentor, m_entry) = agents[SEEKER], agents[MENTOR]
     paths = run_paths(cfg["data_dir"], run_id)
@@ -345,16 +348,24 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
         # models and templates this run started with.
         _verify_identity(_load_manifest(paths), {SEEKER: s_entry, MENTOR: m_entry})
     log.write_manifest(paths, manifest)
-    concurrency = cfg["concurrency"] or min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
+    # concurrency: null in the config means "one dialogue per slot, limited by the smaller server".
+    server_slots = min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
+    concurrency = cfg["concurrency"] or server_slots
     rows = read_jsonl(Path(manifest_path))
     work = plan_work(rows, read_jsonl(paths.status))
     print(f"run {run_id}: {len(work)} of {len(rows)} dyads to run, concurrency {concurrency}")
     if not work:
         return 0
+    # One writer per output file. The names match the RunPaths fields, so "turns" gives paths.turns ->
+    # data/<run_id>/turns.jsonl. scores.jsonl is written later by `score`, not here.
     logs = {k: JsonlWriter(getattr(paths, k)) for k in ("dyads", "status", "turns", "surveys")}
     ctx = RunContext(run_id, int(cfg["run_seed"]), seeker, mentor, _settings(cfg),
                      load_batteries(cfg["batteries"]), logs,
                      batteries_sha256=manifest["batteries"]["sha256"])
+    # One worker thread per server slot. `free` holds the slot numbers not currently in use; the pool has
+    # exactly `concurrency` threads, so `free` can never run empty. A dyad keeps its slot for its whole
+    # life, which is what keeps the slot's KV cache warm across turns. Each (spec, attempt) pair is
+    # submitted as its own future so an interrupt can stop the ones that have not started.
     free = list(range(concurrency))
     lock = threading.Lock()
     stop = threading.Event()

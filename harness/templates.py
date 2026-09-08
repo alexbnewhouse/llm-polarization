@@ -57,6 +57,9 @@ def _gguf_module(gguf_py_path: str | None):
     return gguf
 
 
+# gguf-py stores each metadata field as a list of `parts` plus a `data` list of indices into it. For a
+# string field there is one index and the part is raw bytes; for the BOS/EOS ids there is one index and
+# the part is a one-element integer array. Hence the [f.data[0]].
 def _field_str(reader, key: str) -> str | None:
     f = reader.fields.get(key)
     if f is None:
@@ -91,6 +94,8 @@ def read_template_from_gguf(path: str | Path, gguf_py_path: str | None = None) -
 
 
 def _env(now: str) -> jinja2.Environment:
+    # These three settings are what make our rendering byte-identical to Hugging Face's and llama.cpp's.
+    # Do not change them without re-running `check`'s parity test against every arm.
     env = jinja2.Environment(trim_blocks=True, lstrip_blocks=False, keep_trailing_newline=True)
     day = _dt.datetime.strptime(now, "%Y-%m-%d")
 
@@ -109,8 +114,6 @@ def render(tpl: ChatTemplate, messages: list[dict], *, add_generation_prompt: bo
         return _env(now).from_string(tpl.source).render(
             messages=messages, add_generation_prompt=add_generation_prompt,
             bos_token=tpl.bos, eos_token=tpl.eos, tools=None, enable_thinking=enable_thinking)
-    except TemplateError:
-        raise
     except jinja2.TemplateError as e:
         raise TemplateError(f"template render failed: {e}") from e
 

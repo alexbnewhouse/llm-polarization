@@ -1,6 +1,6 @@
 """One dyad, end to end: seeker opens, agents alternate, every generation logged with provenance."""
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from harness.client import ServerError
 from harness.log import JsonlWriter, derive_seed, now_iso, sha256_text
 from harness.templates import ChatTemplate, render
@@ -65,7 +65,9 @@ def _common_prefix_len(a: str, b: str) -> int:
 
 
 def expected_new_tokens(client, prompt: str, previous_prompt: str | None) -> int:
-    """Tokens the server should have to prefill if its slot still holds previous_prompt."""
+    """Tokens the server should have to prefill if its slot still holds previous_prompt. The shared prefix
+    is measured in characters, which can end mid-token, so this is an estimate -- that is what the
+    64-token cache_margin absorbs. It only sets the cache_warning flag; it never changes what is sent."""
     if not previous_prompt:
         return client.tokenize(prompt)
     k = _common_prefix_len(prompt, previous_prompt)
@@ -93,7 +95,9 @@ class DialogueRunner:
 
     def _generate(self, agent: str, transcript: Transcript, spec: DyadSpec, attempt: int, turn: int,
                   last_prompt: dict) -> str:
-        """Render one agent's prompt, request a completion, log the provenance row, and return the reply text."""
+        """Render one agent's prompt, request a completion, log the provenance row, and return the reply
+        text -- and record this prompt in last_prompt[agent] (the caller's dict, written here) so the next
+        turn can tell how much of it the slot should still hold."""
         h = self.agents[agent]
         s = self.settings
         prompt = render(h.template, transcript.view_for(agent), now=s.now, enable_thinking=s.enable_thinking)

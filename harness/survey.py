@@ -51,6 +51,7 @@ def parse_answer(text: str, item: dict) -> int | None:
         v = json.loads(text).get("answer")
     except (ValueError, AttributeError):
         return None
+    # In Python True is an int, so a model answering {"answer": true} would otherwise pass as 1.
     if isinstance(v, bool) or not isinstance(v, int):
         return None
     if item["scale"]["min"] <= v <= item["scale"]["max"]:

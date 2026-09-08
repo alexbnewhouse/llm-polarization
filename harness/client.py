@@ -31,6 +31,8 @@ class Completion:
 def parse_completion(raw: dict) -> Completion:
     """Extract completion result from llama-server response dict; determine finish_reason from stop_type or stopped_limit."""
     timings = raw.get("timings") or {}
+    # Newer llama-server reports stop_type; older builds reported stopped_limit. Accept either so a
+    # server upgrade does not silently mislabel truncated turns as clean stops.
     limit = raw.get("stop_type") == "limit" or bool(raw.get("stopped_limit"))
     return Completion(
         text=raw.get("content", ""),
@@ -91,7 +93,7 @@ class LlamaClient:
         return self._post("/apply-template", {"messages": messages})["prompt"]
 
     def tokenize(self, text: str) -> int:
-        """Tokenize text and return token count."""
+        """How many tokens `text` is. Returns the count, not the token ids."""
         return len(self._post("/tokenize", {"content": text, "add_special": False}).get("tokens", []))
 
     def complete(self, prompt: str, *, id_slot: int, seed: int, n_predict: int, temperature: float,

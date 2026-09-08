@@ -5,7 +5,7 @@ from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings
 from harness.log import JsonlWriter, RunPaths, derive_seed, now_iso, read_jsonl, resume_index, sha256_text
 from harness.templates import render
-from harness.transcript import SEEKER, MENTOR
+from harness.transcript import SEEKER, MENTOR, message_order
 
 METRICS = {"prompt_to_line": SEEKER, "line_to_line": SEEKER, "alignment": MENTOR}
 SCOPES = ("pilot", "main")
@@ -67,6 +67,8 @@ def select_targets(turn_rows: list[dict], scope: str) -> list[tuple[dict, str]]:
         key = (r["dyad_id"], r.get("attempt", 1))
         by_dyad[key] = max(by_dyad.get(key, 0), r["turn"])
     for r in seeker_rows:
+        # main scope: turns 4, 8, 12, ... plus the dyad's final turn (spec section 6). pilot scope
+        # scores every turn instead.
         if r["turn"] % 4 == 0 or r["turn"] == by_dyad[(r["dyad_id"], r.get("attempt", 1))]:
             for metric, agent in METRICS.items():
                 if agent == SEEKER:
@@ -115,8 +117,11 @@ class Scorer:
         by_dyad: dict[tuple, list[dict]] = {}
         for r in turns:
             by_dyad.setdefault((r["dyad_id"], r.get("attempt", 1)), []).append(r)
-        histories: dict[tuple, list[dict]] = {
-            k: sorted(v, key=lambda r: (r["turn"], 0 if r["agent"] == SEEKER else 1)) for k, v in by_dyad.items()}
+        histories: dict[tuple, list[dict]] = {k: sorted(v, key=message_order) for k, v in by_dyad.items()}
+        # Position of each row in its dyad's history, keyed by object identity. Two rows can be
+        # value-identical (a duplicate append after a crash), and a content-derived key would collapse
+        # them and feed the first row its own line back as an "earlier" one.
+        # See tests/test_scorer.py::test_score_run_duplicate_row_uses_position_not_value_equality.
         positions: dict[tuple, dict[int, int]] = {
             k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
         written = 0
@@ -140,6 +145,8 @@ class Scorer:
             history = histories[key[:2]]
             idx = positions[key[:2]][id(row)]
             prior_own = [r["text"] for r in history[:idx] if r["agent"] == row["agent"]]
+            # The partner's most recent line before this one; None on the seeker's opening turn, when
+            # the partner has not spoken.
             partner = next((r["text"] for r in reversed(history[:idx]) if r["agent"] != row["agent"]), None)
             messages = build_judge_messages(metric, spec.get("persona_text", ""), spec.get("condition", {}).get("topic", ""),
                                             row["text"], prior_own, partner)

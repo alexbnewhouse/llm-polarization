@@ -21,9 +21,18 @@ class Message:
     text: str
 
 
+def message_order(row: dict) -> tuple[int, int]:
+    """Sort key for logged message rows: by turn, and within a turn the seeker speaks before the mentor.
+    Row order in a file is thread-timing, so analysis and replay both sort by this instead."""
+    return (row["turn"], 0 if row["agent"] == SEEKER else 1)
+
+
 @dataclass
 class Transcript:
-    """Canonical transcript of a dyad conversation with egocentric projection views."""
+    """Canonical transcript of a dyad conversation with egocentric projection views.
+
+    The object lives only in memory, for the length of one dyad; `turns.jsonl` is its durable form, and
+    `run.py:_rebuild_transcript` reads it back when a survey is re-administered later."""
     dyad_id: str
     seeker_system: str
     reminder: str | None
