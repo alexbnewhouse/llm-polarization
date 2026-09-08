@@ -13,7 +13,7 @@ from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TE
                             latest_complete_attempts)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import FIXTURE_MESSAGES, TemplateError, parity_check, read_template_from_gguf, render
-from harness.transcript import MENTOR, SEEKER, Transcript
+from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript
 
 DEFAULT_CONFIG = {
     "data_dir": "data", "gguf_py_path": None, "batteries": "instruments/batteries.json", "run_seed": 0,
@@ -44,10 +44,12 @@ def load_config(path: str | Path) -> dict:
 
 
 def model_sha256_cached(path: str, cache_file: Path | None = None) -> str:
-    """Return a GGUF file's sha256, cached on disk keyed by path|size|mtime so re-hashing is skipped."""
+    """Return a GGUF file's sha256, cached on disk keyed by path|size|mtime_ns so re-hashing a 20 GB file
+    is skipped. Nanoseconds rather than whole seconds: a file rewritten within the same second, to the same
+    size, would otherwise return the previous file's hash."""
     cache_file = cache_file or HASH_CACHE
     st = os.stat(path)
-    key = f"{path}|{st.st_size}|{int(st.st_mtime)}"
+    key = f"{path}|{st.st_size}|{st.st_mtime_ns}"
     cache = {}
     if cache_file.exists():
         try:
@@ -105,8 +107,32 @@ def check_agent(handle: AgentHandle, cfg: dict) -> list[tuple[str, bool, str]]:
     return results
 
 
+def validate_manifest_rows(manifest_rows: list[dict]) -> None:
+    """Reject a malformed dyad manifest before the run writes anything. A bad row discovered halfway
+    through a wave has already spent the pre-survey of every dyad before it, and an empty reminder under
+    persona_mode 'reinforced' is worse than a crash: it labels the dyad reinforced without reinforcing it."""
+    seen: set[str] = set()
+    for i, row in enumerate(manifest_rows, 1):
+        for key in ("dyad_id", "persona_text", "n_turns"):
+            if key not in row:
+                raise ValueError(f"dyad manifest line {i}: missing {key!r}")
+        dyad_id = row["dyad_id"]
+        if dyad_id in seen:
+            raise ValueError(f"dyad manifest line {i}: duplicate dyad_id {dyad_id!r}, which is the resume key")
+        seen.add(dyad_id)
+        mode = row.get("persona_mode", "reinforced")
+        if mode not in PERSONA_MODES:
+            raise ValueError(f"dyad manifest line {i} ({dyad_id}): persona_mode must be one of {PERSONA_MODES}, got {mode!r}")
+        if int(row["n_turns"]) <= 0:
+            raise ValueError(f"dyad manifest line {i} ({dyad_id}): n_turns must be positive, got {row['n_turns']!r}")
+        if mode == "reinforced" and not str(row.get("persona_reminder") or "").strip():
+            raise ValueError(f"dyad manifest line {i} ({dyad_id}): persona_mode 'reinforced' needs a non-empty "
+                             "persona_reminder, or the dyad is logged as reinforced but never reinforced")
+
+
 def plan_work(manifest_rows: list[dict], status_rows: list[dict]) -> list[tuple[DyadSpec, int]]:
     """Diff the dyad manifest against the run's status log and return the (spec, attempt) pairs still to run."""
+    validate_manifest_rows(manifest_rows)
     idx = log.resume_index(status_rows)
     work = []
     for row in manifest_rows:
@@ -156,6 +182,10 @@ def run_dyad(worker_slot: int, spec: DyadSpec, attempt: int, ctx: RunContext) ->
     except (DialogueError, SurveyError) as e:
         ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "failed",
                                   "reason": str(e), "ts": ctx.clock()})
+        return "failed"
+    except Exception as e:  # noqa: BLE001 -- one malformed dyad must not take the whole pool down
+        ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "failed",
+                                  "reason": f"{type(e).__name__}: {e}", "ts": ctx.clock()})
         return "failed"
     ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "complete", "ts": ctx.clock()})
     return "complete"
@@ -226,7 +256,13 @@ def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
 
 def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     """Run the `run` subcommand: check the servers, write/verify the run manifest, plan the outstanding
-    (dyad, attempt) work, and execute it across a thread pool with one slot per worker."""
+    (dyad, attempt) work, and execute it across a thread pool with one slot per worker. Returns 0 when
+    every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it, 1 when it refused to start."""
+    if cfg[SEEKER]["url"] == cfg[MENTOR]["url"]:
+        print(f"error: seeker.url and mentor.url are both {cfg[SEEKER]['url']}; both agents pin the same "
+              "slot, so they would evict each other's KV cache every turn. Serve them separately.",
+              file=sys.stderr)
+        return 1
     if cmd_check(cfg) != 0:
         print("check failed; not running", file=sys.stderr)
         return 1
@@ -244,6 +280,10 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
                 "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
     if manifest["harness_dirty"]:
         print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
+    if paths.manifest.exists():
+        # Resuming: the config matching is not enough. Re-verify that the servers are still serving the
+        # models and templates this run started with.
+        _verify_identity(_load_manifest(paths), {SEEKER: s_entry, MENTOR: m_entry})
     log.write_manifest(paths, manifest)
     concurrency = cfg["concurrency"] or min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
     rows = read_jsonl(Path(manifest_path))
@@ -257,24 +297,48 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
                      batteries_sha256=manifest["batteries"]["sha256"])
     free = list(range(concurrency))
     lock = threading.Lock()
+    stop = threading.Event()
 
     def job(spec, attempt):
-        """Run one (spec, attempt) job on a free slot, returning it to the pool when done."""
+        """Run one (spec, attempt) job on a free slot, returning it to the pool when done. A job that has
+        not started yet when Ctrl-C arrives returns immediately: that is what makes the interrupt stop the
+        run rather than merely stop the operator watching it."""
+        if stop.is_set():
+            return "skipped"
         with lock:
             slot = free.pop()
         try:
             r = run_dyad(slot, spec, attempt, ctx)
             print(f"  {spec.dyad_id} attempt {attempt}: {r}", flush=True)
             return r
+        except KeyboardInterrupt:
+            # Ctrl-C reached this worker: raise the flag here, or the pool picks up the next dyad before
+            # the main thread has noticed the interrupt at all.
+            stop.set()
+            raise
         finally:
             with lock:
                 free.append(slot)
 
+    interrupted = False
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        results = list(ex.map(lambda w: job(*w), work))
-    failed = results.count("failed")
-    print(f"done: {results.count('complete')} complete, {failed} failed")
-    return 0
+        futures = [ex.submit(job, spec, attempt) for spec, attempt in work]
+        try:
+            results = [f.result() for f in futures]
+        except KeyboardInterrupt:
+            # Spec section 7: in-flight dyads finish, queued ones never start. `stop` covers the jobs the
+            # pool has already handed to a thread; cancel_futures covers the ones it has not.
+            interrupted = True
+            stop.set()
+            ex.shutdown(wait=True, cancel_futures=True)
+            results = [f.result() for f in futures if f.done() and not f.cancelled() and not f.exception()]
+    complete, failed = results.count("complete"), results.count("failed")
+    print(f"done: {complete} complete, {failed} failed" +
+          (f", {len(work) - complete - failed} not run" if interrupted else ""))
+    if interrupted:
+        print(f"stopped by Ctrl-C; re-run with --run-id {run_id} to resume", file=sys.stderr)
+        return 130
+    return 2 if failed else 0
 
 
 def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
@@ -429,8 +493,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.choices["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
     sub.choices["score"].add_argument("--scope", choices=("pilot", "main"), default="pilot")
     a = ap.parse_args(argv)
-    cfg = load_config(a.config)
     try:
+        cfg = load_config(a.config)
         if a.cmd == "check":
             return cmd_check(cfg)
         if a.cmd == "run":
@@ -438,7 +502,9 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "survey":
             return cmd_survey(cfg, a.run_id, a.phase)
         return cmd_score(cfg, a.run_id, a.scope)
-    except (ServerError, ManifestMismatch) as e:
+    except (ServerError, ManifestMismatch, ValueError) as e:
+        # Everything the operator can get wrong -- a dead server, a changed model, a malformed manifest or
+        # config -- becomes one error line and exit 1, never a traceback.
         print(f"error: {e}", file=sys.stderr)
         return 1
 

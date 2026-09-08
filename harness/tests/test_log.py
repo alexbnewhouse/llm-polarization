@@ -48,11 +48,24 @@ def test_sha256_helpers(tmp_path):
 
 def test_write_manifest_refuses_changed_config(tmp_path):
     p = log.run_paths(tmp_path, "r1")
-    log.write_manifest(p, {"run_id": "r1", "config": {"x": 1}})
-    log.write_manifest(p, {"run_id": "r1", "config": {"x": 1}})   # same config: no-op
+    cfg = {"run_seed": 1, "now": "2026-09-08", "concurrency": 8}
+    log.write_manifest(p, {"run_id": "r1", "config": cfg})
+    log.write_manifest(p, {"run_id": "r1", "config": cfg})        # same config: no-op
     with pytest.raises(log.ManifestMismatch):
-        log.write_manifest(p, {"run_id": "r1", "config": {"x": 2}})
-    assert json.loads(p.manifest.read_text())["config"] == {"x": 1}
+        log.write_manifest(p, {"run_id": "r1", "config": {**cfg, "run_seed": 2}})
+    assert json.loads(p.manifest.read_text())["config"] == cfg
+
+
+def test_write_manifest_allows_operational_config_changes(tmp_path):
+    # Dropping concurrency after an OOM and resuming the same run_id must be allowed: refusing it would
+    # fragment one wave's data across two run ids. Only the run-affecting subset is compared.
+    p = log.run_paths(tmp_path, "r1")
+    cfg = {"run_seed": 1, "now": "2026-09-08", "concurrency": 8, "data_dir": "data"}
+    log.write_manifest(p, {"run_id": "r1", "config": cfg})
+    log.write_manifest(p, {"run_id": "r1", "config": {**cfg, "concurrency": 2, "data_dir": "/mnt/nas"}})
+    assert json.loads(p.manifest.read_text())["config"]["concurrency"] == 8   # first write stands
+    assert set(log.RUN_AFFECTING_CONFIG) == {"seeker", "mentor", "judge", "generation", "run_seed",
+                                             "batteries", "now"}
 
 
 def test_resume_index_and_next_attempt():

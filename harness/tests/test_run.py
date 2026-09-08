@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 import jinja2
@@ -191,3 +192,134 @@ def test_main_run_manifest_mismatch_returns_1_without_raising(tmp_path, monkeypa
     assert R.main(["run", "--config", str(cfg1), "--manifest", str(man), "--run-id", "r1"]) == 0
     cfg2 = write_cfg(tmp_path, run_seed=6)
     assert R.main(["run", "--config", str(cfg2), "--manifest", str(man), "--run-id", "r1"]) == 1
+
+
+def test_model_sha256_cache_hit_is_keyed_by_path_size_and_mtime_ns(tmp_path):
+    f = tmp_path / "m.gguf"; f.write_bytes(b"abc")
+    cache = tmp_path / "hashes.json"
+    assert R.model_sha256_cached(str(f), cache) == log.sha256_text("abc")
+    key = next(iter(json.loads(cache.read_text())))
+    assert key == f"{f}|3|{f.stat().st_mtime_ns}"
+    # A cache hit does not re-hash: poison the entry and it is returned as it stands.
+    cache.write_text(json.dumps({key: "POISONED"}))
+    assert R.model_sha256_cached(str(f), cache) == "POISONED"
+    # Same path, same size, different bytes: a changed mtime_ns is a cache miss even when the whole-second
+    # mtime is unchanged (os.utime pins the nanoseconds, since some filesystems keep coarse timestamps).
+    f.write_bytes(b"xyz")
+    st = f.stat(); os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    assert R.model_sha256_cached(str(f), cache) == log.sha256_text("xyz")
+
+
+def test_validate_manifest_rows_rejects_what_would_mislabel_or_break_a_wave():
+    R.validate_manifest_rows(manifest_rows(2))                      # the good case stays good
+    def rows(**over):
+        r = manifest_rows(1)[0]; r.update(over); return [r]
+    for bad in (rows(persona_mode="sometimes"), rows(n_turns=0),
+                rows(persona_mode="reinforced", persona_reminder="  "), rows(persona_text=None)):
+        if bad[0].get("persona_text") is None:
+            bad[0].pop("persona_text")
+        with pytest.raises(ValueError):
+            R.validate_manifest_rows(bad)
+    duplicate = manifest_rows(1) + manifest_rows(1)
+    with pytest.raises(ValueError):
+        R.validate_manifest_rows(duplicate)
+    # plan_work validates before returning any work, so nothing is written for a bad manifest.
+    with pytest.raises(ValueError):
+        R.plan_work(rows(n_turns=0), [])
+
+
+def test_main_run_reports_a_bad_manifest_as_an_error_line(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    bad = manifest_rows(1)[0]; bad["persona_reminder"] = ""
+    man.write_text(json.dumps(bad) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert "persona_reminder" in capsys.readouterr().err
+
+
+def test_run_dyad_contains_an_unexpected_exception(tmp_path):
+    class Exploding(FakeClient):
+        def complete(self, prompt, **kw):
+            raise RuntimeError("something the harness never anticipated")
+    ctx, paths, sc, mc = make_ctx(tmp_path, mentor_client=Exploding())
+    spec = DyadSpec.from_row(manifest_rows(1)[0])
+    assert R.run_dyad(0, spec, 1, ctx) == "failed"           # the pool survives; the dyad is marked
+    st = log.read_jsonl(paths.status)
+    assert st[-1]["status"] == "failed" and "RuntimeError" in st[-1]["reason"]
+
+
+def _fake_servers(tmp_path, monkeypatch):
+    """Point run.py at fake llama-servers: one FakeClient per url, no network, no GGUF."""
+    monkeypatch.setattr(R, "read_template_from_gguf", lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML))
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "HASH-" + path.split("/")[-1])
+    clients = {}
+    def factory(url, timeout=None):
+        c = FakeClient(['{"answer": 2}', "line"])
+        c.props = lambda: {"model_path": f"/{url[7:]}.gguf", "total_slots": 2, "build_info": "b",
+                           "model_alias": url[7:], "default_generation_settings": {}}
+        clients[url] = c
+        return c
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    return clients
+
+
+def test_ctrl_c_stops_submitting_new_dyads_and_exits_130(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    started = []
+    def fake_run_dyad(slot, spec, attempt, ctx):
+        started.append(spec.dyad_id)
+        if len(started) == 2:
+            raise KeyboardInterrupt          # stands in for the operator's Ctrl-C
+        return "complete"
+    monkeypatch.setattr(R, "run_dyad", fake_run_dyad)
+    cfg = write_cfg(tmp_path, concurrency=1)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(3)))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 130
+    assert started == ["d0", "d1"]           # the third dyad is never started
+    out = capsys.readouterr()
+    assert "1 complete" in out.out and "not run" in out.out and "resume" in out.err
+
+
+def test_run_exits_2_when_a_dyad_fails(tmp_path, monkeypatch):
+    _fake_servers(tmp_path, monkeypatch)
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "failed")
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 2
+
+
+def test_run_refuses_when_seeker_and_mentor_share_a_server(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path, mentor={"url": "http://s"})
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert "same" in capsys.readouterr().err.lower()
+
+
+def test_resume_refuses_a_swapped_model_or_template(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "complete")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    # The GGUF at the same path is re-quantized: same config, different bytes.
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: "OTHER-" + path.split("/")[-1])
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert "model_sha256" in capsys.readouterr().err
+
+
+def test_survey_refuses_a_swapped_mentor(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    monkeypatch.setattr(R, "read_template_from_gguf",
+                        lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML + " "))
+    assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "pre"]) == 1
+    assert "template_sha256" in capsys.readouterr().err

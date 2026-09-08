@@ -68,10 +68,21 @@ class ManifestMismatch(Exception):
     pass
 
 
+# The config keys that decide what a run produces. Everything else in the config -- concurrency,
+# data_dir -- is operational: dropping concurrency after an OOM and resuming the same run_id must not
+# be refused, because the alternative is fragmenting one wave's data across two run ids.
+RUN_AFFECTING_CONFIG = ("seeker", "mentor", "judge", "generation", "run_seed", "batteries", "now")
+
+
+def run_affecting(config: dict | None) -> dict:
+    """The part of a config two runs must agree on to be the same run. The full config is still stored."""
+    return {k: (config or {}).get(k) for k in RUN_AFFECTING_CONFIG}
+
+
 def write_manifest(paths: RunPaths, manifest: dict) -> None:
     if paths.manifest.exists():
         existing = json.loads(paths.manifest.read_text(encoding="utf-8"))
-        if existing.get("config") != manifest.get("config"):
+        if run_affecting(existing.get("config")) != run_affecting(manifest.get("config")):
             raise ManifestMismatch(f"{paths.manifest} exists with a different config; use a new run_id")
         return
     paths.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
