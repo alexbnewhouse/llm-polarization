@@ -1,0 +1,12 @@
+# Exact versions the harness was developed and tested against (2026-09-08).
+# Use this to rebuild the environment rather than infer it: pip install -r harness/requirements.lock
+#
+# This is not the authoritative record of any run. Each run records the versions it actually
+# used in data/<run_id>/manifest.json -> environment (python, platform, jinja2, harness_version,
+# gguf_py_path, gguf_py_commit, gpu). If the two disagree, the manifest is what happened.
+#
+# gguf-py is not installed from PyPI: it comes from the llama.cpp checkout named by the config's
+# gguf_py_path, and its commit is recorded per run as environment.gguf_py_commit.
+jinja2==3.1.2
+markupsafe==2.1.5
+numpy==2.4.4

@@ -1,6 +1,9 @@
 import json
+import sys
 from pathlib import Path
+import jinja2
 import pytest
+import harness
 from harness import log, run as R
 from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings, DyadSpec
@@ -132,6 +135,15 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert batteries["n_items"] == 13 and len(batteries["item_ids"]) == 13
     assert batteries["sha256"] == log.sha256_file(REPO / "instruments" / "batteries.json")
     assert all(s["batteries_sha256"] == batteries["sha256"] for s in log.read_jsonl(paths.surveys))
+    env = mf["environment"]
+    assert env["python"] == sys.version and env["jinja2"] == jinja2.__version__
+    assert env["platform"] and env["harness_version"] == harness.__version__
+    assert set(env) == {"python", "platform", "jinja2", "harness_version", "gguf_py_path", "gguf_py_commit", "gpu"}
+    assert env["gpu"] is None or isinstance(env["gpu"], str)
+    for role in ("seeker", "mentor"):
+        assert mf[role]["template_source"] == CHATML          # archived in full, not only hashed
+        assert "server_chat_template" in mf[role] and "model_ftype" in mf[role]
+        assert mf[role]["build_info"] == "b" and mf[role]["total_slots"] == 2
     assert len(log.read_jsonl(paths.turns)) == 3 * 4
     assert sorted(s["status"] for s in log.read_jsonl(paths.status)).count("complete") == 3
     assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0   # resume: nothing to do

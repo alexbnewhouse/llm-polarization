@@ -1,10 +1,11 @@
 """CLI: check servers, run a dialogue manifest, re-administer surveys, score a run."""
 from __future__ import annotations
-import argparse, copy, json, os, sys, threading
+import argparse, copy, json, os, platform, sys, threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from harness import log
+import jinja2
+from harness import __version__, log
 from harness.client import LlamaClient, ServerError
 from harness.dialogue import AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
@@ -73,7 +74,14 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
     sha = model_sha256_cached(model_path)
     handle = AgentHandle(name, client, template, sha, slot, alias=props.get("model_alias", ""))
     manifest_entry = {"url": entry["url"], "alias": props.get("model_alias", ""), "model_path": model_path,
-                      "model_sha256": sha, "template_sha256": template.sha256, "build_info": props.get("build_info", ""),
+                      "model_sha256": sha, "template_sha256": template.sha256,
+                      # The template source, not only its hash: the template lives inside a 5-20 GB GGUF
+                      # that git cannot hold, and a hash you cannot check anything against is not provenance.
+                      "template_source": template.source,
+                      # What the server says it is rendering with, which is not always what the GGUF holds
+                      # (an arm started with --chat-template overrides it). None if /props does not say.
+                      "server_chat_template": props.get("chat_template"),
+                      "build_info": props.get("build_info", ""), "model_ftype": props.get("model_ftype"),
                       "total_slots": props.get("total_slots"), "default_generation_settings": props.get("default_generation_settings", {})}
     return handle, manifest_entry
 
@@ -233,7 +241,7 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     manifest = {"run_id": run_id, "started_at": now_iso(), "harness_commit": commit,
                 "harness_dirty": _git_dirty(), "config": cfg,
                 "input_manifest": _file_provenance(manifest_path), "batteries": _batteries_provenance(cfg),
-                "seeker": s_entry, "mentor": m_entry}
+                "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
     if manifest["harness_dirty"]:
         print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
     log.write_manifest(paths, manifest)
@@ -332,13 +340,50 @@ def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, template_sour
     return path
 
 
-def _git(args: list[str], cwd: Path) -> str | None:
-    """Run a read-only git command in `cwd`; return its stripped output, or None if git could not answer."""
+def _run_text(cmd: list[str], cwd: Path | None = None) -> str | None:
+    """Run a read-only command and return its stripped output, or None if it is absent, fails or hangs.
+    Every caller is provenance capture: a missing tool must leave a null in the record, not stop a run."""
     try:
         import subprocess
-        return subprocess.check_output(["git", *args], cwd=str(cwd), stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(cmd, cwd=str(cwd) if cwd else None, stderr=subprocess.DEVNULL,
+                                       text=True, timeout=15).strip()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _git(args: list[str], cwd: Path) -> str | None:
+    """Run a read-only git command in `cwd`; return its stripped output, or None if git could not answer."""
+    return _run_text(["git", *args], cwd)
+
+
+def _gpu() -> str | None:
+    """The GPU and driver, best effort: whatever nvidia-smi, rocm-smi or /sys/class/drm will say. The
+    backend and driver change the numerics, so a reviewer wants them even though nothing depends on them."""
+    for cmd in (["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                ["rocm-smi", "--showproductname"]):
+        out = _run_text(cmd)
+        if out:
+            return " | ".join(line.strip() for line in out.splitlines() if line.strip())[:500]
+    cards = []
+    for uevent in sorted(Path("/sys/class/drm").glob("card*/device/uevent")):
+        try:
+            fields = dict(l.split("=", 1) for l in uevent.read_text().splitlines() if "=" in l)
+        except OSError:
+            continue
+        if fields.get("DRIVER"):
+            cards.append(f"{uevent.parts[-3]}: {fields['DRIVER']} {fields.get('PCI_ID', '')}".strip())
+    return " | ".join(cards) or None
+
+
+def _environment(cfg: dict) -> dict:
+    """The software the prompts were built by. Every prompt in the study is rendered by jinja2, so a jinja2
+    upgrade that changed whitespace handling would change every prompt; the version has to be in the record
+    even though `check`'s parity test would catch such a change before a run."""
+    gguf_py = cfg.get("gguf_py_path")
+    return {"python": sys.version, "platform": platform.platform(), "jinja2": jinja2.__version__,
+            "harness_version": __version__, "gguf_py_path": gguf_py,
+            "gguf_py_commit": _git(["rev-parse", "HEAD"], Path(gguf_py)) if gguf_py else None,
+            "gpu": _gpu()}
 
 
 def _git_commit() -> str:
