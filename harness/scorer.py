@@ -114,8 +114,8 @@ class Scorer:
             by_dyad.setdefault((r["dyad_id"], r.get("attempt", 1)), []).append(r)
         histories: dict[tuple, list[dict]] = {
             k: sorted(v, key=lambda r: (r["turn"], 0 if r["agent"] == SEEKER else 1)) for k, v in by_dyad.items()}
-        positions: dict[tuple, dict[tuple, int]] = {
-            k: {(r["turn"], r["agent"]): i for i, r in enumerate(v)} for k, v in histories.items()}
+        positions: dict[tuple, dict[int, int]] = {
+            k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
         written = 0
         for row, metric in select_targets(turns, scope):
             key = (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric)
@@ -131,7 +131,7 @@ class Scorer:
                 self.scores_log.write(out)
                 continue
             history = histories[key[:2]]
-            idx = positions[key[:2]][(row["turn"], row["agent"])]
+            idx = positions[key[:2]][id(row)]
             prior_own = [r["text"] for r in history[:idx] if r["agent"] == row["agent"]]
             partner = next((r["text"] for r in reversed(history[:idx]) if r["agent"] != row["agent"]), None)
             messages = build_judge_messages(metric, spec.get("persona_text", ""), spec.get("condition", {}).get("topic", ""),

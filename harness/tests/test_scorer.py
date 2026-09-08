@@ -113,12 +113,13 @@ def test_score_run_logs_errors_and_continues(tmp_path):
 
 
 def test_score_run_duplicate_row_uses_position_not_value_equality(tmp_path):
-    # Two seeker rows at turn 2 are value-identical (a duplicate append after a crash-retry, or
-    # identical text at a repeated turn number): dict equality can't tell them apart, so a lookup
-    # by `history.index(row)` silently resolves both to the position of the FIRST match. A
-    # position lookup keyed by (turn, agent) does not have that failure mode: verified below by
-    # checking the second occurrence's own judge prompt includes the earlier bulleted bullet line
-    # "- DUP" (from history[:idx] correctly reaching past the first duplicate before it).
+    # Two seeker rows at turns 2 and 3 share identical text ("DUP"): any position lookup keyed by
+    # a *value* derived from the row's contents (its (turn, agent) pair included, since the two
+    # rows still collide once collapsed into one key when a duplicate turn/agent combination is
+    # possible) risks feeding a row its own line back as an "earlier" one, or mixing up which
+    # duplicate is "prior" to which. Resolving position by object identity (id(row)) has neither
+    # failure mode: the FIRST DUP row must not see its own text as an earlier line, and the SECOND
+    # must see the first DUP row's text exactly once.
     p = log.run_paths(tmp_path, "r1")
     log.JsonlWriter(p.dyads).write({"dyad_id": "d", "attempt": 1, "condition": {"topic": "immigration"},
                                     "persona_text": "PERSONA", "persona_reminder": "", "persona_mode": "once",
@@ -128,18 +129,19 @@ def test_score_run_duplicate_row_uses_position_not_value_equality(tmp_path):
     tw = log.JsonlWriter(p.turns)
     tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 1, "agent": SEEKER, "text": "S1", "finish_reason": "stop"})
     tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
-    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
-    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 3, "agent": SEEKER, "text": "S3", "finish_reason": "stop"})
+    tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 3, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
     manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
     jc = FakeClient(['{"score": 0.5, "rationale": "x"}'])
     judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0)
     sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
     sc.score_run(p, "pilot", manifest)
-    # pilot order (seeker rows only here): S1(prompt_to_line, line_to_line), DUP#1(prompt_to_line,
-    # line_to_line), DUP#2(prompt_to_line, line_to_line), S3(prompt_to_line, line_to_line) ->
-    # index 5 is DUP#2's line_to_line call, the one a value-based lookup would misresolve.
-    call = jc.calls[5]
-    assert "- DUP" in call["prompt"]  # prior_own reached past the first DUP row, not just ["S1"]
+    # pilot order (seeker rows only here): S1(prompt_to_line, line_to_line), DUP@turn2(prompt_to_line,
+    # line_to_line), DUP@turn3(prompt_to_line, line_to_line) -> index 3 is the first DUP row's
+    # line_to_line call, index 5 is the second DUP row's.
+    first_dup_call = jc.calls[3]
+    second_dup_call = jc.calls[5]
+    assert "- DUP" not in first_dup_call["prompt"]                    # must not see its own line as "earlier"
+    assert second_dup_call["prompt"].count("- DUP") == 1              # sees the first DUP row's line exactly once
 
 
 def test_score_run_missing_dyads_row_errors_without_judge_call(tmp_path):
