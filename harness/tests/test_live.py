@@ -27,7 +27,10 @@ def test_check_passes(cfg):
     for role in (SEEKER, MENTOR):
         handle, _ = R.build_agent(role, cfg[role], 0, cfg)
         results = R.check_agent(handle, cfg)
-        assert all(ok for _, ok, _ in results), results
+        # ok is True, False (blocks) or None (a warning, e.g. a server started with --chat-template
+        # reporting a template that differs from the GGUF's). Only False fails the check.
+        assert all(ok is not False for _, ok, _ in results), results
+        assert dict((n, ok) for n, ok, _ in results)["template_parity_user_first"] is True
 
 
 def test_two_turn_dialogue_survey_and_score(cfg, tmp_path):

@@ -12,7 +12,8 @@ from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_j
 from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, Scorer,
                             latest_complete_attempts)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
-from harness.templates import FIXTURE_MESSAGES, TemplateError, parity_check, read_template_from_gguf, render
+from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
+                               read_template_from_gguf, render)
 from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript
 
 DEFAULT_CONFIG = {
@@ -88,16 +89,65 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
     return handle, manifest_entry
 
 
-def check_agent(handle: AgentHandle, cfg: dict) -> list[tuple[str, bool, str]]:
-    """Run this agent's pre-flight checks: server health, template-rendering parity with the server, and,
-    for the seeker only, whether its template accepts a trailing system message (the persona reminder)."""
+CONTEXT_HEADROOM = 2048
+
+
+def _context_budget(handle: AgentHandle, cfg: dict, props: dict, max_n_turns: int) -> tuple[str, bool | None, str]:
+    """Does the longest dialogue in the manifest fit in one slot's context? A turn is two messages and each
+    can run to n_predict tokens, so a dyad needs max_n_turns * 2 * n_predict plus headroom for the persona
+    and the template's own wrapping. llama.cpp does not shift context by default: a slot that runs out stops
+    with truncated=true and the next turn fails outright -- at turn 35 of 40, after a day of compute."""
+    n_predict = int((cfg.get("generation") or {}).get("n_predict", 300))
+    need = max_n_turns * 2 * n_predict + CONTEXT_HEADROOM
+    n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
+    detail = (f"about {need} tokens needed per dyad ({max_n_turns} turns x 2 messages x n_predict "
+              f"{n_predict} + {CONTEXT_HEADROOM} headroom)")
+    if not n_ctx:
+        return ("context_budget", None, f"{detail}; the server does not report n_ctx")
+    return ("context_budget", int(n_ctx) >= need, f"n_ctx {int(n_ctx)} per slot vs {detail}")
+
+
+def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) -> list[tuple[str, bool | None, str]]:
+    """This agent's pre-flight, as (name, ok, detail) rows. `ok` is True, False (blocks a run) or None
+    (a warning worth printing that does not block one):
+
+    - `health`: the server answers.
+    - `template_parity` / `template_parity_user_first`: our jinja2 rendering is byte-identical to the
+      server's own, checked twice -- once with a leading system message and once with none at all, which
+      is the mentor's only shape and exactly where a template's default system block would appear.
+    - `server_chat_template`: whether the template the server reports at /props is the one we read out of
+      the GGUF. A warning rather than a failure: the Olmo arm is deliberately served
+      `--no-jinja --chat-template chatml`, and the parity rows above are the gate that matters.
+    - `context_budget` (only when a dyad manifest is given): does the longest dialogue fit in a slot?
+    - `trailing_system` (seeker only): does the template accept the persona reminder as a trailing
+      system message?"""
     now = cfg.get("now", "2026-09-08")
-    results = [("health", handle.client.health(), handle.client.url if hasattr(handle.client, "url") else "")]
+    results: list[tuple[str, bool | None, str]] = [
+        ("health", handle.client.health(), handle.client.url if hasattr(handle.client, "url") else "")]
+    for name, messages in (("template_parity", FIXTURE_MESSAGES[:-1]),
+                           ("template_parity_user_first", FIXTURE_MESSAGES_USER_FIRST)):
+        try:
+            ok, ours, theirs = parity_check(handle.template, handle.client, messages, now=now)
+            results.append((name, ok, "" if ok else f"ours={ours[-120:]!r} theirs={theirs[-120:]!r}"))
+        except TemplateError as e:
+            results.append((name, False, str(e)))
     try:
-        ok, ours, theirs = parity_check(handle.template, handle.client, FIXTURE_MESSAGES[:-1], now=now)
-        results.append(("template_parity", ok, "" if ok else f"ours={ours[-120:]!r} theirs={theirs[-120:]!r}"))
-    except TemplateError as e:
-        results.append(("template_parity", False, str(e)))
+        props = handle.client.props()
+    except ServerError as e:
+        props = {}
+        results.append(("props", False, str(e)))
+    served = props.get("chat_template")
+    if served is None:
+        results.append(("server_chat_template", None, "the server does not report one at /props"))
+    elif served == handle.template.source:
+        results.append(("server_chat_template", True, "matches the GGUF template"))
+    else:
+        results.append(("server_chat_template", None,
+                        f"differs from the GGUF template (server {log.sha256_text(served)[:12]}, "
+                        f"gguf {handle.template.sha256[:12]}) -- expected for an arm served with "
+                        "--chat-template; template parity is the gate"))
+    if max_n_turns:
+        results.append(_context_budget(handle, cfg, props, max_n_turns))
     if handle.name == SEEKER:
         try:
             render(handle.template, FIXTURE_MESSAGES, now=now)
@@ -205,12 +255,22 @@ def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
     return out
 
 
-def cmd_check(cfg: dict) -> int:
-    """Build the seeker and mentor agents, print each one's check_agent results, and return 0 iff all pass;
-    a role whose server is unreachable prints a FAIL health line instead of letting build_agent's
-    ServerError traceback out, since a down server is exactly the failure `check` exists to report."""
+def cmd_check(cfg: dict, manifest_path: str | None = None) -> int:
+    """Build every configured agent (the judge too, when `judge.url` is set: its output is grammar-forced,
+    so a mis-rendered judge prompt still yields well-formed but meaningless scores) and print each one's
+    check_agent rows. Returns 0 iff nothing FAILed; `warn` rows are printed and do not block. A role whose
+    server is unreachable prints a FAIL health line instead of letting build_agent's ServerError traceback
+    out, since a down server is exactly the failure `check` exists to report. With --manifest, also checks
+    that the manifest's longest dialogue fits in a slot's context."""
     ok_all = True
-    for role in (SEEKER, MENTOR):
+    max_n_turns = None
+    if manifest_path:
+        max_n_turns = max((int(r.get("n_turns") or 0) for r in read_jsonl(Path(manifest_path))), default=0) or None
+    if cfg[SEEKER].get("url") == cfg[MENTOR].get("url"):
+        print(f"WARN seeker and mentor share {cfg[SEEKER].get('url')}: both pin the same slot, so every "
+              "turn would evict the other agent's KV cache. `run` refuses this.")
+    roles = [SEEKER, MENTOR] + (["judge"] if (cfg.get("judge") or {}).get("url") else [])
+    for role in roles:
         try:
             handle, entry = build_agent(role, cfg[role], 0, cfg)
         except ServerError as e:
@@ -218,9 +278,9 @@ def cmd_check(cfg: dict) -> int:
             ok_all = False
             continue
         print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} slots={entry['total_slots']}")
-        for name, ok, detail in check_agent(handle, cfg):
-            ok_all &= ok
-            print(f"   {'ok ' if ok else 'FAIL'} {name} {detail}")
+        for name, ok, detail in check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns):
+            ok_all = ok_all and ok is not False
+            print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
     return 0 if ok_all else 1
 
 
@@ -263,7 +323,7 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
               "slot, so they would evict each other's KV cache every turn. Serve them separately.",
               file=sys.stderr)
         return 1
-    if cmd_check(cfg) != 0:
+    if cmd_check(cfg, manifest_path) != 0:
         print("check failed; not running", file=sys.stderr)
         return 1
     agents = _agents(cfg)
@@ -375,6 +435,13 @@ def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
         print("config needs judge.url", file=sys.stderr)
         return 1
     judge, entry = build_agent("judge", cfg["judge"], 0, cfg)
+    ok_all = True
+    for name, ok, detail in check_agent(judge, cfg):
+        ok_all = ok_all and ok is not False
+        print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} judge {name} {detail}")
+    if not ok_all:
+        print("judge check failed; not scoring", file=sys.stderr)
+        return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
     write_judge_manifest(paths, entry, scope, judge.template.source)
@@ -484,19 +551,21 @@ def main(argv: list[str] | None = None) -> int:
     and turn a ServerError or ManifestMismatch into a clean error line and exit code 1 instead of a traceback."""
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    parsers = {}
     for name in ("check", "run", "survey", "score"):
-        p = sub.add_parser(name)
+        parsers[name] = p = sub.add_parser(name)
         p.add_argument("--config", required=True)
         if name != "check":
             p.add_argument("--run-id", required=True)
-    sub.choices["run"].add_argument("--manifest", required=True)
-    sub.choices["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
-    sub.choices["score"].add_argument("--scope", choices=("pilot", "main"), default="pilot")
+    parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
+    parsers["run"].add_argument("--manifest", required=True)
+    parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
+    parsers["score"].add_argument("--scope", choices=("pilot", "main"), default="pilot")
     a = ap.parse_args(argv)
     try:
         cfg = load_config(a.config)
         if a.cmd == "check":
-            return cmd_check(cfg)
+            return cmd_check(cfg, a.manifest)
         if a.cmd == "run":
             return cmd_run(cfg, a.manifest, a.run_id)
         if a.cmd == "survey":

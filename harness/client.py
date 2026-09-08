@@ -13,13 +13,19 @@ class ServerError(Exception):
 
 @dataclass
 class Completion:
-    """Result of a completion request: text, finish_reason, token counts, timings, and raw response."""
+    """Result of a completion request: text, finish_reason, token counts, timings, and raw response.
+    `truncated` / `tokens_evaluated` / `tokens_cached` are the server's own account of the slot's context
+    and are None on builds that do not report them; `truncated` is the difference between a turn that hit
+    the n_predict cap and a dyad that has run out of context."""
     text: str
     finish_reason: str
     prompt_n: int
     predicted_n: int
     timings: dict
     raw: dict
+    truncated: bool | None = None
+    tokens_evaluated: int | None = None
+    tokens_cached: int | None = None
 
 
 def parse_completion(raw: dict) -> Completion:
@@ -33,6 +39,9 @@ def parse_completion(raw: dict) -> Completion:
         predicted_n=int(timings.get("predicted_n") or 0),
         timings=timings,
         raw=raw,
+        truncated=raw.get("truncated"),
+        tokens_evaluated=raw.get("tokens_evaluated"),
+        tokens_cached=raw.get("tokens_cached"),
     )
 
 

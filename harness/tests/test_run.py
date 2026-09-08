@@ -8,7 +8,7 @@ import harness
 from harness import log, run as R
 from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings, DyadSpec
-from harness.templates import ChatTemplate
+from harness.templates import ChatTemplate, render as T_render
 from harness.transcript import SEEKER, MENTOR
 from harness.tests.fakes import FakeClient
 from harness.tests.conftest import CHATML, REJECTS_TRAILING_SYSTEM
@@ -58,12 +58,57 @@ def test_check_agent_reports_parity_and_trailing_system(tmp_path):
     ok_tpl = ChatTemplate.from_source(CHATML)
     h = AgentHandle(SEEKER, FakeClient(), ok_tpl, "h", 0)
     results = R.check_agent(h, {"now": "2026-09-08"})
-    assert all(ok for _, ok, _ in results) and {n for n, _, _ in results} >= {"health", "template_parity", "trailing_system"}
+    assert all(ok is not False for _, ok, _ in results)
+    assert {n for n, _, _ in results} >= {"health", "template_parity", "template_parity_user_first",
+                                          "server_chat_template", "trailing_system"}
     bad = AgentHandle(SEEKER, FakeClient(), ChatTemplate.from_source(REJECTS_TRAILING_SYSTEM), "h", 0)
     results = dict((n, ok) for n, ok, _ in R.check_agent(bad, {"now": "2026-09-08"}))
     assert results["trailing_system"] is False and results["template_parity"] is False
     m = AgentHandle(MENTOR, FakeClient(), ChatTemplate.from_source(REJECTS_TRAILING_SYSTEM), "h", 0)
     assert "trailing_system" not in dict((n, ok) for n, ok, _ in R.check_agent(m, {"now": "2026-09-08"}))
+
+
+class DefaultSystemInjectingClient(FakeClient):
+    """A server whose formatter inserts a default system block when the caller supplies none. This is the
+    mentor's only message shape, and the system-first fixture cannot see the divergence."""
+    def apply_template(self, messages):
+        if not any(m["role"] == "system" for m in messages):
+            messages = [{"role": "system", "content": "You are a helpful assistant."}] + list(messages)
+        return T_render(self.tpl, messages)
+
+
+def test_check_agent_catches_parity_that_only_breaks_without_a_system_message():
+    h = AgentHandle(MENTOR, DefaultSystemInjectingClient(), ChatTemplate.from_source(CHATML), "h", 0)
+    rows = dict((n, ok) for n, ok, _ in R.check_agent(h, {"now": "2026-09-08"}))
+    assert rows["template_parity"] is True            # the system-first fixture sails through
+    assert rows["template_parity_user_first"] is False
+
+
+def test_check_agent_compares_the_template_the_server_reports():
+    tpl = ChatTemplate.from_source(CHATML)
+    same = FakeClient(); same.props = lambda: {**FakeClient().props(), "chat_template": CHATML}
+    rows = dict((n, (ok, d)) for n, ok, d in R.check_agent(AgentHandle(MENTOR, same, tpl, "h", 0), {}))
+    assert rows["server_chat_template"][0] is True
+    # An arm served with --chat-template (Olmo) reports a different string: a warning, not a failure,
+    # because template parity against that server is the gate.
+    other = FakeClient(); other.props = lambda: {**FakeClient().props(), "chat_template": "{{ 'x' }}"}
+    rows = dict((n, (ok, d)) for n, ok, d in R.check_agent(AgentHandle(MENTOR, other, tpl, "h", 0), {}))
+    assert rows["server_chat_template"][0] is None and "differs" in rows["server_chat_template"][1]
+
+
+def test_check_agent_context_budget():
+    tpl = ChatTemplate.from_source(CHATML)
+    c = FakeClient(); c.props = lambda: {**FakeClient().props(), "default_generation_settings": {"n_ctx": 8192}}
+    cfg = {"now": "2026-09-08", "generation": {"n_predict": 300}}
+    h = AgentHandle(MENTOR, c, tpl, "h", 0)
+    rows = dict((n, ok) for n, ok, _ in R.check_agent(h, cfg, max_n_turns=10))     # 10*2*300+2048 = 8048
+    assert rows["context_budget"] is True
+    rows = dict((n, ok) for n, ok, _ in R.check_agent(h, cfg, max_n_turns=40))     # 40 turns does not fit
+    assert rows["context_budget"] is False
+    assert "context_budget" not in dict((n, ok) for n, ok, _ in R.check_agent(h, cfg))
+    silent = FakeClient()                                                          # no n_ctx reported
+    rows = dict((n, ok) for n, ok, _ in R.check_agent(AgentHandle(MENTOR, silent, tpl, "h", 0), cfg, max_n_turns=40))
+    assert rows["context_budget"] is None
 
 
 def manifest_rows(n=3):
@@ -323,3 +368,46 @@ def test_survey_refuses_a_swapped_mentor(tmp_path, monkeypatch, capsys):
                         lambda path, gguf_py_path=None: ChatTemplate.from_source(CHATML + " "))
     assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "pre"]) == 1
     assert "template_sha256" in capsys.readouterr().err
+
+
+def test_check_covers_the_judge_and_warns_when_two_roles_share_a_server(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    assert R.main(["check", "--config", str(write_cfg(tmp_path))]) == 0
+    out = capsys.readouterr().out
+    assert "[judge]" in out                        # the judge's prompt is checked before it scores anything
+    assert R.main(["check", "--config", str(write_cfg(tmp_path, mentor={"url": "http://s"}))]) == 0
+    assert "WARN seeker and mentor share" in capsys.readouterr().out
+
+
+def test_check_reports_the_context_budget_for_the_manifest(tmp_path, monkeypatch, capsys):
+    clients = _fake_servers(tmp_path, monkeypatch)
+    man = tmp_path / "dyads.jsonl"
+    rows = manifest_rows(1); rows[0]["n_turns"] = 40
+    man.write_text(json.dumps(rows[0]) + "\n")
+    cfg = write_cfg(tmp_path)
+    assert R.main(["check", "--config", str(cfg), "--manifest", str(man)]) == 0
+    assert "context_budget" in capsys.readouterr().out          # unknown n_ctx: reported, does not block
+    def small_ctx(url, timeout=None):
+        c = FakeClient()
+        c.props = lambda: {"model_path": f"/{url[7:]}.gguf", "total_slots": 2, "build_info": "b",
+                           "model_alias": url[7:], "default_generation_settings": {"n_ctx": 4096}}
+        return c
+    monkeypatch.setattr(R, "LlamaClient", small_ctx)
+    assert R.main(["check", "--config", str(cfg), "--manifest", str(man)]) == 1
+    assert "FAIL context_budget" in capsys.readouterr().out
+
+
+def test_score_refuses_when_the_judge_fails_its_check(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "complete")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    # The judge's GGUF template no longer matches what its server renders: grammar-forced scores would
+    # still come back well-formed and be meaningless.
+    monkeypatch.setattr(R, "read_template_from_gguf",
+                        lambda path, gguf_py_path=None: ChatTemplate.from_source(
+                            CHATML if "j" not in path else "{{ 'divergent' }}"))
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "pilot"]) == 1
+    assert "not scoring" in capsys.readouterr().err

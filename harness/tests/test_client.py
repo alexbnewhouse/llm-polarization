@@ -56,3 +56,14 @@ def test_post_wraps_network_errors_as_server_error():
         cl._post("/completion", {"prompt": "x"})
     with pytest.raises(C.ServerError):
         cl._get("/health")
+
+
+def test_parse_completion_keeps_the_servers_context_accounting():
+    raw = {"content": "hi", "stop_type": "limit", "truncated": True, "tokens_evaluated": 900,
+           "tokens_cached": 850, "timings": {"prompt_n": 50, "predicted_n": 300}}
+    c = C.parse_completion(raw)
+    # finish_reason "length" alone cannot tell an n_predict cap from a slot that ran out of context.
+    assert c.finish_reason == "length" and c.truncated is True
+    assert c.tokens_evaluated == 900 and c.tokens_cached == 850
+    old = C.parse_completion({"content": "x"})          # a build that reports none of the three
+    assert (old.truncated, old.tokens_evaluated, old.tokens_cached) == (None, None, None)

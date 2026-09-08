@@ -108,6 +108,7 @@ class DialogueRunner:
                                      temperature=s.temperature, top_p=s.top_p, cache_prompt=True)
         except ServerError as e:
             row.update({"prompt_n": None, "predicted_n": None, "expected_new": None, "cache_warning": None,
+                        "truncated": None, "tokens_evaluated": None, "tokens_cached": None,
                         "finish_reason": "error", "text": "", "timings": {}, "error": str(e),
                         "adherence": None, "ts": self.clock()})
             self.turns_log.write(row)
@@ -115,6 +116,10 @@ class DialogueRunner:
         last_prompt[agent] = prompt
         row.update({"prompt_n": comp.prompt_n, "predicted_n": comp.predicted_n, "expected_new": expected,
                     "cache_warning": comp.prompt_n > expected + self.cache_margin,
+                    # The server's own context accounting: `truncated` true means this slot ran out of
+                    # context, which finish_reason "length" (the n_predict cap) does not distinguish.
+                    "truncated": comp.truncated, "tokens_evaluated": comp.tokens_evaluated,
+                    "tokens_cached": comp.tokens_cached,
                     "finish_reason": comp.finish_reason, "text": comp.text, "timings": comp.timings,
                     "adherence": None, "ts": self.clock()})
         self.turns_log.write(row)

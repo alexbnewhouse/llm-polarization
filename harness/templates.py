@@ -36,12 +36,22 @@ FIXTURE_MESSAGES = [
     {"role": "system", "content": "Fixture trailing reminder."},
 ]
 
+# The mentor's only shape: no system message at all. Many templates inject a default system block
+# precisely when none is supplied, so parity proved on the system-first fixture proves nothing here.
+FIXTURE_MESSAGES_USER_FIRST = [m for m in FIXTURE_MESSAGES if m["role"] != "system"]
+
 
 def _gguf_module(gguf_py_path: str | None):
     path = gguf_py_path or os.environ.get("GGUF_PY_PATH")
     if path and path not in sys.path:
         sys.path.insert(0, path)
-    import gguf  # noqa: WPS433
+    try:
+        import gguf  # noqa: WPS433
+    except ImportError as e:
+        # gguf-py is not pip-installed and brings its own dependencies (numpy first of all). Without this,
+        # the first command the researcher runs answers with a raw ModuleNotFoundError traceback.
+        raise TemplateError(f"cannot import {e.name!r}, which llama.cpp's gguf-py needs "
+                            f"(gguf_py_path={path!r}); pip install -r harness/requirements.txt") from e
     if not hasattr(gguf, "GGUFReader"):
         raise TemplateError("imported a 'gguf' module without GGUFReader; set gguf_py_path to llama.cpp's gguf-py")
     return gguf

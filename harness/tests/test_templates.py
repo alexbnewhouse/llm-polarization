@@ -68,3 +68,22 @@ def test_parity_check_ok_and_mismatch(chatml, dated):
 def test_read_template_from_gguf_missing_path_raises(tmp_path):
     with pytest.raises((TemplateError, OSError, ImportError)):
         templates.read_template_from_gguf(tmp_path / "nope.gguf", gguf_py_path=str(tmp_path))
+
+
+def test_user_first_fixture_has_no_system_message():
+    # The mentor's only shape. Parity proved on the system-first fixture proves nothing about it.
+    assert templates.FIXTURE_MESSAGES_USER_FIRST
+    assert all(m["role"] != "system" for m in templates.FIXTURE_MESSAGES_USER_FIRST)
+
+
+def test_missing_gguf_dependency_becomes_a_template_error(tmp_path, monkeypatch):
+    # gguf-py is not pip-installed and needs numpy; a bare ModuleNotFoundError traceback out of the first
+    # command the researcher runs is not an error message.
+    import sys
+    monkeypatch.setattr(sys, "path", list(sys.path))          # restored, so the fake package cannot leak
+    monkeypatch.delitem(sys.modules, "gguf", raising=False)
+    pkg = tmp_path / "gguf"; pkg.mkdir()
+    (pkg / "__init__.py").write_text("import numpy_is_not_installed_here\n")
+    with pytest.raises(TemplateError) as ei:
+        templates._gguf_module(str(tmp_path))
+    assert "numpy_is_not_installed_here" in str(ei.value) and str(tmp_path) in str(ei.value)

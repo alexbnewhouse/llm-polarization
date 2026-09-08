@@ -1,1 +1,5 @@
 jinja2>=3.1
+# numpy is not the harness's own dependency: llama.cpp's gguf-py needs it to read a GGUF's chat
+# template, and gguf-py itself is not installed from PyPI (it comes from the checkout named by the
+# config's gguf_py_path). Pinned versions of everything: harness/requirements.lock
+numpy
