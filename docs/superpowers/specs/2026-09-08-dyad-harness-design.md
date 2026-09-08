@@ -58,6 +58,9 @@ All files are JSONL, one object per line, under `data/<run_id>/`. Keys join on `
 `run_id, started_at, harness_commit, config` and for each of `seeker`, `mentor`: `url, alias, model_path,
 model_sha256, template_sha256, build_info, total_slots, default_generation_settings`.
 
+**`dyads.jsonl`**, one row per attempt: the DyadSpec (`dyad_id, attempt, condition, persona_text, persona_reminder,
+persona_mode, seed, n_turns, ts`). The scorer reads persona and topic from here.
+
 **`turns.jsonl`**, one row per message:
 
 ```

@@ -1,10 +1,22 @@
-# Dyad harness (not yet written)
+# Dyad harness
 
-Status as of 2026-09-08: **no pipeline code exists.** This directory holds the
-requirements the harness must meet, taken from the Notion tasks "Build the dyad
-harness: two model handles, alternating turns" and "Persona stability" (research
-pass, 2026-09-02). First physical step from the plan: create `harness.py` and
-import the inference client.
+`harness/` runs seeker/mentor dialogues against two llama-server endpoints, administers the mentor's
+pre/post survey batteries, and scores seeker adherence offline. Design: `docs/superpowers/specs/2026-09-08-dyad-harness-design.md`.
+
+## Use
+
+```bash
+pip install -r harness/requirements.txt            # jinja2 only; gguf-py comes from the llama.cpp checkout
+cp harness/config.example.json config.json         # edit urls, gguf_py_path, run_seed
+python -m harness.run check  --config config.json
+python -m harness.run run    --config config.json --manifest dyads.jsonl --run-id pilot-2026-09-18
+python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
+python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --phase post   # re-administer
+python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
+```
+
+Servers are started outside the harness with the flags in `models/RUN_APPROACH.md`. Output lands in
+`data/<run_id>/` as `manifest.json`, `dyads.jsonl`, `status.jsonl`, `turns.jsonl`, `surveys.jsonl`, `scores.jsonl`.
 
 ## Terms (fixed 2026-09-02)
 

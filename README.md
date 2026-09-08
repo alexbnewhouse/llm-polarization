@@ -49,7 +49,7 @@ data/                            experiment output, git-ignored
 - Compute budget measured for qwen3.6 (116.4 tok/s, 2.15 days per arm) and
   Olmo-3-7B (41.5 tok/s, 6.0 days per arm) at the operating point; the other
   two arms are still extrapolated. See `models/RUN_APPROACH.md`.
-- Pipeline: nothing written yet. Requirements in `harness/README.md`.
+- Pipeline: `harness/` runs dialogues, surveys and scoring (unit-tested; live-tested on the desktop 5080). No pilot data yet.
 - Pilot 2026-09-18, baseline W5, waves W7 to W9, checkpoint 2026-10-19.
 
 ## The two machines
