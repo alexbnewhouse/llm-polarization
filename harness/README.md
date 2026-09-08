@@ -15,8 +15,9 @@ python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --ph
 python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
 ```
 
-Servers are started outside the harness with the flags in `models/RUN_APPROACH.md`. Output lands in
-`data/<run_id>/` as `manifest.json`, `dyads.jsonl`, `status.jsonl`, `turns.jsonl`, `surveys.jsonl`, `scores.jsonl`.
+Servers are started outside the harness with the flags in `models/RUN_APPROACH.md`; they must be started
+with `--jinja` (or an explicit `--chat-template`) so `harness check`'s template parity check passes. Output
+lands in `data/<run_id>/` as `manifest.json`, `dyads.jsonl`, `status.jsonl`, `turns.jsonl`, `surveys.jsonl`, `scores.jsonl`.
 
 ## Terms (fixed 2026-09-02)
 

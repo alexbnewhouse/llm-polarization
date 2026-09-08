@@ -168,7 +168,8 @@ listed in `instruments/survey-batteries.md`; the US adaptation task replaces the
   config mismatch. A fake client that records requests and returns canned completions drives the dialogue
   loop tests (turn order, row counts, `id_slot` and `cache_prompt` on every request, reminder placement per
   mode).
-- **Live tests** (`@pytest.mark.live`, skipped unless `HARNESS_LIVE_URL` is set): one 2-turn dialogue with
+- **Live tests** (skipped unless `HARNESS_LIVE_URL` is set, via a module-level `pytest.mark.skipif` — no
+  custom marker registration needed): one 2-turn dialogue with
   seeker and mentor on the same server (different slots), pre/post survey with three items, one scored
   turn. Runs against a Qwen3-4B llama-server on this desktop's RTX 5080 (`~/llm-serving/llama.cpp`, CUDA
   build, `-np 4`), or on the Framework Desktop.
