@@ -22,7 +22,7 @@ originally proposed arms.
 |---|---|---|---|
 | qwen3.6:35b-a3b | Alibaba | 2.15 (measured at the operating point) | Fastest, best context retention |
 | gpt-oss:20b | OpenAI | ~2.6 (extrapolated) | Replaces the 120b, same alignment lineage. Needs ROCm, not Vulkan |
-| glm-4.7-flash | Zhipu | ~4.5 (extrapolated) | Replaces gemma4. First cut if time is short |
+| glm-4.7-flash | Zhipu | 8.6 (measured 2026-09-08) | Replaced gemma4. **Cut 2026-09-10** when 40 turns was chosen: four arms at 40 turns is ~39.5 days against a 21-day window, three is ~22.3 |
 | Olmo-3-7B-Instruct | Ai2 | see `models/RUN_APPROACH.md` (re-measured 2026-09-08) | **Only arm with public training data**. Carries the "varies by training dataset" claim |
 
 Days per arm assume 2,700 dialogues x 20 turns x 200 tokens x both dyad roles,
@@ -32,6 +32,12 @@ in `models/RUN_APPROACH.md`.
 **Do not cut Olmo under schedule pressure.** Architecture varies freely across
 the other three; training data varies only through Olmo. Cutting it reduces
 the paper to another architecture comparison. Drop glm-4.7-flash first.
+
+**That cut has now happened** (2026-09-10, `docs/decisions/persona-stability.md`
+section 2). Choosing 40-turn dialogues spends the compute that the fourth arm
+would have used. The arm is three: qwen3.6:35b-a3b, gpt-oss:20b,
+Olmo-3-7B-Instruct. This was decided ahead of the Oct 19 checkpoint rather than
+at it, because the frozen factorial inherits the arm count.
 
 **Bonus available in the Olmo family.** Base, SFT and Instruct are the same
 weights at different training stages, which isolates what alignment does to

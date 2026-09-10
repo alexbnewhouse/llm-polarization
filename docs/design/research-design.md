@@ -42,10 +42,14 @@ variability from systematic bias.
 **Issues for discussion:** militarization of immigration enforcement;
 decarbonization of the economy.
 
-**Open design questions** from the 2025-11-04 column meeting, scheduled in W1:
-persona stability over time; whether the seeker is always the same LLM or
-varied; how to vary LLMs across architectures. See `docs/decisions/` and
-`docs/design/persona-stability.md`.
+**Open design questions** from the 2025-11-04 column meeting, scheduled in W1.
+All three are now closed, which unblocks the factorial freeze:
+
+| Question | Decided | Record |
+|---|---|---|
+| Persona stability over time | 2026-09-10 | `docs/decisions/persona-stability.md` |
+| Is the seeker always the same LLM, or varied? | 2026-09-08 | Fixed seeker, chosen by measured adherence, different family from the mentor (`docs/design/persona-stability.md` Q2) |
+| How to vary LLMs across architectures | 2026-09-08 | `docs/decisions/model-arm.md` |
 
 ## Survey instruments
 
@@ -58,28 +62,37 @@ Roughly 9,300 dialogues across the pilot, the baseline, and three run waves.
 Roughly 16,750 words (a 13,000-word paper plus pre-analysis plan and
 reproducibility appendix), written 2026-10-05 to 2026-11-30.
 
+**The dialogue count needs recomputing.** That 9,300 assumed four arms at 20
+turns. The arm is now three at 40 turns (`docs/decisions/persona-stability.md`),
+which is a different N and a different per-cell count. Set it in the factorial
+freeze from the measured budget in `models/RUN_APPROACH.md`, not from this
+number.
+
 The two projects (this and the prospectus due 2026-09-30) consume different
 resources: the prospectus needs attention, the experiments need electricity.
 Weeks 1 through 6 are built so this project's demand on the researcher stays
 near zero while the machine does the expensive part.
 
-## Where things stand (2026-09-08)
+## Where things stand (2026-09-10)
 
 | Piece | State |
 |---|---|
 | Research question and framing | Written, funded, defended in the IHS application |
 | Survey instruments | de Jong (2024) identified, not yet adapted to the US context |
-| The factorial | Three open questions blocked it; two of four design decisions made |
+| The factorial | **Unblocked 2026-09-10.** All three W1 design questions are answered: seeker fixed-or-varied (2026-09-08), model arm (2026-09-08), persona stability (2026-09-10) |
 | Hardware | Online, tuned, benchmarked. 128 GiB GTT confirmed, operating point measured |
-| Model arm | Decided 2026-09-08 (`docs/decisions/model-arm.md`) |
-| Compute budget | Measured: about 15.6 days for four arms at 20 turns, about 26 at 40 |
-| Pipeline | Nothing written (`harness/README.md` holds the requirements) |
+| Model arm | Decided 2026-09-08 (`docs/decisions/model-arm.md`). **Three arms, not four**: choosing 40 turns cuts glm-4.7-flash |
+| Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40. **40 turns is the chosen row** |
+| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`. 94 unit tests pass, 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
 | Data | None |
 
 The surplus from tuning (about 17 days) should go to design, not to N: the
 threats to this paper are a sycophancy confound and a possible
 insufficient-dose null, neither of which more trials can fix. Spend it on
-40-turn dialogues and a no-persona control arm.
+40-turn dialogues and a no-persona control arm. Both are now decided: 40 turns
+as of 2026-09-10, at the cost of the fourth model arm. If further surplus
+appears, `docs/decisions/persona-stability.md` argues for stated-once cells as
+a dose-response contrast ahead of restoring that arm.
 
 ## The runway
 
@@ -100,9 +113,11 @@ insufficient-dose null, neither of which more trials can fix. Spend it on
 | W13 Nov 16-22 | Conclusion, assemble, read-through, abstract | Done |
 | W14 Nov 23-30 | Buffer: repro appendix, bib, format, send | Done |
 
-**The Oct 19 checkpoint is a pre-committed descope.** The cut list is: drop
+**The Oct 19 checkpoint is a pre-committed descope.** The cut list was: drop
 the third model arm, then collapse openness to two levels, then drop a topic.
-Drop glm-4.7-flash before Olmo (see `docs/decisions/model-arm.md`).
+**The first item is already spent** — glm-4.7-flash was cut on 2026-09-10 to
+pay for 40-turn dialogues — so the checkpoint now starts at collapsing openness
+to two levels. Never cut Olmo (see `docs/decisions/model-arm.md`).
 
 ## Technical notes
 

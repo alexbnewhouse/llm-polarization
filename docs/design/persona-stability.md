@@ -4,6 +4,14 @@ Research pass done 2026-09-02. Exported from the Notion page "Persona
 stability" under the project hub. Every cited key is in
 `paper/references.bib`.
 
+> **Superseded in part, 2026-09-10.** The four questions this pass fed are now
+> decided in `docs/decisions/persona-stability.md`. Three recommendations below
+> were amended in the decision: the pilot A/B became a measurement rather than a
+> gate on delivery mode; the 0.8 threshold is calibrated on hand labels rather
+> than borrowed from `li2024instability`; and the low-adherence rule is settled
+> as keep-under-ITT rather than "either is defensible." The evidence synthesis
+> and the lever table are unchanged.
+
 **Bottom line.** Persona drift in LLM-to-LLM dialogue is real, shows up within
 eight turns, and is not fixed by using a bigger model. Stability is something
 the harness has to manufacture and the pipeline has to measure, not something

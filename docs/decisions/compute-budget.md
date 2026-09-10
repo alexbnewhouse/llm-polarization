@@ -37,8 +37,13 @@ still inside the window once the pilot and baseline are excluded.
 | Turns per dialogue | Days per arm (qwen3.6) | Four-arm total (2026-08-25 basis) |
 |---|---|---|
 | 20 (original plan) | 2.15 | ~15.6 |
-| 40 (recommended) | 4.3 | ~26 |
+| 40 (**chosen 2026-09-10**) | 4.3 | ~26 |
 | 60 | 6.4 | ~36 |
+
+**40 turns is decided** (`docs/decisions/persona-stability.md`), and on the
+measured 2026-09-08 basis it does not fit with four arms: ~39.5 days against
+the 21 allocated to W7-W9. Dropping glm-4.7-flash brings it to ~22.3. The turn
+count and the arm count are therefore one decision, not two.
 
 ## Caveats
 

@@ -145,17 +145,30 @@ achieves there. The single largest lever is KV cache reuse: a turn at 32k
 depth should prefill tens of tokens, not 32,768. Log `prompt_n` from the
 server's `timings` on every call so a lost cache is visible immediately.
 
-## Persona-stability requirements the pilot decides
+## Persona-stability requirements (decided 2026-09-10)
 
-- Default to **reinforced** delivery (compact reminder every seeker turn).
-- W4 pilot: both delivery modes, 40 turns, at least five dyads each, adherence
-  scored every turn. If stated-once keeps mean adherence at or above 0.8
-  through turn 40, switch to stated-once; otherwise keep reinforced.
-- Never reinforce the mentor.
+- **Reinforced** delivery: the compact reminder is appended after the history on
+  every seeker turn. Never reinforce the mentor.
+- **40 turns.** Neither agent is told the turn budget, so turn 20 of a 40-turn
+  dialogue is a valid 20-turn observation and no separate 20-turn arm is needed.
+- The W4 pilot still runs both delivery modes, 40 turns, five dyads each, but as
+  a **measurement rather than a gate**: five dyads cannot support the
+  non-inferiority claim that would license dropping the reminder. The pilot
+  supplies the drift curve and calibrates the threshold instead.
+- **The adherence threshold is calibrated on pilot hand labels, not set at
+  0.8.** That number is a rate in `li2024instability` and does not transfer to a
+  continuous per-turn score.
 - Flag dialogues where seeker adherence falls under threshold for three
-  consecutive turns; decide exclusion vs compliance-weighting in the
-  pre-analysis plan.
+  consecutive turns. **Not yet built** — this rule is prose, not code, and the
+  pilot needs it.
+- **Flagged dialogues are kept, not excluded.** ITT over all completed dialogues
+  is the primary estimand, adherence enters as a continuous moderator, and
+  per-protocol is a labelled sensitivity analysis. The only pre-registered
+  exclusion is technical incompleteness: error rows, truncation, judge failure.
+- The judge is never the seeker or the mentor of that dialogue, and never the
+  mentor's model family.
 - Fix one seeker model across every arm; choose it by measured adherence, not
   size; use a different model family from the mentor.
 
-Full reasoning and citations: `docs/design/persona-stability.md`.
+Decision record: `docs/decisions/persona-stability.md`. Full reasoning and
+citations: `docs/design/persona-stability.md`.
