@@ -47,5 +47,5 @@ echo
 echo "The two watchdog wrappers are separate and were also stopped:"
 echo "  nohup ~/llm-serving/serve-4b.sh   >/dev/null 2>&1 &   # :8091 Qwen3-4B"
 echo "  nohup ~/llm-serving/serve-bulk.sh >/dev/null 2>&1 &   # :8090 Qwen3-30B-A3B"
-echo "  NOTE: serve-bulk.sh uses -c 32768 -np 8 = only 4096 tok/slot."
-echo "        Raise -c before using it for long dialogues."
+echo "  Both compute -c as (DEPTH + HEADROOM) * SLOTS, so each slot gets the full"
+echo "  DEPTH (32768 by default). Shrink it with e.g. DEPTH=16384 if memory is tight."
