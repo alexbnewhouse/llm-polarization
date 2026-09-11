@@ -46,7 +46,7 @@ scoring pass with a different scope writes `judge-<sha12>-<scope>.json` beside i
 
 ## `dyads.jsonl` — one row per dyad attempt
 
-`run_id`, `dyad_id`, `attempt`, `condition` (topic, role, openness), `persona_text` in full,
+`run_id`, `dyad_id`, `attempt`, `condition` (topic, ideology, openness, role; `prompts/grid.json`), `persona_text` in full,
 `persona_reminder`, `persona_mode` (`once` or `reinforced`), `seed` (the per-dyad seed from the input
 manifest), `n_turns`, `ts`.
 

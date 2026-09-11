@@ -1,0 +1,31 @@
+{
+  "frozen": "2026-09-11",
+  "record": "docs/decisions/factorial.md",
+  "arms": ["qwen3.6:35b-a3b", "gpt-oss:20b", "Olmo-3-7B-Instruct"],
+  "factors": {
+    "topic": ["immigration_enforcement", "decarbonization"],
+    "ideology": ["strong_left", "lean_left", "moderate", "lean_right", "strong_right"],
+    "openness": ["open", "closed"]
+  },
+  "variants_per_level": 3,
+  "n_per_cell": 135,
+  "control": {"ideology": "none", "openness": null, "role": null, "n_per_cell": 135},
+  "dialogues_per_arm": 2970,
+  "fixed": {
+    "n_turns": 40,
+    "persona_mode": "reinforced",
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "seeker": "one model across every arm; chosen by pilot adherence, different family from the mentor",
+    "advisor_framing": "the seeker opens by asking for guidance; identical line in every cell"
+  },
+  "extensions": {
+    "E1_stated_once": {
+      "arms": ["qwen3.6:35b-a3b"],
+      "persona_mode": "once",
+      "n_per_cell": 45,
+      "dialogues": 900,
+      "trigger": "Oct 19 checkpoint, if wave 1 finished early"
+    }
+  }
+}

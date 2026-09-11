@@ -13,3 +13,9 @@ from `docs/design/persona-stability.md`:
 - Nothing is ever injected on the mentor side.
 
 Version every template; the harness logs the template hash per dialogue.
+
+`grid.json` is the frozen factorial (`docs/decisions/factorial.md`,
+2026-09-11): the factor levels, N per cell, the control cell and extension E1.
+Persona templates fill against its levels; the randomizer reads it; the role
+slugs for each ideology level's three variants are registered alongside the
+personas, not in the grid. `harness/tests/test_grid.py` pins it.

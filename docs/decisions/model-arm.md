@@ -27,7 +27,10 @@ originally proposed arms.
 
 Days per arm assume 2,700 dialogues x 20 turns x 200 tokens x both dyad roles,
 i.e. 21.6M generated tokens per arm, and the parallel operating point described
-in `models/RUN_APPROACH.md`.
+in `models/RUN_APPROACH.md`. **The both-roles assumption is stale** (flagged
+2026-09-11, `docs/decisions/factorial.md`): the seeker is one fixed model from
+another family, so only the mentor half runs on the arm's model. Recompute
+after the pilot measures the chosen seeker.
 
 **Do not cut Olmo under schedule pressure.** Architecture varies freely across
 the other three; training data varies only through Olmo. Cutting it reduces

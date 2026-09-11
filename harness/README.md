@@ -44,7 +44,7 @@ confused. A worked example with two rows: `harness/dyads.example.jsonl`.
 
 ```json
 {"dyad_id": "p01-immig-rural-open-a",
- "condition": {"topic": "immigration_enforcement", "role": "rural_rancher", "openness": "open"},
+ "condition": {"topic": "immigration_enforcement", "ideology": "lean_right", "openness": "open", "role": "rural_rancher"},
  "persona_text": "You are Dana, a 54-year-old rancher ... Open by asking for guidance about ...",
  "persona_reminder": "Note to self: I am Dana, a rancher; worried but open-minded.",
  "persona_mode": "reinforced", "seed": 4242, "n_turns": 40}
@@ -53,7 +53,7 @@ confused. A worked example with two rows: `harness/dyads.example.jsonl`.
 | Field | What it does |
 |---|---|
 | `dyad_id` | Unique in the file: it is the resume key. A duplicate is refused before anything is written. |
-| `condition` | The experimental cell. Copied verbatim into `dyads.jsonl` and read by the scorer for `topic`. |
+| `condition` | The experimental cell: `topic`, `ideology`, `openness`, `role`, always all four (the control row is `ideology: "none"` with `openness` and `role` null). Levels are frozen in `prompts/grid.json` (`docs/decisions/factorial.md`); `harness/tests/test_grid.py` checks the example manifest against it. Copied verbatim into `dyads.jsonl` and read by the scorer for `topic`. |
 | `persona_text` | The seeker's system prompt, in full. Copied into `dyads.jsonl`, so the archive is self-contained even if the persona templates change later. It carries the instruction to open the conversation. |
 | `persona_reminder` | The compact reminder appended as a trailing system message on every seeker turn in `reinforced` mode. Required and non-empty when the mode is `reinforced`. |
 | `persona_mode` | `once` (system prompt only) or `reinforced` (reminder every seeker turn). |
@@ -168,7 +168,8 @@ server's `timings` on every call so a lost cache is visible immediately.
 - The judge is never the seeker or the mentor of that dialogue, and never the
   mentor's model family.
 - Fix one seeker model across every arm; choose it by measured adherence, not
-  size; use a different model family from the mentor.
+  size; use a different model family from the mentor. Its throughput sets the
+  seeker half of every arm's wave budget (`docs/decisions/factorial.md`).
 
 Decision record: `docs/decisions/persona-stability.md`. Full reasoning and
 citations: `docs/design/persona-stability.md`.

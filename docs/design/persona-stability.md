@@ -131,7 +131,10 @@ Yes, on four counts.
   mentor, persona quality becomes a confound on the treatment.
 - **Choose it by measured adherence, not size.** Same five-dyad, 40-turn
   adherence check on each candidate; take the highest mean adherence at turn
-  40, tie-break on tokens per second.
+  40, tie-break on tokens per second. *Amended 2026-09-11
+  (`docs/decisions/factorial.md`): throughput is a compute criterion, not only
+  a tie-break. The seeker generates half of every arm's tokens, so its tok/s
+  sets roughly 8 to 28 days of the wave budget across the plausible range.*
 - **Use a different model family from the mentor.** Same-model dyads converge
   to that model's attractor.
 - **Expect asymmetric dose between the two ideological arms**

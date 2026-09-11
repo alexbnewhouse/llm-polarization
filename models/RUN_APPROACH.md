@@ -87,6 +87,15 @@ for different reasons:
 2,700 dialogues x 20 turns x 200 tokens x both dyad roles = 21.6 M generated
 tokens per arm, so days = 250 / (aggregate tok/s).
 
+**Stale since 2026-09-08, flagged 2026-09-11.** "Both dyad roles" predates the
+fixed-seeker decision. Only the mentor half of each arm's tokens runs on the
+arm's model; the seeker half runs on the seeker model, on the same GPU, for
+every arm. The frozen grid (`docs/decisions/factorial.md`) is 2,970 dialogues
+per arm at 40 turns; the like-for-like total is about 24.5 days, the mentor
+halves alone about 12.3, and the seeker halves add 3 x (2,970 x 40 x 200 /
+seeker tok/s / 86,400). Measure the chosen seeker at this operating point in
+the pilot and recompute.
+
 | Arm | tok/s at the operating point | Days, 20 turns | Days, 40 turns | Basis |
 |---|---|---|---|---|
 | qwen3.6:35b-a3b | 116.4 | 2.15 | 4.3 | measured 2026-08-25 |

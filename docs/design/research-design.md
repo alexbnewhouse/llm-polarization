@@ -43,7 +43,8 @@ variability from systematic bias.
 decarbonization of the economy.
 
 **Open design questions** from the 2025-11-04 column meeting, scheduled in W1.
-All three are now closed, which unblocks the factorial freeze:
+All three are closed, and the factorial was frozen on 2026-09-11
+(`docs/decisions/factorial.md`):
 
 | Question | Decided | Record |
 |---|---|---|
@@ -58,41 +59,48 @@ Communications Psychology 2(1):5.
 
 ## Scale
 
-Roughly 9,300 dialogues across the pilot, the baseline, and three run waves.
-Roughly 16,750 words (a 13,000-word paper plus pre-analysis plan and
-reproducibility appendix), written 2026-10-05 to 2026-11-30.
+**The factorial is frozen** (2026-09-11, `docs/decisions/factorial.md`;
+machine-readable in `prompts/grid.json`). Per mentor arm: 2 topics x 5
+ideology levels x 2 openness levels = 20 treated cells at 135 dialogues each
+(three nested persona variants per ideology level, 45 each), plus a bare
+no-persona control cell per topic at 135. That is 2,970 dialogues per arm and
+8,910 across the three waves, about 24.5 days on the budget's like-for-like
+basis against 21 allocated; W6 and the W14 buffer absorb the difference. That
+basis assumes both roles run on the arm's model, which the fixed seeker
+invalidates; the record explains and the budget is recomputed after the pilot.
 
-**The dialogue count needs recomputing.** That 9,300 assumed four arms at 20
-turns. The arm is now three at 40 turns (`docs/decisions/persona-stability.md`),
-which is a different N and a different per-cell count. Set it in the factorial
-freeze from the measured budget in `models/RUN_APPROACH.md`, not from this
-number.
+Roughly 10,100 dialogue-equivalents in total: 8,910 wave dialogues, about 210
+pilot dialogues per candidate seeker model, and the 1,000-administration
+baseline. Roughly 16,750 words (a 13,000-word paper plus pre-analysis plan and
+reproducibility appendix), written 2026-10-05 to 2026-11-30.
 
 The two projects (this and the prospectus due 2026-09-30) consume different
 resources: the prospectus needs attention, the experiments need electricity.
 Weeks 1 through 6 are built so this project's demand on the researcher stays
 near zero while the machine does the expensive part.
 
-## Where things stand (2026-09-10)
+## Where things stand (2026-09-11)
 
 | Piece | State |
 |---|---|
 | Research question and framing | Written, funded, defended in the IHS application |
 | Survey instruments | de Jong (2024) identified, not yet adapted to the US context |
-| The factorial | **Unblocked 2026-09-10.** All three W1 design questions are answered: seeker fixed-or-varied (2026-09-08), model arm (2026-09-08), persona stability (2026-09-10) |
+| The factorial | **Frozen 2026-09-11** (`docs/decisions/factorial.md`, `prompts/grid.json`). 20 treated cells plus 2 control per arm, 135 per cell, 2,970 per arm. Role slugs are registered when the personas are written |
 | Hardware | Online, tuned, benchmarked. 128 GiB GTT confirmed, operating point measured |
 | Model arm | Decided 2026-09-08 (`docs/decisions/model-arm.md`). **Three arms, not four**: choosing 40 turns cuts glm-4.7-flash |
-| Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40. **40 turns is the chosen row** |
-| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`. 94 unit tests pass, 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
+| Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40. **40 turns is the chosen row**; with the control the frozen grid is about 24.5 days |
+| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`. 103 unit tests pass, 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
 | Data | None |
 
 The surplus from tuning (about 17 days) should go to design, not to N: the
 threats to this paper are a sycophancy confound and a possible
 insufficient-dose null, neither of which more trials can fix. Spend it on
 40-turn dialogues and a no-persona control arm. Both are now decided: 40 turns
-as of 2026-09-10, at the cost of the fourth model arm. If further surplus
-appears, `docs/decisions/persona-stability.md` argues for stated-once cells as
-a dose-response contrast ahead of restoring that arm.
+as of 2026-09-10, at the cost of the fourth model arm, and the bare control as
+of 2026-09-11 in the frozen grid. If further surplus appears, stated-once cells
+on the qwen arm are pre-specified as extension E1 in
+`docs/decisions/factorial.md` (900 dialogues, about 1.4 days), ahead of
+restoring the fourth arm.
 
 ## The runway
 
@@ -113,11 +121,13 @@ a dose-response contrast ahead of restoring that arm.
 | W13 Nov 16-22 | Conclusion, assemble, read-through, abstract | Done |
 | W14 Nov 23-30 | Buffer: repro appendix, bib, format, send | Done |
 
-**The Oct 19 checkpoint is a pre-committed descope.** The cut list was: drop
-the third model arm, then collapse openness to two levels, then drop a topic.
-**The first item is already spent** — glm-4.7-flash was cut on 2026-09-10 to
-pay for 40-turn dialogues — so the checkpoint now starts at collapsing openness
-to two levels. Never cut Olmo (see `docs/decisions/model-arm.md`).
+**The Oct 19 checkpoint is a pre-committed descope.** The original cut list
+was: drop the third model arm, then collapse openness to two levels, then drop
+a topic. The first two are spent — glm-4.7-flash was cut on 2026-09-10 to pay
+for 40-turn dialogues, and openness was frozen at two levels on 2026-09-11 —
+so the list is re-sequenced in `docs/decisions/factorial.md`: N per cell 135
+to 90, then collapse ideology to three levels, then drop a topic. Never cut
+Olmo (see `docs/decisions/model-arm.md`); never cut the control.
 
 ## Technical notes
 
