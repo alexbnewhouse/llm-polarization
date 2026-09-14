@@ -19,7 +19,8 @@ data/<run_id>/
   status.jsonl         the run's ledger; resume and analysis both read it
   turns.jsonl          one row per message (2 per turn)
   surveys.jsonl        one row per survey item, per dyad, per phase
-  scores.jsonl         one row per (turn, agent, metric), written by `score`
+  scores.jsonl         one row per (turn, agent, metric, judge), written by `score`
+  flags.jsonl          one row per complete dyad attempt, written (replaced) by `flags`
 ```
 
 ## `manifest.json`
@@ -30,7 +31,8 @@ config as merged onto the defaults), `input_manifest` `{path, sha256}`, `batteri
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
 
-`url`, `alias`, `model_path`, `model_sha256` (of the GGUF file), `template_sha256`, `template_source`
+`url`, `alias`, `model_path`, `model_sha256` (of the GGUF file), `family` (model family slug from the GGUF
+name or alias, or null when unrecognised; `score` refuses a judge from the mentor's family), `template_sha256`, `template_source`
 (the chat template in full), `server_chat_template` (what the server reports at `/props`, or null),
 `build_info` (the llama.cpp build and commit), `model_ftype`, `total_slots`,
 `default_generation_settings` (the server's own sampler defaults — `top_k`, `min_p` and the penalties
@@ -39,7 +41,7 @@ that the harness never sets).
 ## `judge-<sha12>.json`
 
 The judge's provenance, written by `score`: the same fields as a role block above, plus `scope`,
-`temperature`, `n_predict`, `judge_system` and `judge_tasks` (the judge prompt text verbatim),
+`subsample` (the dyad fraction, or null), `temperature`, `n_predict`, `judge_system` and `judge_tasks` (the judge prompt text verbatim),
 `harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of
 a run and never rewritten, while scoring happens later and often from a different commit. A second
 scoring pass with a different scope writes `judge-<sha12>-<scope>.json` beside it.
@@ -95,10 +97,25 @@ scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or nu
 `raw_text`, `ts`. On a failure there is also `error`.
 
 Scope `pilot` scores every turn for both agents; scope `main` scores the seeker only, on turns
-4, 8, 12, ... plus the dyad's final turn. Scoring is idempotent: a row that already exists without an
-`error` is never scored again. A row with `score: null` (an unparseable judge reply) counts as done; a
+4, 8, 12, ... plus the dyad's final turn; scope `stance` scores the mentor's `alignment` on that same
+cadence, for the two-judge subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on
+`run_seed`). Scoring is idempotent **per judge**: a row that already exists for this judge without an
+`error` is never scored again, and a second judge scores the same targets afresh. A row with `score: null` (an unparseable judge reply) counts as done; a
 row with `error` (the judge server failed) is retried on the next `score` and leaves the failed row in
 place.
+
+## `flags.jsonl` — one row per complete dyad attempt, written by `flags`
+
+`run_id`, `dyad_id`, `attempt`, `ideology`, `topic`, `openness`, `role`, `persona_mode` (copied from the
+dyad row so the rates can be broken down), `metric`, `threshold`, `run_length`, `rule` (always
+`consecutive scored seeker turns`), `judge_sha256`, `flagged`, `first_flag_turn` (the scored turn that
+completed the run, or null), `scored_turns`, `unscored_turns` (null scores), `turns_under`, `min_score`,
+`mean_score`, `final_turn`, `harness_commit`, `ts`.
+
+The file is derived from `scores.jsonl` and is **replaced** on every `flags` run, not appended to. Only
+the latest complete attempt of each dyad gets a row. Flagged dialogues are kept in the ITT sample; the
+flag is an instrument statistic and the trigger for the per-protocol sensitivity analysis
+(`docs/decisions/persona-stability.md` §4).
 
 ## `status.jsonl` — the run's ledger
 

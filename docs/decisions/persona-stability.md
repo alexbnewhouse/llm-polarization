@@ -110,9 +110,13 @@ stance score is the turn-level DV and a same-family judge is both self-favouring
 and likely to share political priors; and two judges score a subsample of that
 stance metric so cross-judge agreement is reportable.
 
-**Still to build:** the three-consecutive-turns flag rule exists only in prose
-here and in `harness/README.md`. It needs to be code before the pilot, because
-its output is what section 4 reports.
+**Built 2026-09-14** (Notion task "Add the adherence flag rule and judge
+guardrails before the pilot"): the flag rule is `harness.scorer.flag_dialogues`
+and the `flags` subcommand, over consecutive *scored* seeker turns (the
+sampled cadence above), with the threshold a required argument; `score`
+refuses a judge from the mentor's model family; `score --scope stance
+--subsample` plus `agreement` is the two-judge design. The threshold number
+itself still comes from the pilot hand labels.
 
 ## 4. Low-adherence dialogues: keep them
 

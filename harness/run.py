@@ -10,8 +10,8 @@ from harness.client import LlamaClient, ServerError
 from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
-from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, Scorer,
-                            latest_complete_attempts)
+from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
+                            Scorer, cross_judge_agreement, flag_dialogues, latest_complete_attempts, model_family)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
                                read_template_from_gguf, render)
@@ -80,9 +80,10 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
         raise ValueError(f"{name}: no gguf_path in config and server reports no model_path")
     template = read_template_from_gguf(model_path, gguf_py_path=cfg.get("gguf_py_path"))
     sha = model_sha256_cached(model_path)
-    handle = AgentHandle(name, client, template, sha, slot, alias=props.get("model_alias", ""))
+    family = model_family(model_path) or model_family(props.get("model_alias"))
+    handle = AgentHandle(name, client, template, sha, slot, alias=props.get("model_alias", ""), family=family)
     manifest_entry = {"url": entry["url"], "alias": props.get("model_alias", ""), "model_path": model_path,
-                      "model_sha256": sha, "template_sha256": template.sha256,
+                      "model_sha256": sha, "family": family, "template_sha256": template.sha256,
                       # The template source, not only its hash: the template lives inside a 5-20 GB GGUF
                       # that git cannot hold, and a hash you cannot check anything against is not provenance.
                       "template_source": template.source,
@@ -492,8 +493,10 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     return 0
 
 
-def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
-    """Run the `score` subcommand: build the judge agent and score the run's not-yet-scored targets."""
+def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None) -> int:
+    """Run the `score` subcommand: build the judge agent and score the run's not-yet-scored targets.
+    `--scope stance --subsample F` with a second judge config is the two-judge design: same deterministic
+    subsample of dyads, rows done per judge, `agreement` reports the result."""
     if not cfg["judge"].get("url"):
         print("config needs judge.url", file=sys.stderr)
         return 1
@@ -508,19 +511,82 @@ def cmd_score(cfg: dict, run_id: str, scope: str) -> int:
         return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
-    write_judge_manifest(paths, entry, scope)
+    write_judge_manifest(paths, entry, scope, subsample)
     n = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
-               harness_commit=_git_commit()).score_run(paths, scope, manifest)
-    print(f"scored {n} new rows ({scope})")
+               harness_commit=_git_commit()).score_run(paths, scope, manifest, subsample=subsample)
+    print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "") + ")")
     return 0
 
 
-def write_judge_manifest(paths: RunPaths, entry: dict, scope: str) -> Path:
+def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length: int, judge: str | None) -> int:
+    """Run the `flags` subcommand: apply the consecutive-scored-turns flag rule to scores.jsonl, write one
+    row per dyad attempt to flags.jsonl (replaced, not appended: flags are derived from scores, not a
+    ledger), and print the flagged rate by ideology level and by delivery mode -- the two breakdowns the
+    pre-analysis plan reports. Only the latest complete attempt of each dyad is flagged."""
+    paths = run_paths(cfg["data_dir"], run_id)
+    scores = read_jsonl(paths.scores)
+    if judge:
+        matches = {s["judge_sha256"] for s in scores if str(s.get("judge_sha256", "")).startswith(judge)}
+        if len(matches) != 1:
+            raise ValueError(f"--judge {judge!r} matches {len(matches)} judge hashes in scores.jsonl")
+        judge = matches.pop()
+    flags = flag_dialogues(scores, threshold, metric=metric, run_length=run_length, judge_sha256=judge)
+    complete = latest_complete_attempts(read_jsonl(paths.status))
+    dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
+    judge_hash = judge or next((s["judge_sha256"] for s in scores if s.get("metric") == metric), None)
+    paths.flags.unlink(missing_ok=True)
+    w = JsonlWriter(paths.flags)
+    ts = now_iso()
+    rows = []
+    for (dyad_id, attempt), f in sorted(flags.items()):
+        if complete.get(dyad_id) != attempt:
+            continue
+        d = dyads.get((dyad_id, attempt), {})
+        cond = d.get("condition") or {}
+        row = {"run_id": run_id, "dyad_id": dyad_id, "attempt": attempt, "ideology": cond.get("ideology"),
+               "topic": cond.get("topic"), "openness": cond.get("openness"), "role": cond.get("role"),
+               "persona_mode": d.get("persona_mode"), "metric": metric, "threshold": threshold,
+               "run_length": run_length, "rule": FLAG_RULE, "judge_sha256": judge_hash, **f,
+               "harness_commit": _git_commit(), "ts": ts}
+        w.write(row)
+        rows.append(row)
+    print(f"flags {run_id}: {sum(r['flagged'] for r in rows)}/{len(rows)} dyads flagged "
+          f"({metric} < {threshold} on {run_length} {FLAG_RULE}; judge {str(judge_hash)[:12]})")
+    for key in ("ideology", "persona_mode"):
+        groups: dict = {}
+        for r in rows:
+            g = groups.setdefault(str(r.get(key)), [0, 0])
+            g[0] += int(r["flagged"]); g[1] += 1
+        for name, (flagged, n) in sorted(groups.items()):
+            print(f"   {key:12s} {name:14s} {flagged}/{n} flagged ({flagged / n:.0%})")
+    return 0
+
+
+def cmd_agreement(cfg: dict, run_id: str, metric: str) -> int:
+    """Run the `agreement` subcommand: print cross-judge agreement on `metric` for every pair of judges
+    that scored this run, on the targets both scored."""
+    paths = run_paths(cfg["data_dir"], run_id)
+    a = cross_judge_agreement(read_jsonl(paths.scores), metric=metric)
+    print(f"agreement {run_id} on {metric}: {len(a['judges'])} judge(s)")
+    for j, v in a["per_judge"].items():
+        print(f"   {j[:12]} n={v['n']} mean={v['mean']:.3f}" if v["mean"] is not None else f"   {j[:12]} n=0")
+    if not a["pairs"]:
+        print("   fewer than two judges have scored this metric; run `score` with a second judge config "
+              "(the same --scope and --subsample) first")
+    for pr in a["pairs"]:
+        r = "n/a" if pr["pearson_r"] is None else f"{pr['pearson_r']:.3f}"
+        mad = "n/a" if pr["mean_abs_diff"] is None else f"{pr['mean_abs_diff']:.3f}"
+        w = "n/a" if pr["within_0.1"] is None else f"{pr['within_0.1']:.0%}"
+        print(f"   {pr['judges'][0][:12]} vs {pr['judges'][1][:12]}: n={pr['n']} mean_abs_diff={mad} pearson_r={r} within_0.1={w}")
+    return 0
+
+
+def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, subsample: float | None = None) -> Path:
     """Record the judge's provenance beside the run, in its own small file. It cannot go into
     manifest.json: that file is written once when the run starts and is deliberately never rewritten, and
     scoring happens later -- often from a different harness commit and against a model the run never saw."""
     judge = dict(entry)      # entry already carries url, alias, model_path, both hashes, the template
-    judge.update({"scope": scope, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
+    judge.update({"scope": scope, "subsample": subsample, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
                   "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
                   "harness_commit": _git_commit(), "ts": now_iso()})
     path = paths.root / f"judge-{entry['model_sha256'][:12]}.json"
@@ -619,7 +685,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     parsers = {}
-    for name in ("check", "run", "survey", "score"):
+    for name in ("check", "run", "survey", "score", "flags", "agreement"):
         parsers[name] = p = sub.add_parser(name)
         p.add_argument("--config", required=True)
         if name != "check":
@@ -627,7 +693,15 @@ def main(argv: list[str] | None = None) -> int:
     parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
     parsers["run"].add_argument("--manifest", required=True)
     parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
-    parsers["score"].add_argument("--scope", choices=("pilot", "main"), default="pilot")
+    parsers["score"].add_argument("--scope", choices=SCOPES, default="pilot")
+    parsers["score"].add_argument("--subsample", type=float, default=None,
+                                  help="fraction of dyads to score, deterministic on run_seed (two-judge design)")
+    parsers["flags"].add_argument("--threshold", type=float, required=True,
+                                  help="adherence threshold, calibrated on pilot hand labels; no default on purpose")
+    parsers["flags"].add_argument("--metric", default="prompt_to_line")
+    parsers["flags"].add_argument("--run-length", type=int, default=3, help="consecutive scored seeker turns")
+    parsers["flags"].add_argument("--judge", default=None, help="judge sha256 prefix when two judges scored")
+    parsers["agreement"].add_argument("--metric", default="alignment")
     a = ap.parse_args(argv)
     try:
         cfg = load_config(a.config)
@@ -637,7 +711,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_run(cfg, a.manifest, a.run_id)
         if a.cmd == "survey":
             return cmd_survey(cfg, a.run_id, a.phase)
-        return cmd_score(cfg, a.run_id, a.scope)
+        if a.cmd == "flags":
+            return cmd_flags(cfg, a.run_id, a.threshold, a.metric, a.run_length, a.judge)
+        if a.cmd == "agreement":
+            return cmd_agreement(cfg, a.run_id, a.metric)
+        return cmd_score(cfg, a.run_id, a.scope, a.subsample)
     except (ServerError, ManifestMismatch, ValueError) as e:
         # Everything the operator can get wrong -- a dead server, a changed model, a malformed manifest or
         # config -- becomes one error line and exit 1, never a traceback.

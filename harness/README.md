@@ -18,6 +18,9 @@ cp harness/config.example.json config.json         # edit urls, gguf_py_path, ru
 python -m harness.run check  --config config.json --manifest pilot-dyads.jsonl
 python -m harness.run run    --config config.json --manifest pilot-dyads.jsonl --run-id pilot-2026-09-18
 python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
+python -m harness.run flags  --config config.json --run-id pilot-2026-09-18 --threshold 0.55   # after calibration
+python -m harness.run score  --config config-judge2.json --run-id wave1 --scope stance --subsample 0.1
+python -m harness.run agreement --config config.json --run-id wave1          # cross-judge, on the subsample
 python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --phase post   # re-administer
 python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
 ```
@@ -89,7 +92,7 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 | `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
 | `seeker`, `mentor` | `{url, gguf_path?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |
-| `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's. |
+| `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 
 `concurrency`, `data_dir` and `gguf_py_path` are operational: changing them and resuming the same
 `run_id` is allowed. What a resume actually compares — `RUN_AFFECTING_CONFIG` in `harness/log.py` — is
@@ -173,14 +176,25 @@ server's `timings` on every call so a lost cache is visible immediately.
   0.8.** That number is a rate in `li2024instability` and does not transfer to a
   continuous per-turn score.
 - Flag dialogues where seeker adherence falls under threshold for three
-  consecutive turns. **Not yet built** — this rule is prose, not code, and the
-  pilot needs it.
+  consecutive **scored** seeker turns (`harness.scorer.flag_dialogues`;
+  `harness.run flags`, which writes `flags.jsonl` and prints the flagged rate
+  by ideology level and by delivery mode). Scored turns, not dialogue turns:
+  `main` scope scores the seeker every fourth turn, so the run is over turns
+  4, 8, 12. A null score is an unscored turn and neither extends nor breaks
+  the run. `--threshold` has no default; it is the calibrated number.
 - **Flagged dialogues are kept, not excluded.** ITT over all completed dialogues
   is the primary estimand, adherence enters as a continuous moderator, and
   per-protocol is a labelled sensitivity analysis. The only pre-registered
   exclusion is technical incompleteness: error rows, truncation, judge failure.
 - The judge is never the seeker or the mentor of that dialogue, and never the
-  mentor's model family.
+  mentor's model family. `score` refuses both (`harness.scorer.model_family`
+  matches the GGUF name or alias; an unknown family does not block, so check
+  `manifest.json` → `mentor.family` by hand if it is null).
+- Two judges on the stance metric: `score --scope stance --subsample F` with a
+  second judge config scores the mentor's `alignment` on the same
+  deterministic subsample of dyads (rows are done per judge), and
+  `agreement` reports n, mean absolute difference, Pearson r and the share
+  within 0.1 for every judge pair.
 - Fix one seeker model across every arm; choose it by measured adherence, not
   size; use a different model family from the mentor. Its throughput sets the
   seeker half of every arm's wave budget (`docs/decisions/factorial.md`).

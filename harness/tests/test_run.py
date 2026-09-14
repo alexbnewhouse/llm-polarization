@@ -518,3 +518,67 @@ def test_cache_reuse_limit_comes_from_the_config_top_level(tmp_path):
     assert R._settings(cfg).cache_reuse_limit is None
     # operational, like concurrency: changing it must not make a resume refuse the run
     assert "cache_reuse_limit" not in log.RUN_AFFECTING_CONFIG
+
+
+def _scored_run(tmp_path, monkeypatch):
+    """A finished, scored two-dyad run with conditions and modes, for the flags/agreement commands."""
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    rows = manifest_rows(2)
+    rows[0]["condition"] = {"topic": "immigration_enforcement", "ideology": "strong_left", "openness": "open", "role": "x"}
+    rows[1]["condition"] = {"topic": "immigration_enforcement", "ideology": "none", "openness": None, "role": None}
+    rows[1]["persona_mode"] = "once"
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    return cfg
+
+
+def test_flags_command_writes_flags_and_reports_rates_by_ideology_and_mode(tmp_path, monkeypatch, capsys):
+    cfg = _scored_run(tmp_path, monkeypatch)
+    paths = log.run_paths(tmp_path / "data", "r1")
+    w = log.JsonlWriter(paths.scores)
+    for dyad, scores in (("d0", (0.2, 0.2)), ("d1", (0.9, 0.9))):
+        for turn, s in zip((1, 2), scores):
+            w.write({"run_id": "r1", "dyad_id": dyad, "attempt": 1, "turn": turn, "agent": SEEKER,
+                     "metric": "prompt_to_line", "judge_sha256": "J", "score": s})
+    # threshold is required: it is calibrated on pilot hand labels, never defaulted
+    with pytest.raises(SystemExit):
+        R.main(["flags", "--config", str(cfg), "--run-id", "r1"])
+    assert R.main(["flags", "--config", str(cfg), "--run-id", "r1", "--threshold", "0.5", "--run-length", "2"]) == 0
+    out = capsys.readouterr().out
+    flags = log.read_jsonl(paths.flags)
+    by = {r["dyad_id"]: r for r in flags}
+    assert by["d0"]["flagged"] is True and by["d1"]["flagged"] is False
+    assert by["d0"]["ideology"] == "strong_left" and by["d0"]["persona_mode"] == "reinforced"
+    assert by["d0"]["threshold"] == 0.5 and by["d0"]["run_length"] == 2 and by["d0"]["metric"] == "prompt_to_line"
+    assert by["d0"]["rule"] == "consecutive scored seeker turns"
+    assert "strong_left" in out and "reinforced" in out and "1/1" in out
+    # re-running replaces the file rather than appending to it: flags are derived, not a ledger
+    assert R.main(["flags", "--config", str(cfg), "--run-id", "r1", "--threshold", "0.5", "--run-length", "2"]) == 0
+    assert len(log.read_jsonl(paths.flags)) == 2
+
+
+def test_agreement_command_reports_cross_judge_agreement(tmp_path, monkeypatch, capsys):
+    cfg = _scored_run(tmp_path, monkeypatch)
+    paths = log.run_paths(tmp_path / "data", "r1")
+    w = log.JsonlWriter(paths.scores)
+    for judge, scores in (("J1", (0.2, 0.8)), ("J2", (0.3, 0.7))):
+        for turn, s in zip((1, 2), scores):
+            w.write({"run_id": "r1", "dyad_id": "d0", "attempt": 1, "turn": turn, "agent": MENTOR,
+                     "metric": "alignment", "judge_sha256": judge, "score": s})
+    assert R.main(["agreement", "--config", str(cfg), "--run-id", "r1"]) == 0
+    out = capsys.readouterr().out
+    assert "J1" in out and "J2" in out and "n=2" in out
+
+
+def test_score_stance_scope_with_a_subsample_and_the_judge_family_in_its_manifest(tmp_path, monkeypatch, capsys):
+    cfg = _scored_run(tmp_path, monkeypatch)
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "stance", "--subsample", "1.0"]) == 0
+    paths = log.run_paths(tmp_path / "data", "r1")
+    scores = log.read_jsonl(paths.scores)
+    assert scores and all(s["agent"] == MENTOR and s["metric"] == "alignment" for s in scores)
+    judge = json.loads(next(paths.root.glob("judge-*.json")).read_text())
+    assert judge["scope"] == "stance" and judge["subsample"] == 1.0 and "family" in judge
+    manifest = json.loads(paths.manifest.read_text())
+    assert "family" in manifest["mentor"] and "family" in manifest["seeker"]

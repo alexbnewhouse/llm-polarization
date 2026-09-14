@@ -15,6 +15,7 @@ class RunPaths:
     turns: Path
     surveys: Path
     scores: Path
+    flags: Path
 
 
 def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
@@ -22,7 +23,7 @@ def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
     root = Path(data_dir) / run_id
     root.mkdir(parents=True, exist_ok=True)
     return RunPaths(root, root / "manifest.json", root / "dyads.jsonl", root / "status.jsonl",
-                    root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl")
+                    root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl", root / "flags.jsonl")
 
 
 class JsonlWriter:

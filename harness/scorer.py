@@ -1,6 +1,7 @@
 """Offline adherence scorer: a judge model scores logged turns; results go to scores.jsonl."""
 from __future__ import annotations
 import json
+import re
 from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings
 from harness.log import JsonlWriter, RunPaths, derive_seed, now_iso, read_jsonl, resume_index, sha256_text
@@ -8,7 +9,32 @@ from harness.templates import render
 from harness.transcript import SEEKER, MENTOR, message_order
 
 METRICS = {"prompt_to_line": SEEKER, "line_to_line": SEEKER, "alignment": MENTOR}
-SCOPES = ("pilot", "main")
+# pilot: every turn, both agents. main: seeker adherence on the turn-4 cadence plus the final turn.
+# stance: the mentor's alignment metric on the same cadence -- the turn-level DV -- meant to be run by
+# two different judges on a subsample so cross-judge agreement is reportable (persona-stability §3).
+SCOPES = ("pilot", "main", "stance")
+MAIN_CADENCE = 4
+
+# Model families, matched against the GGUF file name or the server alias, lower-cased. The judge may
+# never share the mentor's family (docs/decisions/persona-stability.md §3): the mentor's stance score is
+# the DV, and a same-family judge is both self-favouring and likely to share its political priors.
+MODEL_FAMILIES = (
+    ("gpt-oss", r"gpt[-_]?oss"), ("qwen", r"qwen"), ("olmo", r"olmo"), ("glm", r"\bglm|(^|[^a-z])glm"),
+    ("gemma", r"gemma"), ("llama", r"llama"), ("mistral", r"mistral|mixtral"), ("phi", r"(^|[^a-z])phi[-_ ]?\d"),
+    ("deepseek", r"deepseek"),
+)
+
+
+def model_family(name: str | None) -> str | None:
+    """The family slug of a model, from its GGUF path or alias; None when no pattern matches. Unknown is
+    unknown: the caller must not treat None as 'different family'."""
+    if not name:
+        return None
+    base = name.rsplit("/", 1)[-1].lower()
+    for family, pattern in MODEL_FAMILIES:
+        if re.search(pattern, base):
+            return family
+    return None
 JUDGE_N_PREDICT = 160
 JUDGE_TEMPERATURE = 0.0
 
@@ -48,12 +74,27 @@ def build_judge_messages(metric: str, persona_text: str, topic: str, line: str,
     return [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
 
 
-def select_targets(turn_rows: list[dict], scope: str) -> list[tuple[dict, str]]:
-    """Pick which (turn row, metric) pairs to score: every non-error row/metric for 'pilot', a turn-4 cadence
-    of seeker rows for 'main'; raises ValueError for any other scope."""
+def subsample_dyads(dyad_ids, fraction: float, run_seed: int) -> set[str]:
+    """A deterministic subsample of whole dyads: a dyad is in when the first 32 bits of
+    sha256(run_seed|dyad_id) fall under `fraction`. Whole dyads, so the two judges see the same turns;
+    deterministic, so a second `score` pass (or a second judge) picks exactly the same set."""
+    if not 0 < fraction <= 1:
+        raise ValueError(f"subsample must be in (0, 1], got {fraction}")
+    return {d for d in dyad_ids if int(sha256_text(f"{run_seed}|{d}")[:8], 16) / 2 ** 32 < fraction}
+
+
+def select_targets(turn_rows: list[dict], scope: str, subsample: float | None = None,
+                   run_seed: int = 0) -> list[tuple[dict, str]]:
+    """Pick which (turn row, metric) pairs to score. 'pilot': every non-error row and metric. 'main':
+    seeker rows on the turn-4 cadence plus the dyad's final turn, both seeker metrics. 'stance': mentor
+    rows on that same cadence, the alignment metric only. `subsample` keeps that fraction of dyads
+    (subsample_dyads). Raises ValueError for any other scope."""
     if scope not in SCOPES:
         raise ValueError(f"scope must be one of {SCOPES}")
     rows = [r for r in turn_rows if r.get("finish_reason") != "error"]
+    if subsample is not None:
+        keep = subsample_dyads({r["dyad_id"] for r in rows}, subsample, run_seed)
+        rows = [r for r in rows if r["dyad_id"] in keep]
     out = []
     if scope == "pilot":
         for r in rows:
@@ -61,19 +102,98 @@ def select_targets(turn_rows: list[dict], scope: str) -> list[tuple[dict, str]]:
                 if r["agent"] == agent:
                     out.append((r, metric))
         return out
-    seeker_rows = [r for r in rows if r["agent"] == SEEKER]
+    agent_wanted = SEEKER if scope == "main" else MENTOR
+    agent_rows = [r for r in rows if r["agent"] == agent_wanted]
     by_dyad: dict[tuple, int] = {}
-    for r in seeker_rows:
+    for r in agent_rows:
         key = (r["dyad_id"], r.get("attempt", 1))
         by_dyad[key] = max(by_dyad.get(key, 0), r["turn"])
-    for r in seeker_rows:
-        # main scope: turns 4, 8, 12, ... plus the dyad's final turn (spec section 6). pilot scope
-        # scores every turn instead.
-        if r["turn"] % 4 == 0 or r["turn"] == by_dyad[(r["dyad_id"], r.get("attempt", 1))]:
+    for r in agent_rows:
+        # turns 4, 8, 12, ... plus the dyad's final turn (spec section 6). pilot scope scores every turn.
+        if r["turn"] % MAIN_CADENCE == 0 or r["turn"] == by_dyad[(r["dyad_id"], r.get("attempt", 1))]:
             for metric, agent in METRICS.items():
-                if agent == SEEKER:
+                if agent == agent_wanted:
                     out.append((r, metric))
     return out
+
+
+ADHERENCE_METRICS = tuple(m for m, a in METRICS.items() if a == SEEKER)
+FLAG_RULE = "consecutive scored seeker turns"
+
+
+def flag_dialogues(score_rows: list[dict], threshold: float, metric: str = "prompt_to_line",
+                   run_length: int = 3, judge_sha256: str | None = None) -> dict[tuple[str, int], dict]:
+    """The three-consecutive-turns flag rule (docs/decisions/persona-stability.md §3), in code. A dyad
+    attempt is flagged when `metric` (a seeker adherence metric) is strictly under `threshold` on
+    `run_length` consecutive SCORED seeker turns -- consecutive in the sequence of turns the judge scored,
+    not in dialogue turns, because main scope scores the seeker on a turn-4 cadence. A null score (a
+    judge reply that did not parse) is an unscored turn: it is counted in `unscored_turns` and neither
+    extends nor breaks a run. Rows must come from one judge: pass `judge_sha256` when two have scored.
+
+    `threshold` has no default on purpose: it is calibrated on the pilot's hand labels, never carried over
+    from a paper whose metric is a rate rather than a per-turn score. Returns {(dyad_id, attempt): {...}}.
+    Flagged dialogues are kept (ITT); the flag reports an instrument statistic and triggers the
+    per-protocol sensitivity analysis."""
+    if metric not in ADHERENCE_METRICS:
+        raise ValueError(f"metric must be a seeker adherence metric {ADHERENCE_METRICS}, got {metric!r}")
+    if run_length < 1:
+        raise ValueError("run_length must be at least 1")
+    rows = [r for r in score_rows if r.get("metric") == metric and r.get("agent") == SEEKER and not r.get("error")]
+    judges = {r.get("judge_sha256") for r in rows}
+    if judge_sha256 is not None:
+        rows = [r for r in rows if r.get("judge_sha256") == judge_sha256]
+    elif len(judges) > 1:
+        raise ValueError(f"scores from {len(judges)} judges for {metric}; pass judge_sha256 to pick one")
+    by_dyad: dict[tuple[str, int], list[dict]] = {}
+    for r in rows:
+        by_dyad.setdefault((r["dyad_id"], int(r.get("attempt", 1))), []).append(r)
+    out = {}
+    for key, rs in by_dyad.items():
+        rs = sorted(rs, key=lambda r: r["turn"])
+        scored = [r for r in rs if r.get("score") is not None]
+        run = 0
+        first_flag = None
+        for r in scored:
+            run = run + 1 if r["score"] < threshold else 0
+            if run >= run_length and first_flag is None:
+                first_flag = r["turn"]
+        out[key] = {"flagged": first_flag is not None, "first_flag_turn": first_flag,
+                    "scored_turns": len(scored), "unscored_turns": len(rs) - len(scored),
+                    "turns_under": sum(1 for r in scored if r["score"] < threshold),
+                    "min_score": min((r["score"] for r in scored), default=None),
+                    "mean_score": (sum(r["score"] for r in scored) / len(scored)) if scored else None,
+                    "final_turn": rs[-1]["turn"]}
+    return out
+
+
+def cross_judge_agreement(score_rows: list[dict], metric: str = "alignment") -> dict:
+    """Agreement between every pair of judges that scored `metric`, on the (dyad, attempt, turn, agent)
+    targets both scored with a non-null score: n, mean absolute difference, Pearson r, and the share of
+    targets within 0.1. One judge on the outcome metric is a single point of failure; this is the number
+    the paper reports beside it. Returns {"metric", "judges", "per_judge", "pairs"}."""
+    import numpy as np
+    by_judge: dict[str, dict[tuple, float]] = {}
+    for r in score_rows:
+        if r.get("metric") != metric or r.get("score") is None or r.get("error"):
+            continue
+        key = (r["dyad_id"], int(r.get("attempt", 1)), r["turn"], r["agent"])
+        by_judge.setdefault(r["judge_sha256"], {})[key] = float(r["score"])
+    judges = sorted(by_judge)
+    per_judge = {j: {"n": len(v), "mean": float(np.mean(list(v.values()))) if v else None} for j, v in by_judge.items()}
+    pairs = []
+    for i, a in enumerate(judges):
+        for b in judges[i + 1:]:
+            shared = sorted(set(by_judge[a]) & set(by_judge[b]))
+            xa = np.array([by_judge[a][k] for k in shared]); xb = np.array([by_judge[b][k] for k in shared])
+            n = len(shared)
+            r = None
+            if n >= 2 and xa.std() > 0 and xb.std() > 0:
+                r = float(np.corrcoef(xa, xb)[0, 1])
+            pairs.append({"judges": [a, b], "n": n,
+                          "mean_abs_diff": float(np.abs(xa - xb).mean()) if n else None,
+                          "pearson_r": r,
+                          "within_0.1": float((np.abs(xa - xb) <= 0.1 + 1e-9).mean()) if n else None})
+    return {"metric": metric, "judges": judges, "per_judge": per_judge, "pairs": pairs}
 
 
 def latest_complete_attempts(status_rows: list[dict]) -> dict[str, int]:
@@ -104,15 +224,23 @@ class Scorer:
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
         self.harness_commit = harness_commit
 
-    def score_run(self, paths: RunPaths, scope: str, manifest: dict) -> int:
-        """Score every not-yet-scored target for the run's complete dyads and return how many rows were written."""
+    def score_run(self, paths: RunPaths, scope: str, manifest: dict, subsample: float | None = None) -> int:
+        """Score every not-yet-scored target for the run's complete dyads and return how many rows were
+        written. Refuses a judge that is the seeker or the mentor of this run, or of the mentor's model
+        family (persona-stability §3); an unknown family on either side does not block, since None is
+        'unknown', not 'different'. Rows are done per judge, so a second judge scores the same targets."""
         for role in ("seeker", "mentor"):
             if manifest.get(role, {}).get("model_sha256") == self.judge.model_sha256:
                 raise ValueError(f"judge model is the same as the {role} model; pick a third model")
+        mentor = manifest.get("mentor", {})
+        mentor_family = mentor.get("family") or model_family(mentor.get("model_path")) or model_family(mentor.get("alias"))
+        if mentor_family and self.judge.family and mentor_family == self.judge.family:
+            raise ValueError(f"judge is from the mentor's model family ({mentor_family}); the mentor's stance "
+                             "score is the outcome and a same-family judge is not independent of it")
         complete = latest_complete_attempts(read_jsonl(paths.status))
         dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
         done = {(s["dyad_id"], s["attempt"], s["turn"], s["agent"], s["metric"])
-                for s in read_jsonl(paths.scores) if not s.get("error")}
+                for s in read_jsonl(paths.scores) if not s.get("error") and s.get("judge_sha256") == self.judge.model_sha256}
         turns = [r for r in read_jsonl(paths.turns) if complete.get(r["dyad_id"]) == r.get("attempt", 1)]
         by_dyad: dict[tuple, list[dict]] = {}
         for r in turns:
@@ -125,7 +253,7 @@ class Scorer:
         positions: dict[tuple, dict[int, int]] = {
             k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
         written = 0
-        for row, metric in select_targets(turns, scope):
+        for row, metric in select_targets(turns, scope, subsample=subsample, run_seed=self.run_seed):
             key = (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric)
             if key in done:
                 continue

@@ -16,6 +16,7 @@ class AgentHandle:
     model_sha256: str
     slot: int
     alias: str = ""
+    family: str | None = None       # model family slug (harness.scorer.model_family); None when unknown
 
 
 @dataclass
