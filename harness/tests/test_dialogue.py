@@ -1,6 +1,6 @@
 import pytest
 from harness import log
-from harness.dialogue import AgentHandle, GenSettings, DyadSpec, DialogueRunner, DialogueError, expected_new_tokens
+from harness.dialogue import AgentHandle, GenSettings, DyadSpec, DialogueRunner, DialogueError, CacheReuseLost, expected_new_tokens
 from harness.templates import ChatTemplate
 from harness.transcript import SEEKER, MENTOR
 from harness.tests.fakes import FakeClient
@@ -138,3 +138,58 @@ def test_server_error_writes_error_row_and_raises(tmp_path):
     rows = log.read_jsonl(tmp_path / "turns.jsonl")
     assert rows[-1]["finish_reason"] == "error" and rows[-1]["text"] == "" and "fake failure" in rows[-1]["error"]
     assert len(rows) == 3
+
+
+def test_lost_cache_on_a_mid_dialogue_turn_fails_the_dyad_after_logging_the_row(tmp_path):
+    # The single largest lever in the pipeline fails silently: a turn that re-prefills the whole transcript
+    # costs ~4,000x the budgeted prefill and nothing errors. So a mid-dialogue turn whose prefill is both
+    # unexpected (cache_warning) and large (over cache_reuse_limit) is a hard failure of the dyad, not a
+    # flag in a column nobody reads until the wave is a week late.
+    runner, sc, mc, _ = make_runner(tmp_path)
+    runner.settings.cache_reuse_limit = 1000
+    def cold_complete(prompt, **kw):
+        c = FakeClient.complete(sc, prompt, **kw)
+        c.prompt_n = 5000                        # the server prefilled the whole transcript again
+        return c
+    sc.complete = cold_complete
+    with pytest.raises(DialogueError) as ei:
+        runner.run(spec(n_turns=3), attempt=1)
+    assert ei.value.turn == 2 and ei.value.agent == SEEKER
+    assert isinstance(ei.value.cause, CacheReuseLost) and "5000" in str(ei.value.cause)
+    rows = log.read_jsonl(tmp_path / "turns.jsonl")
+    assert rows[-1]["agent"] == SEEKER and rows[-1]["turn"] == 2 and rows[-1]["cache_warning"] is True
+    assert rows[-1]["prompt_n"] == 5000 and rows[-1]["finish_reason"] == "stop"   # the row is kept as evidence
+
+
+def test_first_turn_may_prefill_the_whole_persona_without_failing(tmp_path):
+    # Turn 1 has nothing cached: a 5,000-token persona prefill there is normal, not a lost cache.
+    runner, sc, mc, _ = make_runner(tmp_path)
+    runner.settings.cache_reuse_limit = 1000
+    calls = {"n": 0}
+    def first_cold(prompt, **kw):
+        c = FakeClient.complete(sc, prompt, **kw)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            c.prompt_n = 5000
+        return c
+    sc.complete = first_cold
+    runner.run(spec(n_turns=2), attempt=1)      # does not raise
+
+
+def test_a_large_but_expected_prefill_is_not_a_lost_cache(tmp_path):
+    # A long partner line makes expected_new large too; that is not a cache loss and must not fail the dyad.
+    runner, sc, mc, _ = make_runner(tmp_path, mentor_replies=[" ".join(["word"] * 1500)])
+    runner.settings.cache_reuse_limit = 1000
+    runner.run(spec(n_turns=2), attempt=1)      # seeker turn 2 prefills ~1,500 new tokens, all of them expected
+
+
+def test_cache_reuse_limit_none_disables_the_hard_failure(tmp_path):
+    runner, sc, mc, _ = make_runner(tmp_path)
+    runner.settings.cache_reuse_limit = None
+    def cold_complete(prompt, **kw):
+        c = FakeClient.complete(sc, prompt, **kw)
+        c.prompt_n = 5000
+        return c
+    sc.complete = cold_complete
+    runner.run(spec(n_turns=2), attempt=1)
+    assert all(r["cache_warning"] for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER)

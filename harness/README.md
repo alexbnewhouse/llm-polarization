@@ -63,6 +63,19 @@ confused. A worked example with two rows: `harness/dyads.example.jsonl`.
 `check --manifest` uses the largest `n_turns` in the file to check that a dialogue fits in one slot's
 context before the run starts.
 
+### KV cache reuse is asserted, not only logged (2026-09-14)
+
+A turn at 32k depth should prefill the partner's last line (a few hundred tokens), not the transcript.
+Nothing errors when that breaks; the wave just runs thousands of times slower. Two guards:
+
+- `check` sends two one-token probes to each role's slot, the second extending the first, and **FAILs
+  `cache_reuse`** when the second prefills more than the new tokens plus a 64-token margin. Catches a
+  server without prompt caching, or a template that rewrites the prefix between turns, before the run.
+- During a run, a mid-dialogue turn whose `prompt_n` is both unexpected (`cache_warning`) and above
+  `cache_reuse_limit` (config, default 1000; `null` disables) **fails the dyad** with `CacheReuseLost`.
+  The row is logged first, so the evidence is in `turns.jsonl`; the dyad is retried as a new attempt and
+  `run` exits 2. A systematic loss fails every dyad at its second turn, which is the point.
+
 ## What the config fields mean
 
 | Field | What it does |
@@ -70,6 +83,7 @@ context before the run starts.
 | `run_seed` | The one number every generation seed is derived from, together with the per-dyad `seed`. Change it and you get a different run. Record it in the paper. |
 | `now` | The date fed to templates that print the current date (gpt-oss does). Pinned so the prompt is the same tomorrow. Changing it changes every prompt for those models: freeze it for the life of the study, not per run. |
 | `concurrency` | How many dialogues run at once. `null` means "as many as the smaller server has slots". |
+| `cache_reuse_limit` | Tokens. A mid-dialogue turn that prefills more than this when the cache should have held fails the dyad. Default 1000; must exceed `2 * n_predict` plus the reminder. `null` disables. Operational: not compared on resume. |
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
 | `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |
 | `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |

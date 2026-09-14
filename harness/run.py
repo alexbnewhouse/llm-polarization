@@ -7,7 +7,8 @@ from pathlib import Path
 import jinja2
 from harness import __version__, log
 from harness.client import LlamaClient, ServerError
-from harness.dialogue import AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings
+from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
+                              expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
 from harness.scorer import (JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, Scorer,
                             latest_complete_attempts)
@@ -19,6 +20,9 @@ from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript, messag
 DEFAULT_CONFIG = {
     "data_dir": "data", "gguf_py_path": None, "batteries": "instruments/batteries.json", "run_seed": 0,
     "concurrency": None, "now": "2026-09-08",
+    # Operational, like concurrency: a mid-dialogue turn that prefills more than this many tokens when the
+    # cache should have held fails the dyad (harness/dialogue.py CacheReuseLost). null disables it.
+    "cache_reuse_limit": 1000,
     "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600, "enable_thinking": False},
     "seeker": {"url": None, "gguf_path": None}, "mentor": {"url": None, "gguf_path": None},
     "judge": {"url": None, "gguf_path": None},
@@ -108,6 +112,32 @@ def _context_budget(cfg: dict, props: dict, max_n_turns: int) -> tuple[str, bool
     return ("context_budget", int(n_ctx) >= need, f"n_ctx {int(n_ctx)} per slot vs {detail}")
 
 
+CACHE_PROBE_MARGIN = 64
+# The probe's first message is padded to a few hundred tokens: with a one-line prompt a full re-prefill
+# would still sit inside the 64-token margin and the probe could not tell a cold slot from a warm one.
+CACHE_PROBE_PADDING = " ".join(["This line is filler so the probe prompt is long enough to measure."] * 40)
+
+
+def _cache_reuse_probe(handle: AgentHandle, now: str) -> tuple[str, bool | None, str]:
+    """Send two one-token completions to the agent's slot, the second one a strict extension of the first
+    (its reply appended, plus one more user line). If the slot's KV cache holds, the second call prefills
+    about the new tokens only; a server that re-prefills the whole prompt fails this row."""
+    first = [{"role": "user", "content": CACHE_PROBE_PADDING + "\nReply with the single word: ready."}]
+    try:
+        p1 = render(handle.template, first, now=now)
+        c1 = handle.client.complete(p1, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0, cache_prompt=True)
+        second = first + [{"role": "assistant", "content": c1.text or "ready"},
+                          {"role": "user", "content": "Reply with the single word: again."}]
+        p2 = render(handle.template, second, now=now)
+        expected = expected_new_tokens(handle.client, p2, p1)
+        c2 = handle.client.complete(p2, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0, cache_prompt=True)
+    except (ServerError, TemplateError) as e:
+        return ("cache_reuse", False, f"probe failed: {e}")
+    ok = c2.prompt_n <= expected + CACHE_PROBE_MARGIN
+    return ("cache_reuse", ok, f"second call prefilled {c2.prompt_n} tokens, expected about {expected} "
+            f"(first call {c1.prompt_n}) on slot {handle.slot}" + ("" if ok else " -- the slot did not reuse its KV cache"))
+
+
 def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) -> list[tuple[str, bool | None, str]]:
     """This agent's pre-flight, as (name, ok, detail) rows. `ok` is True, False (blocks a run) or None
     (a warning worth printing that does not block one):
@@ -120,6 +150,9 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
       the GGUF. A warning rather than a failure: the Olmo arm is deliberately served
       `--no-jinja --chat-template chatml`, and the parity rows above are the gate that matters.
     - `context_budget` (only when a dyad manifest is given): does the longest dialogue fit in a slot?
+    - `cache_reuse`: two completions on this agent's slot, the second extending the first; the server must
+      prefill only the new tokens. Catches a server without prompt caching, or a template that rewrites the
+      prefix between turns, before a wave spends a day finding out (`docs`: the largest lever, fails silently).
     - `trailing_system` (seeker only): does the template accept the persona reminder as a trailing
       system message?"""
     now = cfg.get("now", "2026-09-08")
@@ -149,6 +182,7 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
                         "--chat-template; template parity is the gate"))
     if max_n_turns:
         results.append(_context_budget(cfg, props, max_n_turns))
+    results.append(_cache_reuse_probe(handle, now))
     if handle.name == SEEKER:
         try:
             render(handle.template, FIXTURE_MESSAGES, now=now)
@@ -245,7 +279,8 @@ def run_dyad(worker_slot: int, spec: DyadSpec, attempt: int, ctx: RunContext) ->
 def _settings(cfg: dict) -> GenSettings:
     """Build the GenSettings the run will use for dialogue turns from the config's generation block."""
     g = cfg["generation"]
-    return GenSettings(g["temperature"], g["top_p"], g["n_predict"], cfg["now"], g["enable_thinking"])
+    return GenSettings(g["temperature"], g["top_p"], g["n_predict"], cfg["now"], g["enable_thinking"],
+                       cache_reuse_limit=cfg.get("cache_reuse_limit"))
 
 
 def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:

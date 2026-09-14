@@ -479,3 +479,42 @@ def test_score_refuses_when_the_judge_fails_its_check(tmp_path, monkeypatch, cap
                             CHATML if "j" not in path else "{{ 'divergent' }}"))
     assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "pilot"]) == 1
     assert "not scoring" in capsys.readouterr().err
+
+
+def test_check_agent_probes_kv_cache_reuse_on_the_slot():
+    # Two completions on the same slot, the second extending the first: the server should prefill only the
+    # new tokens. This is the pre-flight row that catches a server started without prompt caching, or a
+    # template that rewrites the prefix between turns, before a wave spends a day finding out.
+    tpl = ChatTemplate.from_source(CHATML)
+    fc = FakeClient(["ok"])
+    handle = AgentHandle(SEEKER, fc, tpl, "h", slot=3)
+    cfg = R._merge(R.DEFAULT_CONFIG, {})
+    results = dict((n, (ok, d)) for n, ok, d in R.check_agent(handle, cfg))
+    ok, detail = results["cache_reuse"]
+    assert ok is True, detail
+    probes = fc.calls[-2:]
+    assert all(c["id_slot"] == 3 and c["cache_prompt"] is True and c["n_predict"] == 1 for c in probes)
+    assert probes[1]["prompt"].startswith(probes[0]["prompt"].rsplit("<|im_start|>assistant", 1)[0])
+
+
+def test_check_agent_fails_cache_reuse_when_the_server_reprefills():
+    tpl = ChatTemplate.from_source(CHATML)
+    fc = FakeClient(["ok"])
+    def cold(prompt, **kw):
+        c = FakeClient.complete(fc, prompt, **kw)
+        c.prompt_n = len(prompt.split())         # everything prefilled again: no cache hit at all
+        return c
+    fc.complete = cold
+    handle = AgentHandle(SEEKER, fc, tpl, "h", slot=0)
+    results = dict((n, (ok, d)) for n, ok, d in R.check_agent(handle, R._merge(R.DEFAULT_CONFIG, {})))
+    ok, detail = results["cache_reuse"]
+    assert ok is False and "prefilled" in detail
+
+
+def test_cache_reuse_limit_comes_from_the_config_top_level(tmp_path):
+    cfg = R.load_config(write_cfg(tmp_path))
+    assert R._settings(cfg).cache_reuse_limit == 1000
+    cfg = R.load_config(write_cfg(tmp_path, cache_reuse_limit=None))
+    assert R._settings(cfg).cache_reuse_limit is None
+    # operational, like concurrency: changing it must not make a resume refuse the run
+    assert "cache_reuse_limit" not in log.RUN_AFFECTING_CONFIG

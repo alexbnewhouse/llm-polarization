@@ -67,7 +67,9 @@ Two messages per turn: seeker then mentor. A 40-turn dialogue is 80 rows.
 
 `expected_new` and `cache_warning` are the harness's audit of KV-cache reuse. `cache_warning: true` means
 the server re-prefilled far more than it should have — that turn cost hundreds of times more compute than
-budgeted, and its numerics went down a different path. Report the rate in the appendix.
+budgeted, and its numerics went down a different path. Report the rate in the appendix. When the excess is
+also above the config's `cache_reuse_limit` on a mid-dialogue turn, the dyad fails right after that row
+(`status.jsonl` reason starts with `KV cache reuse lost`) and is retried as a new attempt.
 `truncated: true` is different and worse: the slot ran out of context. `finish_reason: "length"` alone
 cannot tell the two apart, which is why both are logged.
 

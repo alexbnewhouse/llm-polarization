@@ -26,6 +26,9 @@ class GenSettings:
     n_predict: int = 300
     now: str = "2026-09-08"
     enable_thinking: bool = False
+    # A mid-dialogue turn that prefills more than this many tokens, when the harness expected far fewer,
+    # fails the dyad (CacheReuseLost). None disables the hard failure; cache_warning is still logged.
+    cache_reuse_limit: int | None = 1000
 
 
 @dataclass
@@ -45,6 +48,12 @@ class DyadSpec:
         return cls(row["dyad_id"], dict(row.get("condition") or {}), row["persona_text"],
                    row.get("persona_reminder", ""), row.get("persona_mode", "reinforced"),
                    int(row.get("seed", 0)), int(row["n_turns"]))
+
+
+class CacheReuseLost(Exception):
+    """A mid-dialogue turn re-prefilled the transcript instead of reusing the slot's KV cache. This is the
+    largest efficiency lever in the pipeline and it fails silently: nothing errors, the wave just runs
+    thousands of times slower. So the harness makes it loud -- the dyad fails and `run` exits 2."""
 
 
 class DialogueError(Exception):
@@ -106,6 +115,7 @@ class DialogueRunner:
                "model_sha256": h.model_sha256, "persona_mode": spec.persona_mode,
                "id_slot": h.slot, "temperature": s.temperature, "top_p": s.top_p, "n_predict": s.n_predict,
                "prompt_sha256": sha256_text(prompt), "prompt_chars": len(prompt), "seed": seed}
+        mid_dialogue = last_prompt[agent] is not None     # this agent has generated on this slot before
         try:
             expected = expected_new_tokens(h.client, prompt, last_prompt[agent])
             comp = h.client.complete(prompt, id_slot=h.slot, seed=seed, n_predict=s.n_predict,
@@ -127,4 +137,9 @@ class DialogueRunner:
                     "finish_reason": comp.finish_reason, "text": comp.text, "timings": comp.timings,
                     "adherence": None, "ts": self.clock()})
         self.turns_log.write(row)
+        limit = s.cache_reuse_limit
+        if limit is not None and mid_dialogue and row["cache_warning"] and comp.prompt_n > limit:
+            raise DialogueError(spec.dyad_id, turn, agent, CacheReuseLost(
+                f"KV cache reuse lost: prefilled {comp.prompt_n} tokens on slot {h.slot}, expected about "
+                f"{expected} (limit {limit}); the row is logged with cache_warning"))
         return comp.text
