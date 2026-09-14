@@ -51,5 +51,6 @@ per-dyad `seed` from one RNG seeded with `--seed`; the rows are shuffled so
 cells interleave across the server's slots. `<stem>-assignment.json` beside the
 manifest records the grid and catalogue hashes, the RNG seed, rows per cell,
 per variant and per mode, and the output hash: that file is the randomization
-paragraph of the design section. `check --manifest` and `run` refuse any row
+paragraph of the design section. `--check` validates a catalogue against the
+grid and writes nothing. `check --manifest` and `run` refuse any row
 whose condition is not a cell of the grid.

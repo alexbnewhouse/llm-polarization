@@ -211,3 +211,14 @@ def test_cli_writes_manifest_and_sidecar_and_refuses_a_bad_catalogue(tmp_path, c
     rc = RZ.main(["--grid", str(GRID), "--catalogue", str(bad), "--out", str(tmp_path / "x.jsonl"), "--seed", "1"])
     assert rc == 1 and not (tmp_path / "x.jsonl").exists()
     assert "centrist" in capsys.readouterr().err
+
+
+def test_cli_check_validates_the_catalogue_without_writing_anything(tmp_path, capsys):
+    rc = RZ.main(["--grid", str(GRID), "--catalogue", str(EXAMPLE_CATALOGUE), "--check"])
+    assert rc == 0 and not list(tmp_path.iterdir())
+    assert "valid" in capsys.readouterr().out
+    bad = tmp_path / "bad.json"
+    c = catalogue(); del c["anchors"]["moderate"]["decarbonization"]
+    bad.write_text(json.dumps(c))
+    assert RZ.main(["--grid", str(GRID), "--catalogue", str(bad), "--check"]) == 1
+    assert "moderate" in capsys.readouterr().err

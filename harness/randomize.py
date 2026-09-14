@@ -219,17 +219,25 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness.randomize", description=__doc__.split("\n\n")[0])
     ap.add_argument("--grid", default="prompts/grid.json")
     ap.add_argument("--catalogue", required=True)
-    ap.add_argument("--out", required=True, help="the *-dyads.jsonl to write; the assignment log lands beside it")
-    ap.add_argument("--seed", type=int, required=True, help="the RNG seed; recorded in the assignment log")
+    ap.add_argument("--out", help="the *-dyads.jsonl to write; the assignment log lands beside it")
+    ap.add_argument("--seed", type=int, help="the RNG seed; recorded in the assignment log")
+    ap.add_argument("--check", action="store_true", help="validate the catalogue against the grid and write nothing")
     ap.add_argument("--n-per-cell", type=int, default=None, help="rows per treated cell (grid default: 135)")
     ap.add_argument("--n-control", type=int, default=None, help="rows per control cell (grid default: 135)")
     ap.add_argument("--modes", default=None, help="comma-separated persona modes (grid default: reinforced)")
     ap.add_argument("--n-turns", type=int, default=None)
     ap.add_argument("--prefix", default="w", help="dyad_id prefix, e.g. p for the pilot, w1 for wave 1")
     a = ap.parse_args(argv)
+    if not a.check and (a.out is None or a.seed is None):
+        ap.error("--out and --seed are required unless --check")
     try:
         grid = load_grid(a.grid)
         catalogue = load_catalogue(a.catalogue)
+        if a.check:
+            validate_catalogue(catalogue, grid)
+            n = {lvl: len(v) for lvl, v in catalogue["roles"].items()}
+            print(f"{a.catalogue} (version {catalogue['version']}) is valid against {a.grid}: role variants per level {n}")
+            return 0
         modes = tuple(m.strip() for m in a.modes.split(",")) if a.modes else None
         rows, assignment = build_manifest(grid, catalogue, seed=a.seed, n_per_cell=a.n_per_cell,
                                           n_control=a.n_control, modes=modes, n_turns=a.n_turns, prefix=a.prefix)
