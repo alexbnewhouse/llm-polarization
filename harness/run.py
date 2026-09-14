@@ -7,6 +7,7 @@ from pathlib import Path
 import jinja2
 from harness import __version__, log
 from harness.client import LlamaClient, ServerError
+from harness.grid import check_conditions, load_grid
 from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
@@ -17,8 +18,13 @@ from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, Te
                                read_template_from_gguf, render)
 from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript, message_order
 
+HARNESS_DIR = Path(__file__).resolve().parent
+
 DEFAULT_CONFIG = {
     "data_dir": "data", "gguf_py_path": None, "batteries": "instruments/batteries.json", "run_seed": 0,
+    # The frozen factorial. `check --manifest` and `run` refuse a row whose condition is not a cell of it
+    # (harness/grid.py). null disables the gate -- for smoke tests only.
+    "grid": str(HARNESS_DIR.parent / "prompts" / "grid.json"),
     "concurrency": None, "now": "2026-09-08",
     # Operational, like concurrency: a mid-dialogue turn that prefills more than this many tokens when the
     # cache should have held fails the dyad (harness/dialogue.py CacheReuseLost). null disables it.
@@ -28,7 +34,6 @@ DEFAULT_CONFIG = {
     "judge": {"url": None, "gguf_path": None},
 }
 HASH_CACHE = Path.home() / ".cache" / "llm-polarization" / "gguf-hashes.json"
-HARNESS_DIR = Path(__file__).resolve().parent
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -292,6 +297,18 @@ def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
     return out
 
 
+def _grid_gate(cfg: dict, rows: list[dict]) -> tuple[str, bool | None, str]:
+    """Every manifest row's condition must be a cell of the frozen grid (config `grid`; null disables)."""
+    grid_path = cfg.get("grid")
+    if not grid_path:
+        return ("grid", None, "config.grid is null; conditions not checked against the frozen factorial")
+    try:
+        check_conditions(rows, load_grid(grid_path))
+    except (ValueError, OSError) as e:
+        return ("grid", False, f"{grid_path}: {e}")
+    return ("grid", True, f"{len(rows)} rows use only cells of {grid_path}")
+
+
 def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...] | None = None) -> int:
     """Build every requested agent and print each one's check_agent rows. `roles` defaults to seeker,
     mentor, and the judge when `judge.url` is set: its output is grammar-forced, so a mis-rendered judge
@@ -305,7 +322,11 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
     ok_all = True
     max_n_turns = None
     if manifest_path:
-        max_n_turns = max((int(r.get("n_turns") or 0) for r in read_jsonl(Path(manifest_path))), default=0) or None
+        rows = read_jsonl(Path(manifest_path))
+        max_n_turns = max((int(r.get("n_turns") or 0) for r in rows), default=0) or None
+        name, ok, detail = _grid_gate(cfg, rows)
+        ok_all = ok_all and ok is not False
+        print(f"{'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
     if cfg[SEEKER].get("url") == cfg[MENTOR].get("url"):
         print(f"WARN seeker and mentor share {cfg[SEEKER].get('url')}: both pin the same slot, so every "
               "turn would evict the other agent's KV cache. `run` refuses this.")

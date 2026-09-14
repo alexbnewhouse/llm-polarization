@@ -15,6 +15,8 @@ verify exactly what every model was asked, and to detect a lost cache, but not t
 ```bash
 pip install -r harness/requirements.txt            # jinja2 + numpy; gguf-py comes from the llama.cpp checkout
 cp harness/config.example.json config.json         # edit urls, gguf_py_path, run_seed
+python -m harness.randomize --catalogue prompts/personas/catalogue.json --out pilot-dyads.jsonl \
+    --seed 20260918 --n-per-cell 5 --modes reinforced,once --prefix p       # grid -> manifest + assignment log
 python -m harness.run check  --config config.json --manifest pilot-dyads.jsonl
 python -m harness.run run    --config config.json --manifest pilot-dyads.jsonl --run-id pilot-2026-09-18
 python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
@@ -40,7 +42,8 @@ ls data/smoke-*/            # manifest.json judge-*.json dyads/status/turns/surv
 
 ## The dyad manifest you pass to `--manifest`
 
-One JSON object per line, one line per dialogue. This is the **input**; the harness copies each row into
+One JSON object per line, one line per dialogue, written by `harness.randomize` from `prompts/grid.json`
+and the persona catalogue (`prompts/README.md`). This is the **input**; the harness copies each row into
 `data/<run_id>/dyads.jsonl` as it starts that dyad, so the output directory has its own file of the same
 shape. **They are different files**: name the input something like `pilot-dyads.jsonl` so the two are never
 confused. A worked example with two rows: `harness/dyads.example.jsonl`.
@@ -89,6 +92,7 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 | `cache_reuse_limit` | Tokens. A mid-dialogue turn that prefills more than this when the cache should have held fails the dyad. Default 1000; must exceed `2 * n_predict` plus the reminder. `null` disables. Operational: not compared on resume. |
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
 | `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |
+| `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
 | `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
 | `seeker`, `mentor` | `{url, gguf_path?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |

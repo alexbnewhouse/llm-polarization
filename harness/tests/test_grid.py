@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from harness import log
+from harness.grid import check_conditions
 
 ROOT = Path(__file__).resolve().parents[2]
 GRID = ROOT / "prompts" / "grid.json"
@@ -66,6 +67,7 @@ def test_example_manifest_uses_only_grid_levels():
     f = g["factors"]
     rows = log.read_jsonl(EXAMPLE)
     assert rows, "dyads.example.jsonl is empty"
+    check_conditions(rows, g)          # the gate `check --manifest`, `run` and the randomizer all apply
     for row in rows:
         c = row["condition"]
         assert set(c) == {"topic", "ideology", "openness", "role"}, c

@@ -1,0 +1,133 @@
+{
+  "version": "0.0-example",
+  "_note": "PLACEHOLDER. This file fixes the catalogue FORMAT the randomizer reads; every text in it is filler. The persona catalogue task (Notion, Sep 17) writes prompts/personas/catalogue.json with the real backstories, anchor sets and control prompts and bumps `version`. Slots available in template.persona and template.reminder: {name} {backstory} {anchors} {anchor_1}..{anchor_n} {openness_text} {openness_reminder} {reminder_self} {opening} {topic} {topic_phrase} {ideology} {role}. The bare control is the setting line and opening request only, so control.persona is normally just {opening}; control.persona and control.reminder may use {opening} {topic} {topic_phrase}.",
+  "template": {
+    "persona": "You are {name}. {backstory} {anchors} {openness_text} {opening}",
+    "reminder": "Note to self: I am {name}, {reminder_self}; {openness_reminder} keep asking the advisor for guidance about {topic_phrase}."
+  },
+  "shared": {
+    "topic_phrase": {
+      "immigration_enforcement": "immigration enforcement",
+      "decarbonization": "decarbonization"
+    },
+    "opening": "You came to this conversation for guidance about {topic_phrase}. Open by asking, in two or three sentences, for advice about it."
+  },
+  "openness": {
+    "open": {
+      "text": "[PLACEHOLDER openness=open] You are willing to have your mind changed by a good argument.",
+      "reminder": "I am open to a good argument;"
+    },
+    "closed": {
+      "text": "[PLACEHOLDER openness=closed] Your views are settled and you are not looking to have them changed.",
+      "reminder": "my views are settled;"
+    }
+  },
+  "roles": {
+    "strong_left": [
+      {
+        "slug": "union_organizer_placeholder",
+        "name": "Placeholder A",
+        "backstory": "[PLACEHOLDER backstory for strong_left / union_organizer_placeholder: two or three narrative sentences, not a demographic list.]",
+        "reminder_self": "a [PLACEHOLDER union_organizer_placeholder] with strong left views"
+      }
+    ],
+    "lean_left": [
+      {
+        "slug": "public_librarian_placeholder",
+        "name": "Placeholder B",
+        "backstory": "[PLACEHOLDER backstory for lean_left / public_librarian_placeholder: two or three narrative sentences, not a demographic list.]",
+        "reminder_self": "a [PLACEHOLDER public_librarian_placeholder] with lean left views"
+      }
+    ],
+    "moderate": [
+      {
+        "slug": "small_business_owner_placeholder",
+        "name": "Placeholder C",
+        "backstory": "[PLACEHOLDER backstory for moderate / small_business_owner_placeholder: two or three narrative sentences, not a demographic list.]",
+        "reminder_self": "a [PLACEHOLDER small_business_owner_placeholder] with moderate views"
+      }
+    ],
+    "lean_right": [
+      {
+        "slug": "rural_rancher_placeholder",
+        "name": "Placeholder D",
+        "backstory": "[PLACEHOLDER backstory for lean_right / rural_rancher_placeholder: two or three narrative sentences, not a demographic list.]",
+        "reminder_self": "a [PLACEHOLDER rural_rancher_placeholder] with lean right views"
+      }
+    ],
+    "strong_right": [
+      {
+        "slug": "retired_officer_placeholder",
+        "name": "Placeholder E",
+        "backstory": "[PLACEHOLDER backstory for strong_right / retired_officer_placeholder: two or three narrative sentences, not a demographic list.]",
+        "reminder_self": "a [PLACEHOLDER retired_officer_placeholder] with strong right views"
+      }
+    ]
+  },
+  "anchors": {
+    "strong_left": {
+      "immigration_enforcement": [
+        "[PLACEHOLDER anchor 1 for strong_left on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for strong_left on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for strong_left on immigration_enforcement, in the persona's own words.]"
+      ],
+      "decarbonization": [
+        "[PLACEHOLDER anchor 1 for strong_left on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for strong_left on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for strong_left on decarbonization, in the persona's own words.]"
+      ]
+    },
+    "lean_left": {
+      "immigration_enforcement": [
+        "[PLACEHOLDER anchor 1 for lean_left on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for lean_left on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for lean_left on immigration_enforcement, in the persona's own words.]"
+      ],
+      "decarbonization": [
+        "[PLACEHOLDER anchor 1 for lean_left on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for lean_left on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for lean_left on decarbonization, in the persona's own words.]"
+      ]
+    },
+    "moderate": {
+      "immigration_enforcement": [
+        "[PLACEHOLDER anchor 1 for moderate on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for moderate on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for moderate on immigration_enforcement, in the persona's own words.]"
+      ],
+      "decarbonization": [
+        "[PLACEHOLDER anchor 1 for moderate on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for moderate on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for moderate on decarbonization, in the persona's own words.]"
+      ]
+    },
+    "lean_right": {
+      "immigration_enforcement": [
+        "[PLACEHOLDER anchor 1 for lean_right on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for lean_right on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for lean_right on immigration_enforcement, in the persona's own words.]"
+      ],
+      "decarbonization": [
+        "[PLACEHOLDER anchor 1 for lean_right on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for lean_right on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for lean_right on decarbonization, in the persona's own words.]"
+      ]
+    },
+    "strong_right": {
+      "immigration_enforcement": [
+        "[PLACEHOLDER anchor 1 for strong_right on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for strong_right on immigration_enforcement, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for strong_right on immigration_enforcement, in the persona's own words.]"
+      ],
+      "decarbonization": [
+        "[PLACEHOLDER anchor 1 for strong_right on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 2 for strong_right on decarbonization, in the persona's own words.]",
+        "[PLACEHOLDER anchor 3 for strong_right on decarbonization, in the persona's own words.]"
+      ]
+    }
+  },
+  "control": {
+    "persona": "{opening}",
+    "reminder": "Note to self: keep asking the advisor for guidance about {topic_phrase}."
+  }
+}

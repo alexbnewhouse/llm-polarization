@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 def write_cfg(tmp_path, **over):
     cfg = {"data_dir": str(tmp_path / "data"), "gguf_py_path": None, "run_seed": 5, "now": "2026-09-08",
-           "batteries": str(REPO / "instruments" / "batteries.json"),
+           "batteries": str(REPO / "instruments" / "batteries.json"), "grid": None,
            "seeker": {"url": "http://s"}, "mentor": {"url": "http://m"}, "judge": {"url": "http://j"}}
     cfg.update(over)
     p = tmp_path / "config.json"; p.write_text(json.dumps(cfg)); return p
@@ -582,3 +582,27 @@ def test_score_stance_scope_with_a_subsample_and_the_judge_family_in_its_manifes
     assert judge["scope"] == "stance" and judge["subsample"] == 1.0 and "family" in judge
     manifest = json.loads(paths.manifest.read_text())
     assert "family" in manifest["mentor"] and "family" in manifest["seeker"]
+
+
+def test_run_and_check_refuse_a_manifest_with_a_level_outside_the_grid(tmp_path, monkeypatch, capsys):
+    # The grid gate (harness/grid.py): with config.grid set, `check --manifest` and `run` refuse a row whose
+    # condition is not a cell of prompts/grid.json, before anything is written.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path, grid=str(REPO / "prompts" / "grid.json"))
+    bad = manifest_rows(1)[0]
+    bad["condition"] = {"topic": "immigration_enforcement", "ideology": "centrist", "openness": "open", "role": "x"}
+    man = tmp_path / "dyads.jsonl"; man.write_text(json.dumps(bad) + "\n")
+    assert R.main(["check", "--config", str(cfg), "--manifest", str(man)]) == 1
+    assert "centrist" in capsys.readouterr().out
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert not (tmp_path / "data" / "r1" / "manifest.json").exists()
+    good = manifest_rows(1)[0]
+    good["condition"] = {"topic": "immigration_enforcement", "ideology": "moderate", "openness": "open", "role": "x"}
+    man.write_text(json.dumps(good) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r2"]) == 0
+
+
+def test_grid_defaults_to_the_repos_grid_and_null_disables_the_gate(tmp_path):
+    cfg = R.load_config(write_cfg(tmp_path))
+    assert cfg["grid"] is None                                  # write_cfg opts the unit tests out
+    assert Path(R.DEFAULT_CONFIG["grid"]) == REPO / "prompts" / "grid.json"
