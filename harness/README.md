@@ -27,6 +27,11 @@ python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --ph
 python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
 ```
 
+Survey replies are schema-constrained to `{"answer": <int>}`; `harness/parser.py` parses them and, when
+the schema was not honoured (a truncated reply, a server without grammar support), salvages the number
+from free text and labels the row's `answer_method` accordingly. Its 50 hand-written cases are
+`harness/tests/parser_cases.jsonl`.
+
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
 

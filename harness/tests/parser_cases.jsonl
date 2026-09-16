@@ -1,0 +1,50 @@
+{"text": "{\"answer\": 4}", "lo": 1, "hi": 5, "value": 4, "method": "json", "note": "the schema-constrained happy path"}
+{"text": "{\"answer\": 3, \"rationale\": \"moderate\"}", "lo": 1, "hi": 5, "value": 3, "method": "json", "note": "an extra key does not break the json path"}
+{"text": "  {\"answer\": 2}\n", "lo": 1, "hi": 5, "value": 2, "method": "json", "note": "surrounding whitespace"}
+{"text": "{\"answer\": 9}", "lo": 1, "hi": 5, "value": null, "method": "out_of_range", "note": "valid json, integer outside the scale"}
+{"text": "{\"answer\": true}", "lo": 1, "hi": 5, "value": null, "method": "none", "note": "a boolean is not an answer, and there is no digit to salvage"}
+{"text": "{\"answer\": \"3\"}", "lo": 1, "hi": 5, "value": 3, "method": "labelled", "note": "a string where the schema wanted an int: salvaged, not json"}
+{"text": "{\"answer\": 3.0}", "lo": 1, "hi": 5, "value": 3, "method": "labelled", "note": "an integral float: salvaged"}
+{"text": "{\"answer\": 4", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "json cut off by n_predict"}
+{"text": "{\"answer\":", "lo": 1, "hi": 5, "value": null, "method": "none", "note": "cut off before the number"}
+{"text": "```json\n{\"answer\": 2}\n```", "lo": 1, "hi": 5, "value": 2, "method": "labelled", "note": "code-fenced json is not json to json.loads"}
+{"text": "4", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "the single number"}
+{"text": "4.", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "trailing full stop"}
+{"text": "**4**", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "markdown bold"}
+{"text": "4\n\nI somewhat agree with the statement.", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "number then a digit-free explanation"}
+{"text": "3, though it depends on the specifics.", "lo": 1, "hi": 5, "value": 3, "method": "bare", "note": "number then a caveat"}
+{"text": "5 - strongly agree", "lo": 1, "hi": 5, "value": 5, "method": "bare", "note": "number with its verbal label"}
+{"text": "6 (fairly warm)", "lo": 0, "hi": 10, "value": 6, "method": "bare", "note": "thermometer with a parenthetical"}
+{"text": "Warm: 8", "lo": 0, "hi": 10, "value": 8, "method": "bare", "note": "a label word the parser does not know is still a single number"}
+{"text": "0", "lo": 0, "hi": 10, "value": 0, "method": "bare", "note": "zero is a valid thermometer reading"}
+{"text": "10", "lo": 0, "hi": 10, "value": 10, "method": "bare", "note": "the top of the thermometer is two digits, not a 1 and a 0"}
+{"text": "4.0", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "an integral decimal"}
+{"text": "Four", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "a number word on its own"}
+{"text": "four.", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "lower-case number word with punctuation"}
+{"text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): 4", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "the scale restated before the answer is not two more candidates"}
+{"text": "On a feeling thermometer from 0 to 10, 8.", "lo": 0, "hi": 10, "value": 8, "method": "bare", "note": "the thermometer range restated"}
+{"text": "4. Immigration rose sharply in 2022 and 2023, so restriction makes sense.", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "years are out of range and do not compete"}
+{"text": "<think>The user asks 1 to 5. Probably 3 or 4.</think>4", "lo": 1, "hi": 5, "value": 4, "method": "bare", "note": "numbers inside a thinking block are never the answer"}
+{"text": "Answer: 4", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "explicit label"}
+{"text": "answer = 4", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "label with equals"}
+{"text": "My answer is 4.", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "label in a sentence"}
+{"text": "I'd say 4.", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "say"}
+{"text": "I would rate this a 4.", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "rate"}
+{"text": "I'll go with 2.", "lo": 1, "hi": 5, "value": 2, "method": "labelled", "note": "go with"}
+{"text": "Score: 3", "lo": 1, "hi": 5, "value": 3, "method": "labelled", "note": "score"}
+{"text": "On a scale from 1 to 5, I would say 4.", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "range restated, then a labelled answer"}
+{"text": "I'd give Democratic voters a 6 on that thermometer.", "lo": 0, "hi": 10, "value": 6, "method": "labelled", "note": "give"}
+{"text": "As an AI I don't have feelings, but if I had to pick a number it would be 5.", "lo": 0, "hi": 10, "value": 5, "method": "labelled", "note": "a hedge, then a picked number"}
+{"text": "4 out of 5", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "fraction in words, denominator is the scale top"}
+{"text": "4/5", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "fraction, denominator is the scale top"}
+{"text": "7/10", "lo": 0, "hi": 10, "value": 7, "method": "labelled", "note": "thermometer fraction"}
+{"text": "Rating: 5/5", "lo": 1, "hi": 5, "value": 5, "method": "labelled", "note": "label and fraction; the fraction wins"}
+{"text": "3 or 4", "lo": 1, "hi": 5, "value": null, "method": "ambiguous", "note": "two in-range candidates joined by or"}
+{"text": "Somewhere between 3 and 4.", "lo": 1, "hi": 5, "value": null, "method": "ambiguous", "note": "between X and Y"}
+{"text": "3-4", "lo": 1, "hi": 5, "value": null, "method": "ambiguous", "note": "a dash range that is not the scale"}
+{"text": "4.5", "lo": 1, "hi": 5, "value": null, "method": "ambiguous", "note": "a non-integral point on an integer scale"}
+{"text": "I think 3.\n\nActually, 4.", "lo": 1, "hi": 5, "value": null, "method": "ambiguous", "note": "two distinct in-range numbers with no label to choose between them"}
+{"text": "7", "lo": 1, "hi": 5, "value": null, "method": "out_of_range", "note": "a single number above the scale"}
+{"text": "-1", "lo": 0, "hi": 10, "value": null, "method": "out_of_range", "note": "a negative thermometer reading"}
+{"text": "I cannot answer that.", "lo": 1, "hi": 5, "value": null, "method": "none", "note": "a refusal"}
+{"text": "Strongly agree.", "lo": 1, "hi": 5, "value": null, "method": "none", "note": "a verbal label with no number: not mapped, on purpose"}

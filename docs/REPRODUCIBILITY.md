@@ -305,7 +305,8 @@ so anything still open is closed before the last wave rather than after.
 - [ ] The rate of `cache_warning = true` is reported.
 - [ ] The rate of `truncated = true` is reported (a slot that ran out of context, not a capped turn).
 - [ ] The number of dyads with `attempt > 1` is reported, with a check against condition.
-- [ ] The number of survey items that failed to parse (`answer: null`) is reported.
+- [ ] The number of survey items that failed to parse (`answer: null`) is reported, and so is the number
+      whose answer was salvaged from free text (`answer_method` other than `json`).
 - [ ] The number of turns with `finish_reason: "length"` is reported — those turns hit the 300-token cap
       and their text is truncated by design.
 - [ ] Section 4 of this document — the reproduce-one-dialogue procedure — is included verbatim or

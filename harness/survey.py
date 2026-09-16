@@ -1,10 +1,12 @@
-"""Pre/post survey batteries for the mentor: one branch per item, numeric answer forced by JSON schema."""
+"""Pre/post survey batteries for the mentor: one branch per item, numeric answer forced by JSON schema and
+parsed by harness.parser (the schema path first, free-text salvage behind it, the method on every row)."""
 from __future__ import annotations
 import json
 from pathlib import Path
 from harness.client import ServerError
 from harness.dialogue import AgentHandle, DyadSpec, GenSettings
 from harness.log import JsonlWriter, derive_seed, now_iso, sha256_text
+from harness.parser import Parsed, parse_scale_answer
 from harness.templates import render
 from harness.transcript import Transcript, MENTOR
 
@@ -45,18 +47,10 @@ def answer_schema(item: dict) -> dict:
             "required": ["answer"]}
 
 
-def parse_answer(text: str, item: dict) -> int | None:
-    """Parse a JSON response for an integer answer field, returning None if absent or out of scale."""
-    try:
-        v = json.loads(text).get("answer")
-    except (ValueError, AttributeError):
-        return None
-    # In Python True is an int, so a model answering {"answer": true} would otherwise pass as 1.
-    if isinstance(v, bool) or not isinstance(v, int):
-        return None
-    if item["scale"]["min"] <= v <= item["scale"]["max"]:
-        return v
-    return None
+def parse_answer(text: str, item: dict) -> Parsed:
+    """Parse a reply to `item` into a Parsed(value, method): `json` when the schema-constrained reply
+    parsed as an integer on the item's scale, a salvage method otherwise (harness/parser.py)."""
+    return parse_scale_answer(text, item["scale"]["min"], item["scale"]["max"])
 
 
 class SurveyRunner:
@@ -101,10 +95,12 @@ class SurveyRunner:
                                                    n_predict=SURVEY_N_PREDICT, temperature=SURVEY_TEMPERATURE,
                                                    json_schema=answer_schema(it), cache_prompt=True)
             except ServerError as e:
-                row.update({"answer": None, "raw_text": "", "prompt_n": None, "error": str(e), "ts": self.clock()})
+                row.update({"answer": None, "answer_method": None, "raw_text": "", "prompt_n": None,
+                            "error": str(e), "ts": self.clock()})
                 self.surveys_log.write(row)
                 raise SurveyError(spec.dyad_id, phase, it["id"], e) from e
-            row.update({"answer": parse_answer(comp.text, it), "raw_text": comp.text,
+            parsed = parse_answer(comp.text, it)
+            row.update({"answer": parsed.value, "answer_method": parsed.method, "raw_text": comp.text,
                         "prompt_n": comp.prompt_n, "ts": self.clock()})
             self.surveys_log.write(row)
             rows.append(row)

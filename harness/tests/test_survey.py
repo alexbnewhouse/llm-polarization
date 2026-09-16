@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import pytest
 from harness import log, survey
+from harness.parser import Parsed
 from harness.dialogue import AgentHandle, GenSettings, DyadSpec
 from harness.survey import SurveyRunner, SurveyError
 from harness.templates import ChatTemplate
@@ -41,10 +42,12 @@ def test_answer_schema_and_parse():
     item = {"id": "i", "battery": "b", "text": "t", "scale": {"min": 1, "max": 5}}
     s = survey.answer_schema(item)
     assert s["properties"]["answer"] == {"type": "integer", "minimum": 1, "maximum": 5} and s["required"] == ["answer"]
-    assert survey.parse_answer('{"answer": 4}', item) == 4
-    assert survey.parse_answer('{"answer": 9}', item) is None
-    assert survey.parse_answer('four', item) is None
-    assert survey.parse_answer('{"answer": "3"}', item) is None
+    assert survey.parse_answer('{"answer": 4}', item) == Parsed(4, "json")
+    assert survey.parse_answer('{"answer": 9}', item) == Parsed(None, "out_of_range")
+    # Salvage (harness/parser.py): a number the schema did not produce is kept, but labelled as such.
+    assert survey.parse_answer('four', item) == Parsed(4, "bare")
+    assert survey.parse_answer('{"answer": "3"}', item) == Parsed(3, "labelled")
+    assert survey.parse_answer('nonsense', item) == Parsed(None, "none")
 
 
 def make(tmp_path, replies=None, fail_on=None):
@@ -96,6 +99,7 @@ def test_rows_and_seeds(tmp_path):
     logged = log.read_jsonl(tmp_path / "surveys.jsonl")
     assert logged == rows
     assert rows[0]["answer"] == 2 and rows[1]["answer"] is None and rows[1]["raw_text"] == "nonsense"
+    assert rows[0]["answer_method"] == "json" and rows[1]["answer_method"] == "none"
     assert rows[0]["seed"] == log.derive_seed(99, 5, "d1", 1, 0, f"survey:pre:{items()[0]['id']}")
     assert rows[0]["seed"] != rows[1]["seed"]
     assert set(rows[0]) >= {"run_id", "dyad_id", "attempt", "phase", "item_id", "battery", "scale", "answer",
@@ -132,3 +136,20 @@ def test_server_error_logs_and_raises(tmp_path):
     assert ei.value.item_id == items()[1]["id"] and ei.value.phase == "pre"
     rows = log.read_jsonl(tmp_path / "surveys.jsonl")
     assert len(rows) == 2 and rows[1]["answer"] is None and "fake failure" in rows[1]["error"]
+
+
+def test_salvaged_answer_is_kept_and_labelled(tmp_path):
+    # A reply the schema should have prevented ("4" instead of {"answer": 4}) still yields the answer,
+    # and the row says it was salvaged, so the analysis can report the rate and choose to drop it.
+    runner, _ = make(tmp_path, replies=['4', 'I would say 3 or 4.'])
+    rows = runner.administer(spec(), 1, "pre", None, items()[:2])
+    assert (rows[0]["answer"], rows[0]["answer_method"]) == (4, "bare")
+    assert (rows[1]["answer"], rows[1]["answer_method"]) == (None, "ambiguous")
+
+
+def test_error_row_has_no_answer_method(tmp_path):
+    runner, _ = make(tmp_path, fail_on=1)
+    with pytest.raises(SurveyError):
+        runner.administer(spec(), 1, "pre", None, items()[:1])
+    row = log.read_jsonl(tmp_path / "surveys.jsonl")[0]
+    assert row["answer"] is None and row["answer_method"] is None and "fake failure" in row["error"]

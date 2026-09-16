@@ -82,8 +82,14 @@ makes, `readministered` for a later `harness survey` pass — the two share ever
 `item_id`, `battery`, `scale` `{min, max}`, `batteries_sha256` (which instrument file), `model_sha256`
 and `template_sha256` (which mentor answered), `id_slot`, `turn` (a sentinel: 0 for pre, `n_turns + 1`
 for post, so the two phases derive different seeds), `temperature`, `n_predict`, `prompt_sha256`,
-`prompt_chars`, `seed`, `answer` (integer, or null if the reply did not parse), `raw_text` (what the
+`prompt_chars`, `seed`, `answer` (integer, or null if the reply did not parse), `answer_method` (how
+`answer` was found: `json` when the schema-constrained reply parsed as an integer on the scale;
+`labelled` or `bare` when the number was salvaged from free text by `harness/parser.py`; `ambiguous`,
+`out_of_range` or `none` when `answer` is null and why; null on an error row), `raw_text` (what the
 model actually said), `prompt_n`, `ts`. On a failure there is also `error`.
+
+Analysis should report the share of rows whose `answer_method` is not `json`: on a server that honours
+the grammar it is zero, and a salvaged answer is a number the schema did not produce.
 
 The pre-survey runs before turn 1 in a fresh context, one item at a time with no system prompt. The
 post-survey runs after the last turn, branching each item off the mentor's own view of the dialogue.
