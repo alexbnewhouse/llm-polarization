@@ -5,9 +5,9 @@ dialogues, and report cross-judge agreement.
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
-import argparse, copy, dataclasses, ipaddress, json, os, platform, shutil, socket, sys, threading
+import argparse, copy, dataclasses, ipaddress, json, os, platform, shutil, signal, socket, sys, threading
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 from dataclasses import dataclass
 from pathlib import Path
 import jinja2
@@ -42,6 +42,9 @@ DEFAULT_CONFIG = {
     "judge": {"url": None, "gguf_path": None},
 }
 HASH_CACHE = Path.home() / ".cache" / "llm-polarization" / "gguf-hashes.json"
+# How a third Ctrl-C leaves: at once, without joining the worker threads still inside a dyad. A name the
+# tests can replace.
+_hard_exit = os._exit
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -647,6 +650,7 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     free = list(range(concurrency))
     lock = threading.Lock()
     stop = threading.Event()
+    inflight: dict[tuple[str, int], None] = {}        # (dyad_id, attempt) of the dyads now running
 
     def job(spec, attempt):
         """Run one (spec, attempt) job on a free slot, returning it to the pool when done. A job that has
@@ -656,31 +660,70 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
             return "skipped"
         with lock:
             slot = free.pop()
+            inflight[(spec.dyad_id, attempt)] = None
         try:
             r = run_dyad(slot, spec, attempt, ctx)
             print(f"  {spec.dyad_id} attempt {attempt}: {r}", flush=True)
             return r
         except KeyboardInterrupt:
-            # Ctrl-C reached this worker: raise the flag here, or the pool picks up the next dyad before
-            # the main thread has noticed the interrupt at all.
+            # A KeyboardInterrupt raised inside a worker (not the operator's Ctrl-C, which reaches only the
+            # main thread and on_sigint): stop the pool the same way.
             stop.set()
             raise
         finally:
             with lock:
                 free.append(slot)
+                inflight.pop((spec.dyad_id, attempt), None)
 
-    interrupted = False
-    with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futures = [ex.submit(job, spec, attempt) for spec, attempt in work]
-        try:
-            results = [f.result() for f in futures]
-        except KeyboardInterrupt:
-            # Spec section 7: in-flight dyads finish, queued ones never start. `stop` covers the jobs the
-            # pool has already handed to a thread; cancel_futures covers the ones it has not.
-            interrupted = True
+    # Spec section 7: the first Ctrl-C lets in-flight dyads finish and starts no queued one. A dyad can
+    # take an hour, so the second says how many are still running, and the third abandons them: each is
+    # marked failed with reason "abandoned" (the next run retries it as a new attempt) and the process exits
+    # 130 at once.
+    futures: list = []
+    presses = 0
+
+    def on_sigint(signum, frame):
+        nonlocal presses
+        presses += 1
+        with lock:
+            running = list(inflight)
+        if presses == 1:
             stop.set()
-            ex.shutdown(wait=True, cancel_futures=True)
-            results = [f.result() for f in futures if f.done() and not f.cancelled() and not f.exception()]
+            for f in futures:
+                f.cancel()
+            print(f"\nCtrl-C: {len(running)} dyads in flight will finish; queued dyads will not start",
+                  file=sys.stderr, flush=True)
+        elif presses == 2:
+            print(f"Ctrl-C: {len(running)} dyads still in flight; Ctrl-C again to abandon them (their "
+                  "attempts are marked failed, reason 'abandoned')", file=sys.stderr, flush=True)
+        else:
+            for dyad_id, attempt in running:
+                logs["status"].write({"run_id": run_id, "dyad_id": dyad_id, "attempt": attempt,
+                                      "status": "failed", "reason": "abandoned", "ts": ctx.clock()})
+            print(f"abandoned {len(running)} dyads; re-run with --run-id {run_id} to resume",
+                  file=sys.stderr, flush=True)
+            sys.stdout.flush()
+            _hard_exit(130)
+
+    in_main = threading.current_thread() is threading.main_thread()
+    previous = signal.signal(signal.SIGINT, on_sigint) if in_main else None
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futures.extend(ex.submit(job, spec, attempt) for spec, attempt in work)
+            wait_futures(futures)
+    finally:
+        if in_main:
+            signal.signal(signal.SIGINT, previous)
+    results = []
+    for f in futures:
+        if f.cancelled():
+            continue
+        e = f.exception()
+        if e is None:
+            results.append(f.result())
+        elif not isinstance(e, KeyboardInterrupt):
+            raise e
+    interrupted = stop.is_set()
     complete, failed = results.count("complete"), results.count("failed")
     print(f"done: {complete} complete, {failed} failed" +
           (f", {len(work) - complete - failed} not run" if interrupted else ""))

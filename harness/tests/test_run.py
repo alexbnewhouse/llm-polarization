@@ -1003,3 +1003,52 @@ def test_gitignore_keeps_the_archive_record_and_ignores_the_row_files():
         return subprocess.run(["git", "check-ignore", "-q", f"data/wave1/{name}"], cwd=REPO).returncode == 0
     assert [n for n in kept if is_ignored(n)] == []
     assert [n for n in ignored if not is_ignored(n)] == []
+
+
+def _ctrl_c_run(tmp_path, monkeypatch, presses):
+    """A run whose dyads block until released, with `presses` real SIGINTs sent to the process while two are
+    in flight. Parallelism M3: the old test raised KeyboardInterrupt inside a worker, which is not where
+    Ctrl-C lands."""
+    import signal, threading, time
+    _fake_servers(tmp_path, monkeypatch)
+    started, release = [], threading.Event()
+    def blocking_run_dyad(slot, spec, attempt, ctx):
+        started.append(spec.dyad_id)
+        release.wait(10)
+        return "complete"
+    monkeypatch.setattr(R, "run_dyad", blocking_run_dyad)
+    def hard_exit(code):
+        release.set()
+        raise SystemExit(code)
+    monkeypatch.setattr(R, "_hard_exit", hard_exit)
+    def operator():
+        while len(started) < 2:
+            time.sleep(0.01)
+        for _ in range(presses):
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.2)
+        release.set()
+    threading.Thread(target=operator, daemon=True).start()
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(5)))
+    return R.main(["run", "--config", str(write_cfg(tmp_path, concurrency=2)), "--manifest", str(man),
+                   "--run-id", "r1"]), started
+
+
+def test_a_second_ctrl_c_says_how_many_dyads_are_in_flight(tmp_path, monkeypatch, capsys):
+    rc, started = _ctrl_c_run(tmp_path, monkeypatch, presses=2)
+    assert rc == 130 and len(started) == 2                          # in-flight finish, queued never start
+    out = capsys.readouterr()
+    assert "2 dyads in flight will finish" in out.err and "2 dyads still in flight; Ctrl-C again" in out.err
+    assert "2 complete, 0 failed, 3 not run" in out.out and "Traceback" not in out.err
+
+
+def test_a_third_ctrl_c_abandons_the_dyads_in_flight(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as e:
+        _ctrl_c_run(tmp_path, monkeypatch, presses=3)
+    assert e.value.code == 130
+    status = log.read_jsonl(log.run_paths(tmp_path / "data", "r1").status)
+    assert sorted((s["dyad_id"], s["status"], s["reason"]) for s in status) == [
+        ("d0", "failed", "abandoned"), ("d1", "failed", "abandoned")]
+    assert "abandoned 2 dyads" in capsys.readouterr().err
+    assert R.plan_work(manifest_rows(5), status)[0][1] == 2          # retried as a new attempt

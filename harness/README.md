@@ -37,6 +37,8 @@ from free text and labels the row's `answer_method` accordingly. Its 50 hand-wri
 
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
+A second Ctrl-C says how many dyads are still in flight; a third abandons them, marking each attempt
+`failed` with reason `abandoned`, and exits 130 at once.
 A `*.jsonl` whose last line a crash cut off stops `run`, `survey` and `score` with the file and line
 named; add `--repair-torn-line` to back the file up and drop that one line, then carry on.
 `survey` and `score` exit 2 when any item or judge call failed in that pass; re-run them to fill in what

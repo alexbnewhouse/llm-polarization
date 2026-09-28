@@ -257,7 +257,10 @@ file order never matters.
 
 **7. Ctrl-C, and what an interrupted wave means.** An interrupt lets in-flight dyads finish and never
 starts a queued one; `run` then exits 130. The stopped dyads have no `status` row at all and are simply
-run by the next `run` with the same `run_id`, as attempt 1. Nothing is half-written, because a dyad
+run by the next `run` with the same `run_id`, as attempt 1. A second Ctrl-C reports how many dyads are
+still in flight; a third abandons them: each gets a `failed` row with reason `abandoned`, and the next
+`run` retries it as a new attempt. Report abandoned attempts apart from other failures, since an operator
+chose them. Nothing is half-written, because a dyad
 writes its `complete` row only after its post-survey, and every row is flushed and fsynced before the next
 is written, so a `complete` row is never on disk without the rows it vouches for. A crash, a kill or a
 full disk can still cut off the last line of a file; every reader then names the file and line, nothing

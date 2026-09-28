@@ -171,7 +171,8 @@ flag is an instrument statistic and the trigger for the per-protocol sensitivity
 
 ## `status.jsonl` — the run's ledger
 
-`run_id`, `dyad_id`, `attempt`, `status` (`started`, `complete` or `failed`), `reason` on a failure,
+`run_id`, `dyad_id`, `attempt`, `status` (`started`, `complete` or `failed`), `reason` on a failure
+(`abandoned` when a third Ctrl-C stopped the dyad mid-dialogue),
 `ts`. `run` reads this to resume: within one attempt a later row wins, except that nothing after a
 `complete` undoes it. **Analysis uses the highest attempt whose status is `complete`**; rows
 from earlier attempts stay in the files and must be filtered out.
