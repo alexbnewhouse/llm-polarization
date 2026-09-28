@@ -106,6 +106,7 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
         raise ValueError(f"{name}: no gguf_path in config and server reports no model_path")
     template = read_template_from_gguf(model_path, gguf_py_path=cfg.get("gguf_py_path"))
     sha = model_sha256_cached(model_path)
+    served = served_model(client, props, entry.get("gguf_path"), sha)
     # The config's `family` wins; otherwise the GGUF name, its directory, then the alias. None is unknown.
     family = declared_family(entry.get("family"))
     source = "config" if family else None
@@ -128,8 +129,70 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
                       # The server's sampler defaults and per-slot context as it was started, compared on
                       # resume: a server restarted with other flags is another server (red-team M2).
                       "sampler_defaults": (props.get("default_generation_settings") or {}).get("params"),
-                      "n_ctx": (props.get("default_generation_settings") or {}).get("n_ctx")}
+                      "n_ctx": (props.get("default_generation_settings") or {}).get("n_ctx"),
+                      # The config's gguf_path against what the server says it loaded (red-team M3).
+                      "served_model": served}
     return handle, manifest_entry
+
+
+_SERVED_HASH_KEYS = ("model_sha256", "model_hash")
+
+
+def _served_identity(client, props: dict) -> tuple[str | None, str | None, str | None]:
+    """(model path, model hash, where they came from) as the server reports them: /props first, then the
+    first /slots entry. llama-server reports `model_path` at /props and no hash; the hash keys are read in
+    case a build or a proxy adds one."""
+    sources = [("/props", props)]
+    try:
+        slots = client.slots()
+        if slots and isinstance(slots[0], dict):
+            sources.append(("/slots", slots[0]))
+    except (ServerError, AttributeError):
+        pass
+    for where, d in sources:
+        model = str(d.get("model") or "")
+        path = d.get("model_path") or (model if model.endswith(".gguf") else None)
+        digest = next((d[k] for k in _SERVED_HASH_KEYS if d.get(k)), None)
+        if path or digest:
+            return path, digest, where
+    return None, None, None
+
+
+def served_model(client, props: dict, configured: str | None, sha: str) -> dict:
+    """Compare the config's gguf_path with the model the server loaded (red-team M3): the basename when the
+    server reports a path, the sha256 when it reports a hash or its path is readable here and is another
+    file. `ok` is False on a mismatch, None when the server reports neither, True otherwise; `compared`
+    lists what was compared. Without a gguf_path the served path is the one hashed: nothing to compare."""
+    path, digest, source = _served_identity(client, props)
+    rec = {"configured_path": configured, "served_path": path, "served_sha256": digest, "source": source,
+           "compared": []}
+    if not configured:
+        return {**rec, "ok": True, "detail": "no gguf_path in the config: the server's model_path is the "
+                "file read and hashed"}
+    bad = []
+    if path:
+        rec["compared"].append("basename")
+        if Path(path).name != Path(configured).name:
+            bad.append(f"the server loaded {Path(path).name}, gguf_path is {Path(configured).name}")
+        elif os.path.exists(path) and os.path.exists(configured) and os.path.samefile(path, configured):
+            rec["compared"].append("same_file")
+        elif os.path.exists(path):
+            rec["compared"].append("sha256")
+            if model_sha256_cached(path) != sha:
+                bad.append(f"{path} and {configured} share a name but not a sha256")
+    if digest:
+        if "sha256" not in rec["compared"]:
+            rec["compared"].append("sha256")
+        if str(digest).lower() != sha.lower():
+            bad.append(f"the server reports sha256 {str(digest)[:12]}, gguf_path hashes to {sha[:12]}")
+    if bad:
+        return {**rec, "ok": False, "detail": "; ".join(bad) + ": the manifest would describe a file the "
+                "server is not serving"}
+    if not rec["compared"]:
+        return {**rec, "ok": None, "detail": "the server reports no model path or hash at /props or /slots; "
+                f"gguf_path {configured} is not compared"}
+    return {**rec, "ok": True, "detail": f"{', '.join(rec['compared'])} of {path or configured} match "
+            f"gguf_path ({source})"}
 
 
 CONTEXT_HEADROOM = 2048
@@ -501,9 +564,11 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
     checked by `check` on its own (this default) and again by `score` before it scores anything. Returns 0
     iff nothing FAILed; `warn` rows are printed and do not block. A role whose server is unreachable prints
     a FAIL health line instead of letting build_agent's ServerError traceback out, since a down server is
-    exactly the failure `check` exists to report. With --manifest, also checks that the manifest's longest
-    dialogue fits in a slot's context. `record`, when given, receives each role's rows, which `run` writes
-    into manifest.json as `check`: a parity passed on the server's date or without a BOS says so there."""
+    exactly the failure `check` exists to report. Each role's first row, `served_model`, FAILs when the
+    config's gguf_path is not the model the server reports loading (served_model). With --manifest, also
+    checks that the manifest's longest dialogue fits in a slot's context. `record`, when given, receives
+    each role's rows, which `run` writes into manifest.json as `check`: a parity passed on the server's
+    date or without a BOS says so there."""
     ok_all = True
     max_n_turns = None
     if manifest_path:
@@ -533,7 +598,9 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
         if role != SEEKER and not entry["family"]:
             print(f"   warn family unknown from the GGUF name, its directory and the alias; set "
                   f"{role}.family in the config, or `score` refuses")
-        rows = check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns)
+        served = entry["served_model"]
+        rows = [("served_model", served["ok"], served["detail"])]
+        rows += check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns)
         if record is not None:
             record[role] = [{"name": n, "ok": ok, "detail": d} for n, ok, d in rows]
         for name, ok, detail in rows:

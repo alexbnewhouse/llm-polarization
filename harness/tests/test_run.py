@@ -1388,3 +1388,65 @@ def test_allow_code_change_records_an_override_instead_of_refusing(tmp_path, mon
     err = capsys.readouterr().err
     assert "cannot be confirmed unchanged" in err and "config" not in err
     assert len(json.loads(paths.manifest.read_text())["resume_overrides"]) == 1
+
+
+def test_check_and_run_fail_when_gguf_path_is_not_the_served_model(tmp_path, monkeypatch, capsys):
+    # Red-team M3: the config pins one GGUF, the server loaded another. check FAILs, run refuses, and a
+    # matching pair is recorded in manifest.json with what was compared.
+    clients = _fake_servers(tmp_path, monkeypatch)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    cfg = write_cfg(tmp_path, mentor={"url": "http://m", "family": "qwen",
+                                      "gguf_path": "/models/qwen3.6.gguf"})
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL served_model the server loaded m.gguf, gguf_path is qwen3.6.gguf" in out
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert not (tmp_path / "data" / "r1" / "manifest.json").exists()
+    # Same basename, another file on this host: the sha256 decides.
+    here, there = tmp_path / "a" / "m.gguf", tmp_path / "b" / "m.gguf"
+    for p, body in ((here, b"one"), (there, b"two")):
+        p.parent.mkdir()
+        p.write_bytes(body)
+    monkeypatch.setattr(R, "model_sha256_cached", lambda path, cache_file=None: (
+        log.sha256_file(Path(path)) if Path(path).exists() else "HASH-" + path))
+    factory = R.LlamaClient
+    def served_from(path, digest=None):
+        def make(url, timeout=None):
+            c = factory(url, timeout)
+            if url == "http://m":
+                props = c.props()
+                extra = {"model_sha256": digest} if digest else {}
+                c.props = lambda: {**props, "model_path": str(path), **extra}
+            return c
+        return make
+    monkeypatch.setattr(R, "LlamaClient", served_from(there))
+    cfg = write_cfg(tmp_path, mentor={"url": "http://m", "family": "qwen", "gguf_path": str(here)})
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    assert "share a name but not a sha256" in capsys.readouterr().out
+    # A hash the server reports is compared too.
+    monkeypatch.setattr(R, "LlamaClient", served_from(here, digest="f" * 64))
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    assert "the server reports sha256 ffffffffffff" in capsys.readouterr().out
+    # The server's path is the configured file: run goes ahead and records the comparison.
+    monkeypatch.setattr(R, "LlamaClient", served_from(here))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    mf = json.loads(log.run_paths(tmp_path / "data", "r1").manifest.read_text())
+    served = mf["mentor"]["served_model"]
+    assert served["ok"] is True and served["compared"] == ["basename", "same_file"]
+    assert served["configured_path"] == str(here) and served["served_path"] == str(here)
+    assert served["source"] == "/props"
+    assert {r["name"]: r["ok"] for r in mf["check"]["mentor"]}["served_model"] is True
+    # No gguf_path: the served file is the one hashed, nothing to compare.
+    assert mf["seeker"]["served_model"]["ok"] is True and mf["seeker"]["served_model"]["compared"] == []
+    assert clients
+
+
+def test_served_model_warns_when_the_server_reports_neither_path_nor_hash():
+    fc = FakeClient()
+    fc.slots = lambda: [{"id": 0, "is_processing": False}]
+    got = R.served_model(fc, {"total_slots": 1}, "/models/x.gguf", "abc")
+    assert got["ok"] is None and got["compared"] == [] and "not compared" in got["detail"]
+    fc.slots = lambda: [{"id": 0, "model": "/srv/x.gguf"}]
+    got = R.served_model(fc, {}, "/models/x.gguf", "abc")
+    assert got["ok"] is True and got["source"] == "/slots" and got["compared"] == ["basename"]
