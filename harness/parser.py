@@ -38,6 +38,10 @@ _PAIR = re.compile(rf"({_NUMBER})\s*(?:or|and|to|-|–|—)\s*({_NUMBER})")
 _LABEL = re.compile(
     r"\b(?:answer|rating|rate|rated|score|response|choose|chose|pick|picked|select|say|go with|give)\b"
     rf"[^0-9\n]{{0,40}}?({_NUMBER})", re.IGNORECASE)
+# A correction after a labelled number: "no," / "no:", "actually", "wait", "correction", then the number
+# within 40 digit-free characters ("Say 3; well, no, 4."; "5 out of 5? No: 2").
+_CORRECTION = re.compile(
+    rf"(?:\bno\s*[,:;!]|\b(?:actually|wait|correction)\b)([^0-9\n]{{0,40}}?)({_NUMBER})", re.IGNORECASE)
 _WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
           "eight": 8, "nine": 9, "ten": 10}
 
@@ -81,6 +85,26 @@ def _reply_body(text: str) -> str:
     return _THINK_OPEN.sub("", text)
 
 
+def _labelled(body: str, end: int, token: str, in_range) -> Parsed:
+    """A labelled answer whose number ends at `end`: the number after the last correction marker that
+    follows it wins over it (unless the marker says "not" before its number); two numbers there joined by
+    "or" or a dash are `ambiguous`. A correction with no earlier labelled number is not a label on its own:
+    "I think 3. Actually, 4." stays ambiguous."""
+    fixes = [m for m in _CORRECTION.finditer(body, end) if not re.search(r"\bnot\b", m.group(1), re.I)]
+    if fixes:
+        m = fixes[-1]
+        pair = _PAIR.match(body, m.start(2))
+        if pair:
+            a, b = _as_int(pair.group(1)), _as_int(pair.group(2))
+            if a is not None and b is not None and a != b and in_range(a) and in_range(b):
+                return Parsed(None, "ambiguous")
+        token = m.group(2)
+    v = _as_int(token)
+    if v is None:
+        return Parsed(None, "ambiguous")
+    return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
+
+
 def _json_answer(text: str) -> tuple[int | None, bool]:
     """(answer, found): the JSON-schema path, exactly as strict as the schema. `found` is True when the
     reply is a JSON object whose `answer` is an int (bools excluded); the caller range-checks it."""
@@ -96,7 +120,8 @@ def _json_answer(text: str) -> tuple[int | None, bool]:
 def parse_scale_answer(text: str, lo: int, hi: int) -> Parsed:
     """Parse one survey reply into an integer on [lo, hi]. The JSON-schema path first (`json`); then
     free-text salvage: a JSON object inside the text, the number after the last "answer" / "my answer" /
-    "final" marker, a fraction over the scale top or another labelled number (`labelled`), else the single
+    "final" marker, a fraction over the scale top or another labelled number (`labelled`; a later
+    correction, "no," / "actually" / "wait" / "correction" and a number, overrides it), else the single
     in-range number in the reply (`bare`). Two in-range candidates with nothing to choose between them
     is `ambiguous`; a number that is only ever outside the scale is `out_of_range`; no number at all is
     `none`. Reasoning is never an answer: a <think> block, closed or not, the text before an unmatched
@@ -125,15 +150,13 @@ def parse_scale_answer(text: str, lo: int, hi: int) -> Parsed:
             a, b = _as_int(pair.group(1)), _as_int(pair.group(2))
             if a is not None and b is not None and a != b and in_range(a) and in_range(b):
                 return Parsed(None, "ambiguous")
-        v = _as_int(m.group(1))
-        if v is not None:
-            return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
+        if _as_int(m.group(1)) is not None:
+            return _labelled(body, m.end(1), m.group(1), in_range)
 
     m = _FRACTION.search(body)
     if m and int(m.group(2)) == hi:
-        v = _as_int(m.group(1))
-        if v is not None:
-            return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
+        if _as_int(m.group(1)) is not None:
+            return _labelled(body, m.end(), m.group(1), in_range)
 
     for m in _PAIR.finditer(body):
         a, b = _as_int(m.group(1)), _as_int(m.group(2))
@@ -142,9 +165,8 @@ def parse_scale_answer(text: str, lo: int, hi: int) -> Parsed:
 
     m = _LABEL.search(body)
     if m:
-        v = _as_int(m.group(1))
-        if v is not None:
-            return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
+        if _as_int(m.group(1)) is not None:
+            return _labelled(body, m.end(1), m.group(1), in_range)
 
     tokens = _TOKEN.findall(body)
     ints = [i for i in (_as_int(t) for t in tokens) if i is not None]

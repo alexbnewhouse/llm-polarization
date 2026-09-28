@@ -1,4 +1,4 @@
-"""The free-text-to-scale parser, run against 50 hand-written model responses and the red-team's four
+"""The free-text-to-scale parser, run against 50 hand-written model responses and the red-team's six
 adversarial ones (parser_cases.jsonl)."""
 import json
 from pathlib import Path
@@ -14,10 +14,10 @@ def load_cases() -> list[dict]:
     return [json.loads(line) for line in CASES_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def test_fixture_holds_fifty_hand_written_responses_and_the_red_teams_four():
+def test_fixture_holds_fifty_hand_written_responses_and_the_red_teams_six():
     cases = load_cases()
-    assert len(cases) == 54 and sum("red-team L1" in c["note"] for c in cases) == 4
-    assert len({c["text"] for c in cases}) == 54, "every hand-written response is distinct"
+    assert len(cases) == 56 and sum("red-team L1" in c["note"] for c in cases) == 6
+    assert len({c["text"] for c in cases}) == 56, "every hand-written response is distinct"
 
 
 def test_fixture_uses_only_declared_methods_and_null_iff_failure():
@@ -62,3 +62,14 @@ def test_the_answer_marker_wins_and_reasoning_is_never_the_answer():
     assert parse_scale_answer("<|channel|>analysis<|message|>Rating 5<|end|>", 1, 5) == Parsed(None, "none")
     assert parse_scale_answer("I'd say 3.\n<think>maybe 5</think>", 1, 5) == Parsed(3, "labelled")
     assert parse_scale_answer("Answer: 9", 1, 5) == Parsed(None, "out_of_range")
+
+
+def test_a_later_correction_overrides_a_labelled_number_and_only_a_labelled_one():
+    # Red-team L1: the correction wins over the labelled number before it; without a label nothing is
+    # chosen between the two, and a correction naming what it is not ("no, not 5") is not an answer.
+    assert parse_scale_answer("My answer is 3. Wait, 4.", 1, 5) == Parsed(4, "labelled")
+    assert parse_scale_answer("Rating: 2. Correction: 3 or 4", 1, 5) == Parsed(None, "ambiguous")
+    assert parse_scale_answer("Score: 4 (no, not 5)", 1, 5) == Parsed(4, "labelled")
+    assert parse_scale_answer("Answer: 4. Actually, 9.", 1, 5) == Parsed(None, "out_of_range")
+    assert parse_scale_answer("I think 3.\n\nActually, 4.", 1, 5) == Parsed(None, "ambiguous")
+    assert parse_scale_answer("Answer: 4. No, I'm sure.", 1, 5) == Parsed(4, "labelled")

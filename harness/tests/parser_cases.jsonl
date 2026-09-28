@@ -52,3 +52,5 @@
 {"text": "Answer (1 = disagree, 5 = agree): 4", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "red-team L1: a parenthesis restating both ends of the scale is not an answer"}
 {"text": "Let me think. Score: 5? Hmm.</think>{\"answer\": 2}", "lo": 1, "hi": 5, "value": 2, "method": "labelled", "note": "red-team L1: reasoning before an unmatched </think> is dropped; the JSON after it is salvaged"}
 {"text": "<|channel|>analysis<|message|>Rating 5 seems right.<|end|><|start|>assistant<|channel|>final<|message|>2", "lo": 1, "hi": 5, "value": 2, "method": "bare", "note": "red-team L1: only the harmony final channel is the answer"}
+{"text": "Say 3; well, no, 4.", "lo": 1, "hi": 5, "value": 4, "method": "labelled", "note": "red-team L1: a later correction marker overrides the labelled number"}
+{"text": "5 out of 5? No: 2", "lo": 1, "hi": 5, "value": 2, "method": "labelled", "note": "red-team L1: a correction after a fraction overrides it"}
