@@ -18,6 +18,12 @@ llama-server -m <gguf> -ngl 999 -fa on \
   --host 127.0.0.1 --port <port>
 ```
 
+The study's servers also run `--cache-ram 0` on every role, not only Olmo
+(`models/serving/serve-study.sh`; parallelism review L3): a pinned slot never
+reads the host prompt cache back, and it costs up to 8 GiB per server. The
+qwen3.6 rows below were measured without it; the 2026-09-08 rows (Olmo,
+gpt-oss, GLM) with it (`parallel_scaling.csv`, `note` column).
+
 - **Depth 32k** per dialogue: about 80 exchanges at 200 tokens, enough for
   40-turn dialogues plus persona reminders.
 - **q8_0 KV cache**: faster than f16 at 32k on this box (107 vs 92 tok/s at
@@ -27,12 +33,13 @@ llama-server -m <gguf> -ngl 999 -fa on \
   (qwen3.6) and 5 tokens (Olmo). If `prompt_n` in the server timings ever
   reads in the thousands, the cache was lost and the run is a thousand times
   more expensive than budgeted.
-- **Slots**: 8 for qwen3.6 (peak); 4 or 8 for Olmo (equal aggregate, see
-  below). 16 is worse for qwen3.6 and does not fit for Olmo.
+- **Slots**: 8 for qwen3.6 (peak) and gpt-oss. For Olmo, 4 or 8 is open
+  ("Olmo at np=4 or np=8", below). 16 is worse for qwen3.6 and does not fit
+  for Olmo.
 
 ## Measured throughput at 32k depth, q8_0 KV
 
-| Model | np | Aggregate tok/s | Per-stream tok/s | Cold prefill tok/s | GTT (with resident tiers) |
+| Model | np | Aggregate tok/s | Per-stream decode tok/s | Cold prefill tok/s | GTT (with resident tiers) |
 |---|---|---|---|---|---|
 | qwen3.6:35b-a3b (MoE, GQA) | 1 | 50.9 (f16 KV) | 60.9 | 1030 | 22 GiB |
 | qwen3.6:35b-a3b | 4 | 107.2 | 29.1 | 920 | 23 GiB |
@@ -51,6 +58,12 @@ llama-server -m <gguf> -ngl 999 -fa on \
 | GLM-4.7-Flash, **HIP build** | 1 | 22.6 | 22.9 | 252 | 69 GiB |
 | GLM-4.7-Flash, HIP | 4 | 25.6 | 6.5 | 253 | 72 GiB |
 | GLM-4.7-Flash, HIP | **8** | **29.1** | 3.7 | 248 | 75 GiB |
+
+Per-stream is the server's decode rate (`predicted_per_second`, averaged over
+the streams), which leaves out prefill and queueing; aggregate is generated
+tokens over wall time. So per-stream x np is above the aggregate (qwen3.6 np=8:
+16.1 x 8 = 128.8 against 116.4), and the budget uses the aggregate
+(parallelism review L5).
 
 The qwen3.6 rows are from 2026-08-25 (resident tiers were stopped, so GTT is
 the server alone). The Olmo, gpt-oss and GLM rows are from 2026-09-08 with the
@@ -78,9 +91,29 @@ for different reasons:
   32k tokens dominates each decode step and adding slots mostly adds work,
   not utilization. Dense full-attention models batch *worse* than the MoE at
   this depth, not better as the old caveat guessed.
-- np=4 and np=8 give the same aggregate. np=4 uses 12 GiB less memory and
-  turns each dialogue over twice as fast, so prefer **np=4 for the Olmo arm**
-  unless slot-count uniformity across arms matters more.
+- np=4 and np=8 give the same aggregate when every slot is busy. Which one the
+  Olmo arm runs is open; see the next section.
+
+## Olmo at np=4 or np=8 (open)
+
+The one open serving question; the other documents point here (gap audit F15).
+
+- For np=4: 12 GiB less memory (67 against 80 GiB with the resident tiers up,
+  the margin that matters next to a seeker server on the same GPU), and each
+  stream decodes twice as fast (11.2 against 5.6 tok/s), so a dialogue
+  finishes sooner.
+- For np=8: the same slot count as the other arms and the seeker server.
+- What the harness does with it: `concurrency` is at most the smaller server's
+  slot count, so np=4 on the Olmo mentor runs the Olmo wave four dialogues at a
+  time, and a dyad is on one server at a time, so each server averages about
+  two active streams, not four (parallelism review M2). Olmo at np=2 is not
+  measured; np=1 gives 28.2 tok/s. np=8 gives about four active streams.
+- `models/serving/serve-study.sh` starts every role at 8 slots; `MENTOR_SLOTS=4`
+  changes the mentor's.
+
+Decide it in the pilot by running the Olmo mentor both ways under the
+harness's own load, with the seeker server up, and comparing tok/s from
+`turns.jsonl` and the box's GTT.
 
 ## Days per arm
 
@@ -94,7 +127,9 @@ every arm. The frozen grid (`docs/decisions/factorial.md`) is 2,970 dialogues
 per arm at 40 turns; the like-for-like total is about 24.5 days, the mentor
 halves alone about 12.3, and the seeker halves add 3 x (2,970 x 40 x 200 /
 seeker tok/s / 86,400). Measure the chosen seeker at this operating point in
-the pilot and recompute.
+the pilot and recompute. The 2026-09-28 re-estimate (`docs/decisions/compute-budget.md`,
+last section) does this for seekers at 30, 60 and 100 tok/s, at 200 and 300
+tokens a message, and adds judge time.
 
 | Arm | tok/s at the operating point | Days, 20 turns | Days, 40 turns | Basis |
 |---|---|---|---|---|

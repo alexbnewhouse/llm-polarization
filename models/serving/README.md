@@ -14,7 +14,7 @@ are the box's operational scripts as of 2026-09-08, copied from
 
 ## Paths, bind address and ports come from the environment (2026-09-28)
 
-Every script here and in `models/benchmarks/` reads its paths from environment variables whose
+Every shell script here and in `models/benchmarks/` reads its paths from environment variables whose
 defaults are the box's layout, so a bare run on the box does what it did before:
 `LLAMA_BIN` (the llama.cpp build directory holding `llama-server`/`llama-bench`), `GGUF_DIR`,
 `MODEL`, `OLLAMA_BLOBS`, `SERVING_DIR` (`~/llm-serving`, where results and logs go), `LOG_DIR`,

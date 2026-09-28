@@ -11,13 +11,16 @@ in `models/RUN_APPROACH.md` can be re-derived from raw numbers.
 |---|---|
 | `bench-ctx.sh` | W1 sweep: `llama-bench` prefill (pp512) and generation (tg128) at 0, 8k and 32k depth for every candidate model. Model list from `resolve_models.py`. |
 | `resolve_models.py` | Resolves ollama tags and standalone GGUFs to real blob paths with a per-model timeout; prints one pipe-separated `label`, `path`, `timeout` line per model, smallest model first. |
-| `bench_parallel.py` | Parallel-slot scaling: N concurrent dialogues each holding a depth-D KV cache. Reports cold prefill and warm per-turn generation. **This is what sets the operating point.** Takes `--model`, `--label`, `--plan`, `--out`, plus `--lcpp` (the `llama-server` binary), `--port` (8199), `--gen` (200 tokens per turn), `--extra` (more server flags), `--ignore-eos` and `--server-log`. |
+| `bench_parallel.py` | Parallel-slot scaling: N concurrent dialogues each holding a depth-D KV cache. Reports cold prefill and warm per-turn generation: `warm_agg_tps` is generated tokens over wall time, and `warm_per_stream_tps` is the mean of the server's `predicted_per_second`, a decode-only rate without prefill or queueing, so per-stream x np is above the aggregate. **This is what sets the operating point**, from the aggregate. Takes `--model`, `--label`, `--plan`, `--out`, plus `--lcpp` (the `llama-server` binary), `--port` (8199), `--gen` (200 tokens per turn), `--extra` (more server flags), `--ignore-eos` and `--server-log`. |
 | `bench-ollama-ctx.sh`, `bench-ollama-11435.sh`, `bench-ollama-calib.sh` | The same depth sweep through ollama (ROCm) rather than raw llama.cpp, plus a calibration pass. |
 | `chain-ollama.sh`, `chain2.sh`, `chain3.sh`, `finish-bench.sh` | Sequencing wrappers used to chain the overnight sweeps on 2026-08-24. Kept for provenance; not needed to rerun anything. |
 
-The shell scripts hardcode the box's paths (`/home/alex/llm-serving`, `/home/alex/.ollama`) and were run
-from `~/llm-serving/`, where they wrote their `.jsonl` and `.log` output; the copies in `results/` were
-copied here afterwards. Edit the paths before running any of them elsewhere.
+The shell scripts were run from `~/llm-serving/` on the box, where they wrote their `.jsonl` and `.log`
+output; the copies in `results/` were copied here afterwards. Since 2026-09-28 they read their paths from
+the environment (`SERVING_DIR`, and `LLAMA_BIN` in `bench-ctx.sh`), with the box's layout as the defaults
+(`models/serving/README.md`); set those to run them elsewhere. `resolve_models.py` still names the box's
+ollama and GGUF directories in the code, and `bench_parallel.py` takes the server binary from `--lcpp` or
+`LCPP`.
 
 ## Results (`results/`)
 
