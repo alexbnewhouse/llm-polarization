@@ -1044,21 +1044,27 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
     return 2 if scorer.errors else 0
 
 
-def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length: int, judge: str | None) -> int:
+def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length: int, judge: str | None,
+              scope: str = "main") -> int:
     """Run the `flags` subcommand: apply the consecutive-scored-turns flag rule to scores.jsonl, write one
     row per dyad attempt to flags.jsonl (replaced, not appended: flags are derived from scores, not a
     ledger), and print the flagged rate by ideology level and by delivery mode -- the two breakdowns the
     pre-analysis plan reports. Only the latest complete attempt of each dyad is flagged, and never a control
-    dyad: it has no persona to adhere to (docs/decisions/factorial.md)."""
+    dyad: it has no persona to adhere to (docs/decisions/factorial.md). Only score rows of `scope` (default
+    main) count, so a dyad a pilot pass happened to score every turn of is flagged by the same rule as the
+    rest (red-team M9); rows without a scope, from before it was recorded, are left out and counted."""
     paths = run_paths(cfg["data_dir"], run_id, create=False)
     _require_run_dir(paths)
-    scores = read_jsonl(paths.scores)
+    all_scores = read_jsonl(paths.scores)
+    unscoped = sum(1 for s in all_scores if s.get("metric") == metric and "scope" not in s)
+    scores = [s for s in all_scores if s.get("scope") == scope]
     if judge:
         matches = {s["judge_sha256"] for s in scores if str(s.get("judge_sha256", "")).startswith(judge)}
         if len(matches) != 1:
             raise ValueError(f"--judge {judge!r} matches {len(matches)} judge hashes in scores.jsonl")
         judge = matches.pop()
-    flags = flag_dialogues(scores, threshold, metric=metric, run_length=run_length, judge_sha256=judge)
+    flags = flag_dialogues(scores, threshold, metric=metric, run_length=run_length, judge_sha256=judge,
+                           scope=scope)
     complete = latest_complete_attempts(read_jsonl(paths.status))
     dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
     judge_hash = judge or next((s["judge_sha256"] for s in scores if s.get("metric") == metric), None)
@@ -1077,14 +1083,15 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
         cond = d.get("condition") or {}
         row = {"run_id": run_id, "dyad_id": dyad_id, "attempt": attempt, "ideology": cond.get("ideology"),
                "topic": cond.get("topic"), "openness": cond.get("openness"), "role": cond.get("role"),
-               "persona_mode": d.get("persona_mode"), "metric": metric, "threshold": threshold,
+               "persona_mode": d.get("persona_mode"), "metric": metric, "scope": scope, "threshold": threshold,
                "run_length": run_length, "rule": FLAG_RULE, "judge_sha256": judge_hash, **f,
                "harness_commit": _git_commit(), "ts": ts}
         w.write(row)
         rows.append(row)
     print(f"flags {run_id}: {sum(r['flagged'] for r in rows)}/{len(rows)} dyads flagged "
-          f"({metric} < {threshold} on {run_length} {FLAG_RULE}; judge {str(judge_hash)[:12]})"
-          + (f"; {control} control dyads with adherence scores not flagged" if control else ""))
+          f"({metric} < {threshold} on {run_length} {FLAG_RULE}, {scope} scope; judge {str(judge_hash)[:12]})"
+          + (f"; {control} control dyads with adherence scores not flagged" if control else "")
+          + (f"; {unscoped} score rows without a scope left out" if unscoped else ""))
     for key in ("ideology", "persona_mode"):
         groups: dict = {}
         for r in rows:
@@ -1313,6 +1320,8 @@ def main(argv: list[str] | None = None) -> int:
     parsers["flags"].add_argument("--metric", default="prompt_to_line")
     parsers["flags"].add_argument("--run-length", type=int, default=3, help="consecutive scored seeker turns")
     parsers["flags"].add_argument("--judge", default=None, help="judge sha256 prefix when two judges scored")
+    parsers["flags"].add_argument("--scope", choices=SCOPES, default="main",
+                                  help="use only score rows of this scope (default main)")
     parsers["agreement"].add_argument("--metric", default="alignment")
     a = ap.parse_args(argv)
     try:
@@ -1320,19 +1329,23 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "check":
             return cmd_check(cfg, a.manifest)
         if a.cmd == "flags":
-            return cmd_flags(cfg, a.run_id, a.threshold, a.metric, a.run_length, a.judge)
+            return cmd_flags(cfg, a.run_id, a.threshold, a.metric, a.run_length, a.judge, a.scope)
         if a.cmd == "agreement":
             return cmd_agreement(cfg, a.run_id, a.metric)
         if a.cmd == "study":
             return cmd_study(cfg, a.manifest)
-        # run, survey and score append rows: one process per run_id at a time.
+        # run, survey, baseline and score append rows: one process per run_id at a time on .lock, except
+        # score, which writes only scores.jsonl and reads only complete attempts, and takes .score.lock
+        # so it can score finished dyads while run works on the rest. It checks and repairs only its file.
         paths = run_paths(cfg["data_dir"], a.run_id, create=a.cmd in ("run", "baseline"))
         _require_run_dir(paths)
-        with log.run_lock(paths, a.cmd):
+        scoring = a.cmd == "score"
+        own = (paths.scores.name,) if scoring else None
+        with log.run_lock(paths, a.cmd, log.SCORE_LOCK if scoring else log.RUN_LOCK):
             if a.repair_torn_line:
-                for msg in log.repair_torn_lines(paths.root):
+                for msg in log.repair_torn_lines(paths.root, own):
                     print(msg)
-            log.check_tails(paths.root)
+            log.check_tails(paths.root, own)
             if a.cmd == "run":
                 return cmd_run(cfg, a.manifest, a.run_id)
             if a.cmd == "survey":

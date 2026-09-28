@@ -551,7 +551,7 @@ def test_flags_command_writes_flags_and_reports_rates_by_ideology_and_mode(tmp_p
     for dyad, scores in (("d0", (0.2, 0.2)), ("d1", (0.9, 0.9))):
         for turn, s in zip((1, 2), scores):
             w.write({"run_id": "r1", "dyad_id": dyad, "attempt": 1, "turn": turn, "agent": SEEKER,
-                     "metric": "prompt_to_line", "judge_sha256": "J", "score": s})
+                     "metric": "prompt_to_line", "scope": "main", "judge_sha256": "J", "score": s})
     # threshold is required: it is calibrated on pilot hand labels, never defaulted
     with pytest.raises(SystemExit):
         R.main(["flags", "--config", str(cfg), "--run-id", "r1"])
@@ -697,7 +697,7 @@ def test_a_second_run_on_the_same_run_id_refuses(tmp_path, monkeypatch, capsys):
     man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
     paths = log.run_paths(tmp_path / "data", "r1")
     with log.run_lock(paths, "run"):
-        for cmd in (["run", "--manifest", str(man)], ["survey"], ["score"]):
+        for cmd in (["run", "--manifest", str(man)], ["survey"], ["baseline", "--k", "1"]):
             assert R.main([cmd[0], "--config", str(cfg), "--run-id", "r1", *cmd[1:]]) == 1
             assert ".lock is held by pid" in capsys.readouterr().err
     assert not paths.status.exists()
@@ -924,10 +924,13 @@ def test_a_torn_status_line_is_diagnosed_and_repaired_on_request(tmp_path, monke
     paths = log.run_paths(tmp_path / "data", "r1")
     paths.status.write_text('{"run_id": "r1", "dyad_id": "d0", "attempt": 1, "status": "fai')
     capsys.readouterr()
-    for cmd in (["run", "--manifest", str(man)], ["survey"], ["score"]):
+    for cmd in (["run", "--manifest", str(man)], ["survey"]):
         assert R.main([cmd[0], "--config", str(cfg), "--run-id", "r1", *cmd[1:]]) == 1
         err = capsys.readouterr().err
         assert "status.jsonl line 1" in err and "--repair-torn-line" in err and err.count("\n") == 1
+    # score reads what run writes as a live run leaves it: an unterminated last line is a row in flight
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--repair-torn-line"]) == 0
+    assert "status.jsonl" not in capsys.readouterr().out and not list(paths.root.glob("status.jsonl.torn-*"))
     assert run("--repair-torn-line") == 2
     assert "dropped a cut-off last line" in capsys.readouterr().out
     assert len(list(paths.root.glob("status.jsonl.torn-*"))) == 1
@@ -1100,3 +1103,78 @@ def test_samplers_go_out_on_every_request_and_a_resume_compares_the_servers_defa
     assert {c["n_predict"] for c in sent} == {300, 32, 160}                 # dialogue, survey, judge
     judge = json.loads(next(log.run_paths(tmp_path / "data", "r2").root.glob("judge-*.json")).read_text())
     assert judge["samplers"] == want
+
+
+def _judge_says(monkeypatch, score=0.5):
+    """Make the fake judge reply with a parseable score."""
+    factory = R.LlamaClient
+    def with_judge(url, timeout=None):
+        c = factory(url, timeout)
+        if url == "http://j":
+            c.replies = [json.dumps({"score": score, "rationale": "r"})]
+        return c
+    monkeypatch.setattr(R, "LlamaClient", with_judge)
+
+
+def test_score_runs_beside_a_live_run_on_its_own_lock(tmp_path, monkeypatch, capsys):
+    # Parallelism review / red-team M3 follow-up: score used to refuse while run held .lock. It now takes
+    # .score.lock, reads only attempts status.jsonl calls complete, and tolerates a row still being written.
+    _fake_servers(tmp_path, monkeypatch)
+    _judge_says(monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    paths = log.run_paths(tmp_path / "data", "r1")
+    # a live run: d9 has started, and its first turn row is half written
+    log.JsonlWriter(paths.status).write({"run_id": "r1", "dyad_id": "d9", "attempt": 1, "status": "started"})
+    with open(paths.turns, "a", encoding="utf-8") as f:
+        f.write('{"run_id": "r1", "dyad_id": "d9", "attempt": 1, "turn": 1, "agent": "seek')
+    turns_before = paths.turns.read_bytes()
+    with log.run_lock(paths, "run"):
+        assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "main"]) == 0
+        with log.run_lock(paths, "score", log.SCORE_LOCK):
+            assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "main"]) == 1
+            assert ".score.lock is held by pid" in capsys.readouterr().err
+    scores = log.read_jsonl(paths.scores)
+    assert {s["dyad_id"] for s in scores} == {"d0", "d1"} and len(scores) == 2 * 2
+    assert paths.turns.read_bytes() == turns_before                        # score never touches run's files
+
+
+def test_score_rows_carry_their_scope_and_flags_reads_one_scope(tmp_path, monkeypatch, capsys):
+    # Red-team M9: a pilot pass that scored every turn of a dyad changed what "3 consecutive scored turns"
+    # meant for it. Each scope is now scored and flagged on its own rows.
+    _fake_servers(tmp_path, monkeypatch)
+    _judge_says(monkeypatch, score=0.2)
+    cfg = write_cfg(tmp_path)
+    row = manifest_rows(1)[0]
+    row["n_turns"] = 8
+    row["condition"] = {"topic": "immigration_enforcement", "ideology": "lean_right", "openness": "open",
+                        "role": "x"}
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(row) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    score = lambda scope: R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", scope])
+    assert score("pilot") == 0 and score("main") == 0
+    paths = log.run_paths(tmp_path / "data", "r1")
+    rows = log.read_jsonl(paths.scores)
+    main = [s for s in rows if s["scope"] == "main"]
+    # main scores turns 4 and 8 afresh, although pilot already scored them
+    assert sorted({s["turn"] for s in main}) == [4, 8] and len(main) == 2 * 2
+    assert len([s for s in rows if s["scope"] == "pilot"]) == 8 * 2 + 8
+    assert all(s["subsample"] is None for s in rows)
+    assert score("main") == 0 and len(log.read_jsonl(paths.scores)) == len(rows)       # idempotent per scope
+    w = log.JsonlWriter(paths.scores)
+    w.write({"run_id": "r1", "dyad_id": "d0", "attempt": 1, "turn": 1, "agent": SEEKER, "metric": "prompt_to_line",
+             "judge_sha256": "HASH-j.gguf", "score": 0.9})                          # a row from before scopes
+    capsys.readouterr()
+    flags = lambda *extra: R.main(["flags", "--config", str(cfg), "--run-id", "r1", "--threshold", "0.5",
+                                   "--run-length", "2", *extra])
+    assert flags() == 0
+    out = capsys.readouterr().out
+    assert "main scope" in out and "1 score rows without a scope left out" in out
+    f = log.read_jsonl(paths.flags)[0]
+    assert (f["scope"], f["scored_turns"], f["first_flag_turn"]) == ("main", 2, 8)
+    assert flags("--scope", "pilot") == 0
+    f = log.read_jsonl(paths.flags)[0]
+    assert (f["scope"], f["scored_turns"], f["first_flag_turn"]) == ("pilot", 8, 2)

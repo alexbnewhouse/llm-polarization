@@ -147,13 +147,16 @@ FLAG_RULE = "consecutive scored seeker turns"
 
 
 def flag_dialogues(score_rows: list[dict], threshold: float, metric: str = "prompt_to_line",
-                   run_length: int = 3, judge_sha256: str | None = None) -> dict[tuple[str, int], dict]:
+                   run_length: int = 3, judge_sha256: str | None = None,
+                   scope: str | None = None) -> dict[tuple[str, int], dict]:
     """The three-consecutive-turns flag rule (docs/decisions/persona-stability.md §3), in code. A dyad
     attempt is flagged when `metric` (a seeker adherence metric) is strictly under `threshold` on
     `run_length` consecutive SCORED seeker turns -- consecutive in the sequence of turns the judge scored,
     not in dialogue turns, because main scope scores the seeker on a turn-4 cadence. A null score (a
     judge reply that did not parse) is an unscored turn: it is counted in `unscored_turns` and neither
     extends nor breaks a run. Rows must come from one judge: pass `judge_sha256` when two have scored.
+    `scope` keeps only the rows scored in that scope: "3 consecutive scored turns" means turns 4, 8, 12 in
+    `main` and 5, 6, 7 in `pilot`, so the two are never mixed (red-team M9); None keeps every row.
 
     `threshold` has no default on purpose: it is calibrated on the pilot's hand labels, never carried over
     from a paper whose metric is a rate rather than a per-turn score. Returns {(dyad_id, attempt): {...}}.
@@ -163,7 +166,8 @@ def flag_dialogues(score_rows: list[dict], threshold: float, metric: str = "prom
         raise ValueError(f"metric must be a seeker adherence metric {ADHERENCE_METRICS}, got {metric!r}")
     if run_length < 1:
         raise ValueError("run_length must be at least 1")
-    rows = [r for r in score_rows if r.get("metric") == metric and r.get("agent") == SEEKER and not r.get("error")]
+    rows = [r for r in score_rows if r.get("metric") == metric and r.get("agent") == SEEKER and not r.get("error")
+            and (scope is None or r.get("scope") == scope)]
     judges = {r.get("judge_sha256") for r in rows}
     if judge_sha256 is not None:
         rows = [r for r in rows if r.get("judge_sha256") == judge_sha256]
@@ -283,11 +287,17 @@ class Scorer:
         prefills only what was added; `concurrency` workers run at once on slots 0..concurrency-1."""
         self.check_independence(manifest, mentor_family)
         self.errors = 0
-        complete = latest_complete_attempts(read_jsonl(paths.status))
-        dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
+        # A live `run` may be appending to status, dyads and turns: read status first, and only the attempts
+        # it already calls complete, whose rows were all on disk before their 'complete' row was written.
+        complete = latest_complete_attempts(read_jsonl(paths.status, partial_tail=True))
+        dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads, partial_tail=True)}
+        # Done per judge and per scope: a `main` pass scores a turn again even when a `pilot` pass has, so
+        # each scope's rows are a complete set of its own targets (red-team M9).
         done = {(s["dyad_id"], s["attempt"], s["turn"], s["agent"], s["metric"])
-                for s in read_jsonl(paths.scores) if not s.get("error") and s.get("judge_sha256") == self.judge.model_sha256}
-        turns = [r for r in read_jsonl(paths.turns) if complete.get(r["dyad_id"]) == r.get("attempt", 1)]
+                for s in read_jsonl(paths.scores) if not s.get("error")
+                and s.get("judge_sha256") == self.judge.model_sha256 and s.get("scope") == scope}
+        turns = [r for r in read_jsonl(paths.turns, partial_tail=True)
+                 if complete.get(r["dyad_id"]) == r.get("attempt", 1)]
         by_dyad: dict[tuple, list[dict]] = {}
         for r in turns:
             by_dyad.setdefault((r["dyad_id"], r.get("attempt", 1)), []).append(r)
@@ -320,7 +330,8 @@ class Scorer:
             seed = derive_seed(self.run_seed, int((spec or {}).get("seed", 0)), row["dyad_id"], key[1],
                                row["turn"], f"judge:{row['agent']}:{metric}")
             out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
-                   "agent": row["agent"], "metric": metric, "judge_sha256": judge.model_sha256,
+                   "agent": row["agent"], "metric": metric, "scope": scope, "subsample": subsample,
+                   "judge_sha256": judge.model_sha256,
                    "id_slot": judge.slot, "harness_commit": self.harness_commit, "seed": seed}
             if spec is None:
                 out.update({"judge_prompt_sha256": "", "prompt_chars": None, "score": None, "rationale": "",

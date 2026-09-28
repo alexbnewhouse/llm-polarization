@@ -23,7 +23,7 @@ python -m harness.randomize --catalogue prompts/personas/catalogue.json --out pi
 python -m harness.run check  --config config.json --manifest pilot-dyads.jsonl
 python -m harness.run run    --config config.json --manifest pilot-dyads.jsonl --run-id pilot-2026-09-18
 python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
-python -m harness.run flags  --config config.json --run-id pilot-2026-09-18 --threshold 0.55   # after calibration
+python -m harness.run flags  --config config.json --run-id wave1 --threshold 0.55   # after calibration
 python -m harness.run score  --config config-judge2.json --run-id wave1 --scope stance --subsample 0.1
 python -m harness.run agreement --config config.json --run-id wave1          # cross-judge, on the subsample
 python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --phase post   # re-administer
@@ -78,12 +78,16 @@ failed, since neither repeats what is already done. Every subcommand exits 1 wit
 stderr for a dead server, a changed model or template, a missing file or GGUF, or a malformed config or
 manifest; `check` exits 1 when any row FAILs.
 
-`run`, `survey` and `score` hold an exclusive lock on `data/<run_id>/.lock` while they work, so a second
-one on the same `run_id` exits 1 naming the process that holds it. `check` and `run` also read each
-server's `/slots` (or `/props` `total_slots` when `/slots` is off) and FAIL `slots` when `concurrency`
-exceeds the slot count, when `concurrency` is null and no count is reported, or when one of the slots the
-run needs is busy: another client (a second arm on a shared seeker server, a `survey` pass) is using it.
-The cache probe is not sent to a busy slot.
+`run`, `survey` and `baseline` hold an exclusive lock on `data/<run_id>/.lock` while they work, so a
+second one on the same `run_id` exits 1 naming the process that holds it. `score` holds its own,
+`data/<run_id>/.score.lock`, so it can score a wave's finished dyads while `run` works on the rest: it
+reads only the attempts `status.jsonl` already calls complete (their rows are on disk before that row is
+written), skips an unterminated last line in the files `run` writes as a row still in flight, and checks
+and repairs only `scores.jsonl`. Two `score` passes on one run still exclude each other. `check` and `run`
+also read each server's `/slots` (or `/props` `total_slots` when `/slots` is off) and FAIL `slots` when
+`concurrency` exceeds the slot count, when `concurrency` is null and no count is reported, or when one of
+the slots the run needs is busy: another client (a second arm on a shared seeker server, a `survey` pass)
+is using it. The cache probe is not sent to a busy slot.
 
 | Module | What it holds |
 |---|---|

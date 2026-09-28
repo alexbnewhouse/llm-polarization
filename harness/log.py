@@ -101,9 +101,11 @@ class JsonlWriter:
                 os.fsync(f.fileno())
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path, partial_tail: bool = False) -> list[dict]:
     """Every row of a JSONL file in file order; an empty list when the file does not exist yet. A line that
-    does not parse raises ValueError naming the file and the line; a cut-off last line raises TornLine."""
+    does not parse raises ValueError naming the file and the line; a cut-off last line raises TornLine, or
+    is skipped when `partial_tail` is true: `score` reads files a live `run` may be appending to, where an
+    unterminated last line is a row still being written."""
     path = Path(path)
     if not path.exists():
         return []
@@ -112,6 +114,8 @@ def read_jsonl(path: Path) -> list[dict]:
         for n, line in enumerate(f, 1):
             if not line.strip():
                 continue
+            if partial_tail and not line.endswith("\n"):
+                break
             try:
                 rows.append(json.loads(line))
             except ValueError as e:
@@ -121,19 +125,24 @@ def read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def check_tails(root: Path) -> None:
-    """Raise TornLine for the first *.jsonl in a run directory whose last line is cut off."""
-    for path in sorted(Path(root).glob("*.jsonl")):
+def _jsonl_files(root: Path, names: tuple[str, ...] | None) -> list[Path]:
+    """The run directory's *.jsonl files, or only those named."""
+    return [p for p in sorted(Path(root).glob("*.jsonl")) if names is None or p.name in names]
+
+
+def check_tails(root: Path, names: tuple[str, ...] | None = None) -> None:
+    """Raise TornLine for the first *.jsonl in a run directory (or of `names`) whose last line is cut off."""
+    for path in _jsonl_files(root, names):
         if _ends_torn(path):
             raise TornLine(_torn_message(path, _line_count(path)))
 
 
-def repair_torn_lines(root: Path) -> list[str]:
-    """For each *.jsonl in a run directory whose last line has no newline: copy the file to
+def repair_torn_lines(root: Path, names: tuple[str, ...] | None = None) -> list[str]:
+    """For each *.jsonl in a run directory (or of `names`) whose last line has no newline: copy the file to
     <name>.torn-<time>, then drop that last line, or add the newline when the line is a whole row. Only the
     last line is ever touched. Returns one message per file changed."""
     out = []
-    for path in sorted(Path(root).glob("*.jsonl")):
+    for path in _jsonl_files(root, names):
         if not _ends_torn(path):
             continue
         backup = path.with_name(f"{path.name}.torn-{time.strftime('%Y%m%dT%H%M%S')}")
@@ -216,12 +225,19 @@ class RunLocked(Exception):
     """Another harness process holds this run's lock file."""
 
 
+RUN_LOCK = ".lock"
+# `score` takes its own lock: it appends only to scores.jsonl and reads only complete attempts, so it can
+# score a wave's finished dyads while `run` is still working on the rest.
+SCORE_LOCK = ".score.lock"
+
+
 @contextlib.contextmanager
-def run_lock(paths: RunPaths, command: str):
-    """Hold an exclusive lock on data/<run_id>/.lock for the life of one command, or raise RunLocked. Two
-    processes appending to one run would run every dyad twice on the same slots. The lock is an
-    fcntl.flock, so the kernel releases it when the process dies, however it dies."""
-    path = paths.root / ".lock"
+def run_lock(paths: RunPaths, command: str, name: str = RUN_LOCK):
+    """Hold an exclusive lock on data/<run_id>/<name> (.lock, or .score.lock for `score`) for the life of
+    one command, or raise RunLocked. Two processes appending to one run would run every dyad twice on the
+    same slots. The lock is an fcntl.flock, so the kernel releases it when the process dies, however it
+    dies."""
+    path = paths.root / name
     f = open(path, "a+", encoding="utf-8")
     try:
         try:

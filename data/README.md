@@ -33,8 +33,8 @@ command with the file and line named; `--repair-torn-line` keeps a copy as `<nam
 that line.
 
 `SHA256SUMS` and `archive.json` are added by hand when a run is archived (see the end of this page).
-`.lock` is held by the `run`, `survey` or `score` process working on the run, so a second one refuses;
-it holds that process's pid and is harmless when left behind.
+`.lock` is held by the `run`, `survey` or `baseline` process working on the run, and `.score.lock` by a
+`score` process, so a second one refuses; each holds its process's pid and is harmless when left behind.
 
 ## `manifest.json`
 
@@ -166,28 +166,33 @@ prompt.
 ## `scores.jsonl` — one row per (turn, agent, metric), written by `score`
 
 `run_id`, `dyad_id`, `attempt`, `turn`, `agent`, `metric` (`prompt_to_line`, `line_to_line` for the
-seeker; `alignment` for the mentor), `judge_sha256`, `id_slot`, `harness_commit` (the commit that did the
+seeker; `alignment` for the mentor), `scope` (`pilot`, `main` or `stance`: the pass that scored it; absent
+on rows from before it was recorded), `subsample` (that pass's `--subsample`, or null), `judge_sha256`,
+`id_slot`, `harness_commit` (the commit that did the
 scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or null), `rationale`,
 `raw_text`, `ts`. On a failure there is also `error`.
 
 The seeker of a control dyad (`ideology: "none"`) has no persona to adhere to, so the adherence metrics
 (`prompt_to_line`, `line_to_line`) are never scored for it (`docs/decisions/factorial.md`); `score` prints
-how many control dyads it left out. Its mentor's `alignment` is scored as for any dyad.
-Scope `pilot` scores every turn for both agents; scope `main` scores the seeker only, on turns
-4, 8, 12, ... plus the dyad's final turn; scope `stance` scores the mentor's `alignment` on that same
-cadence, for the two-judge subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on
-the run's `run_seed` from `manifest.json`, so a second judge's config need not repeat it; the score seeds
-use it too). `score` works through the targets in (dyad, attempt, metric, turn) order, one dyad at a
-time per judge slot, `concurrency` slots at once, so `id_slot` is the slot that dyad's worker held and
-file order is not target order. Scoring is idempotent
-**per judge**: a row that already exists for this judge without an `error` is never scored again, and a second judge scores the same targets afresh. A row with `score: null` (an unparseable judge reply) counts as done; a
-row with `error` (the judge server failed) is retried on the next `score` and leaves the failed row in
-place.
+how many control dyads it left out. Its mentor's `alignment` is scored as for any dyad. Scope `pilot`
+scores every turn for both agents; scope `main` scores the seeker only, on turns 4, 8, 12, ... plus the
+dyad's final turn; scope `stance` scores the mentor's `alignment` on that same cadence, for the two-judge
+subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on the run's `run_seed` from
+`manifest.json`, so a second judge's config need not repeat it; the score seeds use it too). `score` works
+through the targets in (dyad, attempt, metric, turn) order, one dyad at a time per judge slot,
+`concurrency` slots at once, so `id_slot` is the slot that dyad's worker held and file order is not target
+order. Scoring is idempotent **per judge and per scope**: a row that already exists for this judge and
+scope without an `error` is never scored again; a second judge scores the same targets afresh, and so does
+a `main` pass for a turn a `pilot` pass scored, so each scope's rows are a whole set of its own targets. A
+row with `score: null` (an unparseable judge reply) counts as done; a row with `error` (the judge server
+failed) is retried on the next `score` and leaves the failed row in place.
 
 ## `flags.jsonl` — one row per scored, complete dyad, written by `flags`
 
 `run_id`, `dyad_id`, `attempt`, `ideology`, `topic`, `openness`, `role`, `persona_mode` (copied from the
-dyad row so the rates can be broken down), `metric`, `threshold`, `run_length`, `rule` (always
+dyad row so the rates can be broken down), `metric`, `scope` (the scope whose score rows were used:
+`flags --scope`, default `main`; rows of other scopes, and rows without one, are never mixed in),
+`threshold`, `run_length`, `rule` (always
 `consecutive scored seeker turns`), `judge_sha256`, `flagged`, `first_flag_turn` (the scored turn that
 completed the run, or null), `scored_turns`, `unscored_turns` (null scores), `turns_under`, `min_score`,
 `mean_score`, `final_turn`, `harness_commit`, `ts`.
