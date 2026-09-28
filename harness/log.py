@@ -1,6 +1,6 @@
 """Append-only JSONL logging, run manifest, resume index, seeds and hashing."""
 from __future__ import annotations
-import contextlib, fcntl, hashlib, json, os, threading, time
+import contextlib, fcntl, hashlib, json, os, shutil, threading, time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +28,34 @@ def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
                     root / "input-dyads.jsonl")
 
 
+class TornLine(ValueError):
+    """A JSONL file ends in a line with no newline: a write cut off by a crash, a kill or a full disk."""
+
+
+def _torn_message(path: Path, lineno: int) -> str:
+    return (f"{path} line {lineno} has no newline at the end of the file: a row cut off by a crash, a kill "
+            "or a full disk. Re-run `run`, `survey` or `score` with --repair-torn-line to back the file up "
+            "and drop that one line (or finish it, if it is a whole row)")
+
+
+def _ends_torn(path: Path) -> bool:
+    """True when the file exists, is not empty, and its last byte is not a newline."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0:
+                return False
+            f.seek(-1, os.SEEK_END)
+            return f.read(1) != b"\n"
+    except FileNotFoundError:
+        return False
+
+
+def _line_count(path: Path) -> int:
+    with open(path, "rb") as f:
+        return sum(1 for _ in f)
+
+
 class JsonlWriter:
     """Append-only writer for one JSONL file, safe to share across the run's worker threads."""
 
@@ -37,23 +65,75 @@ class JsonlWriter:
         itself is opened per write, and only when there is a line to add."""
         self.path = Path(path)
         self._lock = threading.Lock()
+        self._tail_checked = False
 
     def write(self, obj: dict) -> None:
-        """Append one row and flush it. A crashed run keeps every row written before the crash."""
+        """Append one row, flush it and fsync it, so a row that is written is on disk before the next one
+        (a 'complete' status row never outlives the turns it vouches for). Refuses to append to a file
+        whose last line is torn: the new row would be glued onto the fragment and lost with it."""
         line = json.dumps(obj, ensure_ascii=False) + "\n"
         with self._lock:
+            if not self._tail_checked:
+                if _ends_torn(self.path):
+                    raise TornLine(_torn_message(self.path, _line_count(self.path)))
+                self._tail_checked = True
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(line)
                 f.flush()
+                os.fsync(f.fileno())
 
 
 def read_jsonl(path: Path) -> list[dict]:
-    """Every row of a JSONL file in file order; an empty list when the file does not exist yet."""
+    """Every row of a JSONL file in file order; an empty list when the file does not exist yet. A line that
+    does not parse raises ValueError naming the file and the line; a cut-off last line raises TornLine."""
     path = Path(path)
     if not path.exists():
         return []
+    rows = []
     with open(path, encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError as e:
+                if not line.endswith("\n"):
+                    raise TornLine(_torn_message(path, n)) from None
+                raise ValueError(f"{path} line {n} is not valid JSON: {e}") from None
+    return rows
+
+
+def check_tails(root: Path) -> None:
+    """Raise TornLine for the first *.jsonl in a run directory whose last line is cut off."""
+    for path in sorted(Path(root).glob("*.jsonl")):
+        if _ends_torn(path):
+            raise TornLine(_torn_message(path, _line_count(path)))
+
+
+def repair_torn_lines(root: Path) -> list[str]:
+    """For each *.jsonl in a run directory whose last line has no newline: copy the file to
+    <name>.torn-<time>, then drop that last line, or add the newline when the line is a whole row. Only the
+    last line is ever touched. Returns one message per file changed."""
+    out = []
+    for path in sorted(Path(root).glob("*.jsonl")):
+        if not _ends_torn(path):
+            continue
+        backup = path.with_name(f"{path.name}.torn-{time.strftime('%Y%m%dT%H%M%S')}")
+        shutil.copy2(path, backup)
+        data = path.read_bytes()
+        cut = data.rfind(b"\n") + 1
+        tail = data[cut:]
+        try:
+            json.loads(tail.decode("utf-8"))
+            with open(path, "ab") as f:
+                f.write(b"\n"); f.flush(); os.fsync(f.fileno())
+            out.append(f"{path}: the last line was a whole row without its newline; added it "
+                       f"(backup {backup.name})")
+        except ValueError:
+            with open(path, "r+b") as f:
+                f.truncate(cut); f.flush(); os.fsync(f.fileno())
+            out.append(f"{path}: dropped a cut-off last line of {len(tail)} bytes (backup {backup.name})")
+    return out
 
 
 def sha256_text(s: str) -> str:

@@ -950,6 +950,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--config", required=True)
         if name != "check":
             p.add_argument("--run-id", required=True)
+        if name in ("run", "survey", "score"):
+            p.add_argument("--repair-torn-line", action="store_true",
+                           help="back up and fix a *.jsonl whose last line a crash cut off, then go on")
     parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
     parsers["run"].add_argument("--manifest", required=True)
     parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
@@ -972,7 +975,12 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "agreement":
             return cmd_agreement(cfg, a.run_id, a.metric)
         # run, survey and score append rows: one process per run_id at a time.
-        with log.run_lock(run_paths(cfg["data_dir"], a.run_id), a.cmd):
+        paths = run_paths(cfg["data_dir"], a.run_id)
+        with log.run_lock(paths, a.cmd):
+            if a.repair_torn_line:
+                for msg in log.repair_torn_lines(paths.root):
+                    print(msg)
+            log.check_tails(paths.root)
             if a.cmd == "run":
                 return cmd_run(cfg, a.manifest, a.run_id)
             if a.cmd == "survey":

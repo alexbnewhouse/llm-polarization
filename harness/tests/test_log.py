@@ -105,3 +105,44 @@ def test_run_lock_refuses_a_second_holder_and_is_released(tmp_path):
         assert "(run," in (p.root / ".lock").read_text()
     with log.run_lock(p, "survey"):                                      # released on exit
         pass
+
+
+def test_read_jsonl_names_the_file_and_line_and_diagnoses_a_torn_last_line(tmp_path):
+    # Red-team M5, parallelism L1: the error named neither file nor line, and a torn tail blocked everything.
+    f = tmp_path / "status.jsonl"
+    f.write_text('{"a": 1}\n{"a": \n{"a": 3}\n')
+    with pytest.raises(ValueError, match=r"status.jsonl line 2 is not valid JSON") as e:
+        log.read_jsonl(f)
+    assert not isinstance(e.value, log.TornLine)
+    f.write_text('{"a": 1}\n\n{"a": 2, "b": "cut o')
+    with pytest.raises(log.TornLine, match=r"status.jsonl line 3 .*--repair-torn-line"):
+        log.read_jsonl(f)
+    with pytest.raises(log.TornLine):
+        log.check_tails(tmp_path)
+
+
+def test_writer_refuses_to_glue_a_row_onto_a_torn_line_and_fsyncs_each_row(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(log.os, "fsync", lambda fd: synced.append(fd))
+    f = tmp_path / "turns.jsonl"
+    w = log.JsonlWriter(f)
+    w.write({"a": 1}); w.write({"a": 2})
+    assert len(synced) == 2
+    f.write_text(f.read_text() + '{"a": 3, "cut')
+    with pytest.raises(log.TornLine, match="line 3"):
+        log.JsonlWriter(f).write({"a": 4})
+    assert f.read_text().endswith('"cut')                     # nothing appended
+
+
+def test_repair_drops_only_a_cut_off_last_line_after_a_backup(tmp_path):
+    torn = tmp_path / "turns.jsonl"; torn.write_text('{"a": 1}\n{"a": 2}\n{"a": 3, "cu')
+    whole = tmp_path / "status.jsonl"; whole.write_text('{"s": 1}\n{"s": 2}')
+    fine = tmp_path / "surveys.jsonl"; fine.write_text('{"x": 1}\n')
+    msgs = log.repair_torn_lines(tmp_path)
+    assert len(msgs) == 2 and "dropped a cut-off last line of 12 bytes" in msgs[1]
+    assert log.read_jsonl(torn) == [{"a": 1}, {"a": 2}] and log.read_jsonl(whole) == [{"s": 1}, {"s": 2}]
+    assert whole.read_text().endswith("\n") and fine.read_text() == '{"x": 1}\n'
+    backups = sorted(p.name.split(".torn-")[0] for p in tmp_path.glob("*.torn-*"))
+    assert backups == ["status.jsonl", "turns.jsonl"]
+    assert next(tmp_path.glob("turns.jsonl.torn-*")).read_text().endswith('"cu')
+    log.check_tails(tmp_path)                                   # clean now

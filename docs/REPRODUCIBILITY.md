@@ -255,7 +255,11 @@ file order never matters.
 **7. Ctrl-C, and what an interrupted wave means.** An interrupt lets in-flight dyads finish and never
 starts a queued one; `run` then exits 130. The stopped dyads have no `status` row at all and are simply
 run by the next `run` with the same `run_id`, as attempt 1. Nothing is half-written, because a dyad
-writes its `complete` row only after its post-survey.
+writes its `complete` row only after its post-survey, and every row is flushed and fsynced before the next
+is written, so a `complete` row is never on disk without the rows it vouches for. A crash, a kill or a
+full disk can still cut off the last line of a file; every reader then names the file and line, nothing
+is appended after it, and `run`, `survey` or `score` with `--repair-torn-line` copies the file to
+`<name>.torn-<time>` and drops that one line (or adds its newline, when it is a whole row).
 
 **8. Scoring is idempotent, with one asymmetry to declare.** `score` skips any (dyad, attempt, turn,
 agent, metric) that already has a row without an `error`. A row whose `score` is `null` — the judge
@@ -354,7 +358,8 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   section 3 rather than code.
 - **`write_manifest` is not atomic across processes** and `JsonlWriter` reopens the file per write. Both
   assume one process per `run_id`, which `run`, `survey` and `score` enforce with a lock on
-  `data/<run_id>/.lock`; the per-write open and flush is the right durability trade for a research log.
+  `data/<run_id>/.lock`; the per-write open, flush and fsync is the right durability trade for a research
+  log.
 - **`cmd_run` builds its agents twice**, once inside `check` and once for the run: two extra `/props`
   round-trips per run, in exchange for the manifest recording `/props` as it stands at the moment the run
   actually starts.

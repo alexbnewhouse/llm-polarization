@@ -24,6 +24,10 @@ data/<run_id>/
   flags.jsonl          one row per scored, complete dyad, written (replaced) by `flags`
 ```
 
+Every row is one line, flushed and fsynced as it is written. A line cut off by a crash stops the next
+command with the file and line named; `--repair-torn-line` keeps a copy as `<name>.torn-<time>` and drops
+that line.
+
 `SHA256SUMS` and `archive.json` are added by hand when a run is archived (see the end of this page).
 `.lock` is held by the `run`, `survey` or `score` process working on the run, so a second one refuses;
 it holds that process's pid and is harmless when left behind.
