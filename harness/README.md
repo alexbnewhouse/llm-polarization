@@ -37,8 +37,10 @@ from free text and labels the row's `answer_method` accordingly. Its 50 hand-wri
 
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
-Every subcommand exits 1 with one `error:` line on stderr for a dead server, a changed model or template,
-or a malformed config or manifest; `check` exits 1 when any row FAILs.
+`survey` and `score` exit 2 when any item or judge call failed in that pass; re-run them to fill in what
+failed, since neither repeats what is already done. Every subcommand exits 1 with one `error:` line on
+stderr for a dead server, a changed model or template, a missing file or GGUF, or a malformed config or
+manifest; `check` exits 1 when any row FAILs.
 
 `run`, `survey` and `score` hold an exclusive lock on `data/<run_id>/.lock` while they work, so a second
 one on the same `run_id` exits 1 naming the process that holds it. `check` and `run` also read each

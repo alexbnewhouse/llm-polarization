@@ -67,7 +67,11 @@ The field-by-field data dictionary is `data/README.md`, derived from the code. I
 later `python -m harness.run survey` pass. A re-administration refuses (`error:`, exit 1) if the live `batteries` file's
 sha256 no longer matches `manifest.json` → `batteries.sha256`: a changed instrument is a different
 measurement, and mixing its rows under the same battery/item ids as the original pass would be silently
-wrong. Use a new `run_id` against the new instrument instead.
+wrong. Use a new `run_id` against the new instrument instead. It refuses, too, a run-affecting config that
+differs from the run's (`run_seed`, `now` and `generation` are in every survey seed or prompt). An item
+already re-administered for a dyad in that phase is never asked again, so a second pass only fills in
+what a failed one left, and there is at most one `readministered` row per (dyad, attempt, phase, item)
+without an `error`.
 
 If you re-run the same `run_id` with a changed run-affecting config, a changed instrument or input dyad
 row, against a model, template or llama.cpp build that differs from the manifest's, or from different

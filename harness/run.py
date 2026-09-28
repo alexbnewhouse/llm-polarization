@@ -425,8 +425,9 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
     for role in roles:
         try:
             handle, entry = build_agent(role, cfg[role], 0, cfg)
-        except ServerError as e:
-            print(f"FAIL health {role} {cfg[role].get('url')}: {e}")
+        except (ServerError, TemplateError, OSError, ValueError) as e:
+            what = "health" if isinstance(e, ServerError) else "setup"
+            print(f"FAIL {what} {role} {cfg[role].get('url')}: {e}")
             ok_all = False
             continue
         print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} "
@@ -675,10 +676,19 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     server has nothing to do with a re-administration and need not even be running. Refuses if the live
     `batteries` file no longer hashes to what the run's manifest recorded: re-administering with an edited
     instrument is a different measurement, silently mislabelled under the same battery/item ids, and needs
-    a new run_id rather than a `readministered` row that looks comparable to the original but is not."""
-    mentor, entry = _agents(cfg, roles=(MENTOR,))[MENTOR]
+    a new run_id rather than a `readministered` row that looks comparable to the original but is not.
+    Refuses, too, a run-affecting config that differs from the run's (`run_seed`, `now` and `generation`
+    are in every survey prompt or seed), as `run` does. An item already re-administered for a dyad in this
+    phase is not asked again, so a second pass only fills in what a failed one left. Returns 2 when any
+    dyad's items failed."""
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
+    was_cfg, now_cfg = log.run_affecting(manifest.get("config")), log.run_affecting(cfg)
+    differ = [k for k in log.RUN_AFFECTING_CONFIG if was_cfg[k] != now_cfg[k]]
+    if differ:
+        raise ManifestMismatch(f"config {', '.join(differ)} differ from {paths.manifest}; re-administer with "
+                               "the config the run used")
+    mentor, entry = _agents(cfg, roles=(MENTOR,))[MENTOR]
     _verify_identity(manifest, {MENTOR: entry}, roles=(MENTOR,))
     live_sha256 = log.sha256_file(Path(cfg["batteries"]))
     manifest_sha256 = manifest["batteries"]["sha256"]
@@ -691,27 +701,43 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     complete = latest_complete_attempts(read_jsonl(paths.status))
     dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
     turns = read_jsonl(paths.turns)
+    done = {(s["dyad_id"], s["attempt"], s["item_id"]) for s in read_jsonl(paths.surveys)
+            if s.get("origin") == "readministered" and s.get("phase") == phase and not s.get("error")}
     runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, 0), JsonlWriter(paths.surveys),
                           _settings(cfg), batteries_sha256=live_sha256)
-    n = 0
+    n = failed = already = 0
     for dyad_id, attempt in complete.items():
-        spec = DyadSpec.from_row(dyads[(dyad_id, attempt)])
+        todo = [it for it in items if (dyad_id, attempt, it["id"]) not in done]
+        if not todo:
+            already += 1
+            continue
+        row = dyads.get((dyad_id, attempt))
+        if row is None:
+            failed += 1
+            print(f"  {dyad_id}: no dyads.jsonl row for attempt {attempt}", file=sys.stderr)
+            continue
+        spec = DyadSpec.from_row(row)
         transcript = None
         if phase == "post":
-            transcript = _rebuild_transcript(dyads[(dyad_id, attempt)],
-                                             [r for r in turns if r["dyad_id"] == dyad_id and r.get("attempt", 1) == attempt])
+            mine = [r for r in turns if r["dyad_id"] == dyad_id and r.get("attempt", 1) == attempt]
+            transcript = _rebuild_transcript(row, mine)
         try:
-            n += len(runner.administer(spec, attempt, phase, transcript, items, origin="readministered"))
+            n += len(runner.administer(spec, attempt, phase, transcript, todo, origin="readministered"))
         except SurveyError as e:
+            failed += 1
             print(f"  {dyad_id}: {e}", file=sys.stderr)
-    print(f"{phase} survey: {n} rows for {len(complete)} dyads")
-    return 0
+    print(f"{phase} survey: {n} rows for {len(complete) - already} dyads"
+          + (f"; {already} already re-administered, not asked again" if already else "")
+          + (f"; {failed} failed, re-run to fill them in" if failed else ""))
+    return 2 if failed else 0
 
 
 def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None) -> int:
     """Run the `score` subcommand: build the judge agent and score the run's not-yet-scored targets.
     `--scope stance --subsample F` with a second judge config is the two-judge design: same deterministic
-    subsample of dyads, rows done per judge, `agreement` reports the result."""
+    subsample of dyads, rows done per judge, `agreement` reports the result. The subsample and the score
+    seeds use the run's run_seed from manifest.json, not the judge config's. Returns 2 when any judge call
+    failed in this pass."""
     if not cfg["judge"].get("url"):
         print("config needs judge.url", file=sys.stderr)
         return 1
@@ -726,13 +752,15 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
         return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
-    scorer = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
-                    harness_commit=_git_commit())
+    scorer = Scorer(run_id, int(manifest["config"]["run_seed"]), judge, JsonlWriter(paths.scores),
+                    _settings(cfg), harness_commit=_git_commit())
     scorer.check_independence(manifest, cfg[MENTOR].get("family"))     # before any record of the pass
-    write_judge_manifest(paths, entry, scope, subsample)
+    record = write_judge_manifest(paths, entry, scope, subsample)
     n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
-    print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "") + ")")
-    return 0
+    print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "") + f"); "
+          f"judge record {record.name}" + (f"; {scorer.errors} judge calls failed, re-run score to retry them"
+                                           if scorer.errors else ""))
+    return 2 if scorer.errors else 0
 
 
 def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length: int, judge: str | None) -> int:
@@ -806,15 +834,21 @@ def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, subsample: fl
     judge.update({"scope": scope, "subsample": subsample, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
                   "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
                   "harness_commit": _git_commit(), "ts": now_iso()})
-    path = paths.root / f"judge-{entry['model_sha256'][:12]}.json"
-    if path.exists():
-        old = json.loads(path.read_text(encoding="utf-8"))
-        if {k: v for k, v in old.items() if k != "ts"} == {k: v for k, v in judge.items() if k != "ts"}:
+    # Same judge, different scoring pass (another scope, subsample or harness commit): a new record beside
+    # the earlier ones, never over them -- judge-<sha12>.json, then -<scope>.json, then -<scope>-2.json ...
+    base = f"judge-{entry['model_sha256'][:12]}"
+    same = lambda d: ({k: v for k, v in d.items() if k != "ts"}
+                      == {k: v for k, v in judge.items() if k != "ts"})
+    n = 0
+    while True:
+        path = paths.root / (f"{base}.json" if n == 0 else f"{base}-{scope}.json" if n == 1
+                             else f"{base}-{scope}-{n}.json")
+        if not path.exists():
+            path.write_text(json.dumps(judge, indent=2, ensure_ascii=False), encoding="utf-8")
             return path
-        # Same judge, different scoring pass (another scope, or another harness commit): keep both records.
-        path = paths.root / f"judge-{entry['model_sha256'][:12]}-{scope}.json"
-    path.write_text(json.dumps(judge, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
+        if same(json.loads(path.read_text(encoding="utf-8"))):
+            return path
+        n += 1
 
 
 def _run_text(cmd: list[str], cwd: Path | None = None) -> str | None:
@@ -944,10 +978,11 @@ def main(argv: list[str] | None = None) -> int:
             if a.cmd == "survey":
                 return cmd_survey(cfg, a.run_id, a.phase)
             return cmd_score(cfg, a.run_id, a.scope, a.subsample)
-    except (ServerError, ManifestMismatch, ValueError, log.RunLocked) as e:
+    except (ServerError, ManifestMismatch, ValueError, log.RunLocked, TemplateError, OSError, KeyError) as e:
         # Everything the operator can get wrong -- a dead server, a changed model, a malformed manifest or
-        # config -- becomes one error line and exit 1, never a traceback.
-        print(f"error: {e}", file=sys.stderr)
+        # config, a missing file or GGUF -- becomes one error line and exit 1, never a traceback.
+        msg = f"missing key {e}" if isinstance(e, KeyError) else str(e)
+        print(f"error: {' '.join(msg.split())}", file=sys.stderr)
         return 1
 
 

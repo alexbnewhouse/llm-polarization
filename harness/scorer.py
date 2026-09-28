@@ -237,6 +237,7 @@ class Scorer:
         self.run_id, self.run_seed, self.judge = run_id, run_seed, judge
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
         self.harness_commit = harness_commit
+        self.errors = 0          # error rows written by the last score_run
 
     def check_independence(self, manifest: dict, mentor_family: str | None = None) -> None:
         """Raise ValueError for a judge that is the seeker or the mentor of this run, or of the mentor's
@@ -265,6 +266,7 @@ class Scorer:
         written, after check_independence. Rows are done per judge, so a second judge scores the same
         targets."""
         self.check_independence(manifest, mentor_family)
+        self.errors = 0
         complete = latest_complete_attempts(read_jsonl(paths.status))
         dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
         done = {(s["dyad_id"], s["attempt"], s["turn"], s["agent"], s["metric"])
@@ -297,6 +299,7 @@ class Scorer:
                 out.update({"judge_prompt_sha256": "", "prompt_chars": None, "score": None, "rationale": "",
                             "raw_text": "", "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
                 self.scores_log.write(out)
+                self.errors += 1
                 continue
             history = histories[key[:2]]
             idx = positions[key[:2]][id(row)]
@@ -316,6 +319,7 @@ class Scorer:
             except ServerError as e:
                 out.update({"score": None, "rationale": "", "raw_text": "", "error": str(e), "ts": self.clock()})
                 self.scores_log.write(out)
+                self.errors += 1
                 continue
             score, rationale = parse_score(comp.text)
             out.update({"score": score, "rationale": rationale, "raw_text": comp.text, "ts": self.clock()})

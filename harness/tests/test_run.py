@@ -790,3 +790,114 @@ def test_run_refuses_two_urls_to_one_server(tmp_path, monkeypatch, capsys):
     assert run() == 1
     assert "report the same model file" in capsys.readouterr().err
     assert not (tmp_path / "data" / "r1" / "manifest.json").exists()
+
+
+def test_survey_checks_config_exits_2_on_failure_and_never_duplicates_rows(tmp_path, monkeypatch, capsys):
+    # Red-team M7, gap audit F16/F17: survey took any run_seed/now/generation, exited 0 with failed items,
+    # and a second pass duplicated every dyad's rows.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    survey = lambda c=None: R.main(["survey", "--config", str(c or write_cfg(tmp_path)), "--run-id", "r1",
+                                    "--phase", "post"])
+    paths = log.run_paths(tmp_path / "data", "r1")
+    readmin = lambda: [s for s in log.read_jsonl(paths.surveys) if s["origin"] == "readministered"]
+    capsys.readouterr()
+    assert survey(write_cfg(tmp_path, run_seed=6, now="2026-10-01")) == 1
+    assert "config run_seed, now differ" in capsys.readouterr().err and not readmin()
+    factory = R.LlamaClient
+    def flaky(url, timeout=None):
+        c = factory(url, timeout); c.fail_on = 2
+        return c
+    monkeypatch.setattr(R, "LlamaClient", flaky)
+    assert survey() == 2                                         # one dyad's second item failed
+    assert "1 failed" in capsys.readouterr().out
+    ok = [s for s in readmin() if not s.get("error")]
+    assert len(ok) == 1 + 13
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    assert survey() == 0                                         # fills in the failed dyad's 12 items only
+    ok = [s for s in readmin() if not s.get("error")]
+    assert len(ok) == 2 * 13 and len({(s["dyad_id"], s["item_id"]) for s in ok}) == 2 * 13
+    assert survey() == 0 and "2 already re-administered" in capsys.readouterr().out
+    assert len([s for s in readmin() if not s.get("error")]) == 2 * 13
+
+
+def test_score_exits_2_on_judge_failures_and_subsamples_on_the_manifests_run_seed(tmp_path, monkeypatch,
+                                                                                    capsys):
+    # Red-team M8 (a), (b): the second judge's config need not repeat run_seed, and a failed pass is exit 2.
+    from harness.scorer import subsample_dyads
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path, run_seed=5)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(12)))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    judge2 = write_cfg(tmp_path, run_seed=0)
+    assert R.main(["score", "--config", str(judge2), "--run-id", "r1", "--scope", "main",
+                   "--subsample", "0.5"]) == 0
+    paths = log.run_paths(tmp_path / "data", "r1")
+    scored = {s["dyad_id"] for s in log.read_jsonl(paths.scores)}
+    assert scored == subsample_dyads([f"d{i}" for i in range(12)], 0.5, 5) != subsample_dyads(
+        [f"d{i}" for i in range(12)], 0.5, 0)
+    s0 = log.read_jsonl(paths.scores)[0]
+    assert s0["seed"] == log.derive_seed(5, int(s0["dyad_id"][1:]), s0["dyad_id"], 1, s0["turn"],
+                                         f"judge:{s0['agent']}:{s0['metric']}")
+    factory = R.LlamaClient
+    def failing_judge(url, timeout=None):
+        c = factory(url, timeout)
+        if url == "http://j":
+            real = c.complete
+            c.complete = lambda prompt, **kw: (real(prompt, **kw) if kw.get("n_predict") == 1
+                                               else (_ for _ in ()).throw(ServerError("judge down")))
+        return c
+    monkeypatch.setattr(R, "LlamaClient", failing_judge)
+    capsys.readouterr()
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "main"]) == 2
+    assert "judge calls failed" in capsys.readouterr().out
+
+
+def test_judge_records_are_never_overwritten(tmp_path):
+    # Red-team M8 (c), gap audit F14: a third differing pass used to overwrite judge-<sha12>-<scope>.json.
+    paths = log.run_paths(tmp_path, "r1")
+    entry = {"model_sha256": "abcdef1234567890", "url": "http://j"}
+    names = [R.write_judge_manifest(paths, entry, scope, sub).name
+             for scope, sub in (("pilot", None), ("stance", 0.2), ("stance", 0.5), ("stance", 0.2),
+                                ("stance", 0.7))]
+    assert names == ["judge-abcdef123456.json", "judge-abcdef123456-stance.json",
+                     "judge-abcdef123456-stance-2.json", "judge-abcdef123456-stance.json",
+                     "judge-abcdef123456-stance-3.json"]
+    subs = [json.loads((paths.root / n).read_text())["subsample"] for n in sorted(set(names))]
+    assert sorted(subs, key=str) == sorted([None, 0.2, 0.5, 0.7], key=str)
+
+
+def test_setup_errors_exit_1_with_one_line_not_a_traceback(tmp_path, monkeypatch, capsys):
+    # Gap audit F16: a wrong gguf_py_path or a missing GGUF (TemplateError), a missing file (OSError), a
+    # manifest without a key (KeyError) escaped main as tracebacks.
+    from harness.templates import TemplateError
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    def no_gguf(path, gguf_py_path=None):
+        raise TemplateError(f"GGUF not found: {path}")
+    monkeypatch.setattr(R, "read_template_from_gguf", no_gguf)
+    capsys.readouterr()
+    assert R.main(["check", "--config", str(cfg)]) == 1
+    assert "FAIL setup seeker" in capsys.readouterr().out
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 1
+    assert "FAIL setup seeker" in capsys.readouterr().out
+    for cmd in ("survey", "score"):
+        assert R.main([cmd, "--config", str(cfg), "--run-id", "r1"]) == 1
+        err = capsys.readouterr().err
+        assert err.startswith("error: ") and err.count("\n") == 1 and "GGUF not found" in err
+    _fake_servers(tmp_path, monkeypatch)
+    missing = write_cfg(tmp_path, batteries=str(tmp_path / "nope.json"))
+    assert R.main(["run", "--config", str(missing), "--manifest", str(man), "--run-id", "r2"]) == 1
+    assert "nope.json" in capsys.readouterr().err
+    paths = log.run_paths(tmp_path / "data", "r1")
+    mf = json.loads(paths.manifest.read_text()); del mf["batteries"]
+    paths.manifest.write_text(json.dumps(mf))
+    assert R.main(["survey", "--config", str(write_cfg(tmp_path)), "--run-id", "r1"]) == 1
+    assert "error: missing key 'batteries'" in capsys.readouterr().err

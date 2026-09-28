@@ -61,8 +61,9 @@ The judge's provenance, written by `score`: the same fields as a role block abov
 `harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of
 a run and never rewritten, while scoring happens later and often from a different commit. A later pass
 with the same judge whose record differs in anything but `ts` (another scope, subsample or harness
-commit) writes `judge-<sha12>-<scope>.json` beside it; a further such pass with the same scope
-overwrites that second file.
+commit) writes `judge-<sha12>-<scope>.json` beside it, and a further differing pass with the same scope
+writes `judge-<sha12>-<scope>-2.json`, `-3.json` and so on: a record is never overwritten. `score` prints
+the name of the record it used.
 
 ## `dyads.jsonl` — one row per dyad attempt
 
@@ -97,7 +98,7 @@ cannot tell the two apart, which is why both are logged.
 
 `run_id`, `dyad_id`, `attempt`, `phase` (`pre` or `post`), `origin` (`run` for the pass the dialogue run
 makes, `readministered` for a later `python -m harness.run survey` pass — the two share every other key
-field),
+field; a later pass never repeats an item already re-administered without an `error`),
 `item_id`, `battery`, `scale` `{min, max}`, `batteries_sha256` (which instrument file), `model_sha256`
 and `template_sha256` (which mentor answered), `id_slot`, `turn` (a sentinel: 0 for pre, `n_turns + 1`
 for post, so the two phases derive different seeds), `temperature`, `n_predict`, `prompt_sha256`,
@@ -124,7 +125,8 @@ scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or nu
 Scope `pilot` scores every turn for both agents; scope `main` scores the seeker only, on turns
 4, 8, 12, ... plus the dyad's final turn; scope `stance` scores the mentor's `alignment` on that same
 cadence, for the two-judge subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on
-`run_seed`). Scoring is idempotent **per judge**: a row that already exists for this judge without an
+the run's `run_seed` from `manifest.json`, so a second judge's config need not repeat it; the score seeds
+use it too). Scoring is idempotent **per judge**: a row that already exists for this judge without an
 `error` is never scored again, and a second judge scores the same targets afresh. A row with `score: null` (an unparseable judge reply) counts as done; a
 row with `error` (the judge server failed) is retried on the next `score` and leaves the failed row in
 place.
