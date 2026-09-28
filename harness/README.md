@@ -31,6 +31,8 @@ python -m harness.run study  --config config.json --manifest w1-dyads.jsonl   # 
 python -m harness.randomize --subset-of w1-dyads.jsonl --per-variant 30 --control 90 \
     --out w1-n90-dyads.jsonl                                                  # descope: a subset, no redraw
 python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
+HARNESS_TEMPLATE_GGUFS=qwen3=<gguf>,gpt-oss=<gguf>,olmo=<gguf> GGUF_PY_PATH=<llama.cpp>/gguf-py \
+    python -m pytest harness/tests/test_real_templates.py   # the arms' real templates, on the box
 ```
 
 Survey replies are schema-constrained to `{"answer": <int>}`; `harness/parser.py` parses them and, when

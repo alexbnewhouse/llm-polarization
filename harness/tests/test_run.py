@@ -1259,3 +1259,90 @@ def test_run_records_the_check_rows_and_a_dated_template_passes_on_the_servers_d
     assert turns
     prompts = [c["prompt"] for c in clients["http://m"].calls if c["n_predict"] == 300]
     assert prompts and all("Current date: 2026-09-08" in p for p in prompts)
+
+
+def test_a_dyad_left_started_by_a_crash_is_rerun_as_a_new_attempt(tmp_path, monkeypatch):
+    # Gap audit F17: only a `failed` dyad's retry was tested. A kill -9 leaves 'started' and part of the rows.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    paths = log.run_paths(tmp_path / "data", "r1")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    # d0's attempt 1 crashed after its first turn row: rewrite the run's rows as the crash left them
+    status = [s for s in log.read_jsonl(paths.status) if not (s["dyad_id"] == "d0" and s["status"] == "complete")]
+    paths.status.write_text("".join(json.dumps(s) + "\n" for s in status))
+    turns = log.read_jsonl(paths.turns)
+    crashed = [t for t in turns if t["dyad_id"] == "d0"][:1]
+    paths.turns.write_text("".join(json.dumps(t) + "\n" for t in turns if t["dyad_id"] != "d0" or t in crashed))
+    assert [s["status"] for s in log.read_jsonl(paths.status) if s["dyad_id"] == "d0"] == ["started"]
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    d0 = [s for s in log.read_jsonl(paths.status) if s["dyad_id"] == "d0"]
+    assert [(s["attempt"], s["status"]) for s in d0] == [(1, "started"), (2, "started"), (2, "complete")]
+    assert [s["attempt"] for s in log.read_jsonl(paths.status) if s["dyad_id"] == "d1"] == [1, 1]
+    rows = [t for t in log.read_jsonl(paths.turns) if t["dyad_id"] == "d0"]
+    assert [t["attempt"] for t in rows].count(1) == 1 and [t["attempt"] for t in rows].count(2) == 4
+    # attempt 2 is a fresh draw: its seeds differ from attempt 1's
+    first = {(t["turn"], t["agent"]): t["seed"] for t in rows if t["attempt"] == 1}
+    assert all(t["seed"] != first[(t["turn"], t["agent"])] for t in rows
+               if t["attempt"] == 2 and (t["turn"], t["agent"]) in first)
+    from harness.scorer import latest_complete_attempts
+    assert latest_complete_attempts(log.read_jsonl(paths.status)) == {"d0": 2, "d1": 1}
+
+
+def test_a_rebuilt_survey_prompt_hashes_the_same_as_the_one_the_run_sent(tmp_path, monkeypatch):
+    # Gap audit F17: `survey` rebuilds the post-survey context from turns.jsonl; if it differed by a byte
+    # from what the run sent, a re-administered answer would not be comparable with the original.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    for phase in ("post", "pre"):
+        assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", phase]) == 0
+    rows = log.read_jsonl(log.run_paths(tmp_path / "data", "r1").surveys)
+    key = lambda s: (s["dyad_id"], s["attempt"], s["phase"], s["item_id"])
+    ran = {key(s): s for s in rows if s["origin"] == "run"}
+    again = {key(s): s for s in rows if s["origin"] == "readministered"}
+    assert set(ran) == set(again) and len(ran) == 2 * 2 * 15
+    assert all(again[k]["prompt_sha256"] == ran[k]["prompt_sha256"] and again[k]["seed"] == ran[k]["seed"]
+               for k in ran)
+
+
+def test_flags_resolves_a_judge_prefix_and_refuses_an_ambiguous_one(tmp_path, monkeypatch, capsys):
+    # Gap audit F17: `flags --judge` prefix resolution and its ambiguity error were untested.
+    cfg = _scored_run(tmp_path, monkeypatch)
+    paths = log.run_paths(tmp_path / "data", "r1")
+    w = log.JsonlWriter(paths.scores)
+    for judge in ("abc111" + "0" * 58, "abc222" + "0" * 58):
+        for turn in (1, 2):
+            w.write({"run_id": "r1", "dyad_id": "d0", "attempt": 1, "turn": turn, "agent": SEEKER,
+                     "metric": "prompt_to_line", "scope": "main", "judge_sha256": judge, "score": 0.1})
+    flags = lambda *extra: R.main(["flags", "--config", str(cfg), "--run-id", "r1", "--threshold", "0.5",
+                                   "--run-length", "2", *extra])
+    capsys.readouterr()
+    assert flags() == 1
+    assert "scores from 2 judges" in capsys.readouterr().err
+    assert flags("--judge", "abc") == 1
+    assert "matches 2 judge hashes" in capsys.readouterr().err
+    assert flags("--judge", "zzz") == 1
+    assert "matches 0 judge hashes" in capsys.readouterr().err
+    assert flags("--judge", "abc2") == 0
+    f = log.read_jsonl(paths.flags)
+    assert [r["judge_sha256"] for r in f] == ["abc222" + "0" * 58] and f[0]["flagged"] is True
+
+
+def test_agreement_with_fewer_than_two_judges_says_so_and_exits_0(tmp_path, monkeypatch, capsys):
+    cfg = _scored_run(tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert R.main(["agreement", "--config", str(cfg), "--run-id", "r1"]) == 0
+    out = capsys.readouterr().out
+    assert "0 judge(s)" in out and "fewer than two judges" in out
+    w = log.JsonlWriter(log.run_paths(tmp_path / "data", "r1").scores)
+    for turn in (1, 2):
+        w.write({"run_id": "r1", "dyad_id": "d0", "attempt": 1, "turn": turn, "agent": MENTOR,
+                 "metric": "alignment", "scope": "stance", "judge_sha256": "J1", "score": 0.4})
+    assert R.main(["agreement", "--config", str(cfg), "--run-id", "r1"]) == 0
+    out = capsys.readouterr().out
+    assert "1 judge(s)" in out and "J1 n=2 mean=0.400" in out and "fewer than two judges" in out
+    assert " vs " not in out
