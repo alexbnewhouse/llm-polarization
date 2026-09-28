@@ -61,8 +61,9 @@ def test_controls_are_outside_the_adherence_sample_and_flags_come_from_a_thresho
     assert all(d["flagged"] is None for d in L.load_run(synth["path"]).dyads)
 
 
-def test_flags_use_the_main_cadence_only(tmp_path):
-    """Pilot-scope rows (every turn) from the same judge must not feed the registered flag rule."""
+def test_flags_use_the_main_cadence_for_rows_without_a_scope(tmp_path):
+    """Rows written before scope was recorded: those off the main cadence (a pilot pass scoring every turn)
+    must not feed the registered flag rule."""
     res = make_run(tmp_path / "r5", SynthSpec(run_id="r5", n_per_role=1, n_turns=12))
     dyad = next(d for d in res["dyads"] if d["ideology"] == "strong_left")["dyad_id"]
     p = tmp_path / "r5" / "scores.jsonl"
@@ -70,6 +71,88 @@ def test_flags_use_the_main_cadence_only(tmp_path):
               "metric": "prompt_to_line", "judge_sha256": SynthSpec().judge, "score": 0.1} for t in (1, 2, 3)]
     p.write_text(p.read_text() + "".join(json.dumps(r) + "\n" for r in extra))
     assert L.load_run(res["path"], threshold=0.5).dyad(dyad)["flagged"] is False
+
+
+def test_flags_and_adherence_use_main_scope_rows_only(tmp_path):
+    """A pilot pass on the same judge scores the main cadence's turns too: its rows say so, and neither the
+    flag rule nor mean adherence reads them, although their turns are on the cadence."""
+    res = make_run(tmp_path / "r6", SynthSpec(run_id="r6", n_per_role=1, n_turns=12))
+    dyad = next(d for d in res["dyads"] if d["ideology"] == "strong_left")["dyad_id"]
+    p = tmp_path / "r6" / "scores.jsonl"
+    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    assert {(r["scope"], r["subsample"]) for r in rows} == {("main", None)}
+    before = L.load_run(res["path"], threshold=0.5).dyad(dyad)
+    extra = [{"run_id": "r6", "dyad_id": dyad, "attempt": 1, "turn": t, "agent": "seeker", "scope": "pilot",
+              "subsample": None, "metric": "prompt_to_line", "judge_sha256": SynthSpec().judge, "score": 0.1}
+             for t in range(1, 13)]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows + extra))
+    run = L.load_run(res["path"], threshold=0.5)
+    d = run.dyad(dyad)
+    assert d["flagged"] is False and d["adherence_mean"] == before["adherence_mean"] and d["adherence_n"] == 3
+    assert len(run.scores_in("pilot")) == 12 and not any("no scope" in n for n in run.notes)
+    # a flags.jsonl written by `flags --scope pilot` is not the registered rule
+    (tmp_path / "r6" / "flags.jsonl").write_text(json.dumps(
+        {"dyad_id": dyad, "attempt": 1, "metric": "prompt_to_line", "scope": "pilot",
+         "judge_sha256": SynthSpec().judge, "flagged": True, "threshold": 0.5}) + "\n")
+    assert L.load_run(res["path"]).dyad(dyad)["flagged"] is None
+
+
+def test_score_scope_falls_back_to_the_turn_cadence():
+    row = {"dyad_id": "d", "turn": 8, "agent": "seeker"}
+    assert L.score_scope(row, 12) == "main" and L.score_scope({**row, "agent": "mentor"}, 12) == "stance"
+    assert L.score_scope({**row, "turn": 7}, 12) == "pilot" and L.score_scope({**row, "turn": 7}, 7) == "main"
+    assert L.score_scope({**row, "scope": "pilot"}, 12) == "pilot"
+
+
+def test_survey_rows_of_other_settings_are_kept_apart(tmp_path):
+    res = make_run(tmp_path / "s", SynthSpec(run_id="s", n_per_role=1, n_control=2, unconstrained=3))
+    p = tmp_path / "s" / "surveys.jsonl"
+    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    free = res["truth"]["unconstrained"]["dyads"]
+    # the unconstrained check never enters the analysed rows, whichever origin is analysed
+    for origin in ("run", "readministered"):
+        run = L.load_run(res["path"], origin=origin)
+        assert all(r.get("schema", True) for r in run.surveys)
+        assert len(L.unconstrained_surveys(run)) == 3 * 15
+    assert not L.load_run(res["path"], origin="readministered").surveys
+    assert any("unconstrained" in n for n in L.load_run(res["path"], origin="readministered").notes)
+    run = L.load_run(res["path"], origin="readministered", include_unconstrained=True)
+    assert {r["dyad_id"] for r in run.surveys} == set(free) and not any(r["schema"] for r in run.surveys)
+    # a re-administration at temperature 0.7 is flagged in the exclusion log, not mixed into the greedy pass
+    warm = [{**r, "origin": "readministered", "temperature": 0.7, "answer": 1} for r in rows
+            if r["origin"] == "run" and r["dyad_id"] == free[0] and r["phase"] == "post"]
+    greedy = [{**r, "origin": "readministered"} for r in rows
+              if r["origin"] == "run" and r["phase"] == "post"]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows + greedy + warm))
+    run = L.load_run(res["path"], origin="readministered")
+    assert all(r["temperature"] == 0.0 for r in run.surveys) and len(run.surveys) == len(greedy)
+    ex = [e for e in run.exclusions if e["reason"] == "survey_settings"]
+    assert [(e["dyad_id"], e["scope"]) for e in ex] == [(free[0], "row")]
+    assert "temperature 0.7" in ex[0]["detail"] and run.dyad(free[0])["in_itt"]
+    assert "survey_settings (row)" in L.exclusions_markdown(run)
+    run = L.load_run(res["path"], origin="readministered", survey_temperature=0.7)
+    assert {r["temperature"] for r in run.surveys} == {0.7} and len(run.surveys) == len(warm)
+
+
+def test_baseline_distribution_per_arm_and_item(tmp_path):
+    from analysis.synth import make_baseline
+    a = make_baseline(tmp_path / "ba", run_id="ba", k=10, mentor="arm-a")
+    make_baseline(tmp_path / "bb", run_id="bb", k=5, mentor="arm-b", shift=1.0, seed=1)
+    b = L.load_baseline(a["path"])
+    assert b.arm == "arm-a" and b.settings["temperature"] == 0.7 and len(b.answers) == 10
+    assert b.counts["error"] == 1 and b.counts["truncated"] == 1
+    dist = b.distribution()
+    assert dist["ideo_immigration"]["n"] == 10 and sum(dist["ideo_immigration"]["counts"].values()) == 10
+    assert dist["agree_cross_partisan"]["n"] == 10        # its error row was filled in by a re-run
+    assert dist["ideo_gender_racial_equality"]["missing"] == 1        # administration 2 was cut off
+    c = dist["therm_independents"]["counts"]
+    assert dist["therm_independents"]["mode"] == max(c, key=c.get)
+    both = L.baseline_distributions([a["path"], tmp_path / "bb"])
+    assert set(both) == {"arm-a", "arm-b"} and both["arm-b"]["ideo_immigration"]["n"] == 5
+    with pytest.raises(ValueError, match="two baseline runs"):
+        L.baseline_distributions([a["path"], a["path"]])
+    with pytest.raises(ValueError, match="not a baseline run"):
+        L.load_baseline(make_run(tmp_path / "r", SynthSpec(run_id="r", n_per_role=1, n_control=2))["path"])
 
 
 def test_flags_jsonl_is_read_when_present(tmp_path):

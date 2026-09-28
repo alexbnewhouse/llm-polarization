@@ -88,7 +88,8 @@ def test_h3_turn_level_recovers_the_planted_adherence_slope(tmp_path):
     theta = h3["turn"]["pooled"]["theta"]
     assert theta["ci"][0] < 0.8 < theta["ci"][1] and theta["p"] < 0.001
     assert h3["turn_cumulative"]["pooled"]["theta"]["estimate"] > 0.5
-    assert h3["control_alignment"]["n"] > 0                           # reported apart, never modelled
+    # stance scope leaves the control's alignment unscored (harness.scorer.CONTROL_ALIGNMENT_UNSCORED)
+    assert h3["control_alignment"]["n"] == 0
     assert set(h3["trajectory"]) >= {"strong_left", "moderate", "strong_right"}
     assert sum(v["flagged"] for v in h3["adherence_drift"].values()) == 30
     assert any(s["test"].startswith("H3 theta") for s in res["secondary"])
@@ -154,3 +155,34 @@ def test_signed_stance_is_centred_and_undefined_without_a_direction():
     assert E.signed_stance(1.0, 2) == 1.0 and E.signed_stance(1.0, -1) == -1.0
     assert E.signed_stance(0.5, 2) == 0.0 and E.signed_stance(0.0, -2) == 1.0
     assert E.signed_stance(0.9, 0) is None and E.signed_stance(0.9, None) is None
+
+
+def test_stance_analyses_use_stance_scope_and_agreement_the_second_judges_subsample(tmp_path):
+    spec = SynthSpec(run_id="a", n_turns=12, stance=True, second_judge=0.3, anomalies={"low_adherence": 30})
+    res = make_run(tmp_path / "a", spec)
+    base = E.estimate(*_runs_rows(res), ["ideological"])["H3"]
+    assert base["judge"] == spec.judge                                   # the full pass, not the subsample
+    ag = base["agreement"]
+    assert ag["judges"] == [spec.judge, "JUDGE2" + "0" * 58] and ag["subsample"] == [0.3]
+    assert ag["n"] > 0 and ag["alpha"] > 0.9 and not ag["exploratory"]
+    assert "subsample_refit" in base
+    # pilot-scope rows from the same judge (every turn, both agents, controls included) with scores that
+    # would move theta: kept out of the stance model, and the control's are reported apart as pilot rows
+    p = res["path"] / "scores.jsonl"
+    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    turns = [json.loads(line) for line in (res["path"] / "turns.jsonl").read_text().splitlines()]
+    pilot = [{"run_id": "a", "dyad_id": t["dyad_id"], "attempt": t["attempt"], "turn": t["turn"],
+              "agent": t["agent"], "metric": "alignment" if t["agent"] == "mentor" else "prompt_to_line",
+              "scope": "pilot", "subsample": None, "judge_sha256": spec.judge, "score": 0.0}
+             for t in turns if not t.get("error")]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows + pilot))
+    h3 = E.estimate(*_runs_rows(res), ["ideological"])["H3"]
+    assert h3["turn"]["pooled"]["theta"] == base["turn"]["pooled"]["theta"]
+    assert h3["agreement"]["n"] == ag["n"]
+    assert h3["control_alignment"]["n"] > 0 and h3["control_alignment"]["scopes"] == ["pilot"]
+
+
+def _runs_rows(res):
+    run = load_run(res["path"], threshold=0.5)
+    inst = load_instrument(run)
+    return [run], compute_outcomes(run, inst)[0], item_changes(run, inst)

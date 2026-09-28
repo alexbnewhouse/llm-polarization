@@ -15,6 +15,9 @@ judge rows over the whole scores file. Rates:
 - refusal: mentor turns that match a refusal pattern, and dyads with at least one; AI disclaimers
   ("as an AI ...") separately, since a disclaimer is usually followed by an answer; the same patterns
   over survey `raw_text`, where a refusal is the usual cause of a null answer;
+- unconstrained check (`survey --no-schema --sample N`, rows with `schema: false`, never in the outcomes):
+  answers parsed, and answers equal to the run's own constrained answer to the same dyad, phase and item
+  (over the pairs where both exist);
 - judge: null scores (unparseable, never retried) and error rows still unresolved;
 - flagged: treated dyads the adherence flag rule flags (flags.jsonl, or --threshold), the PAP §5 flag
   rate by ideology level.
@@ -35,7 +38,8 @@ import sys
 from pathlib import Path
 from analysis import stats
 from analysis._util import md_table, pct, write_json, write_jsonl
-from analysis.load import LEVELS, CONTROL, Run, cell_of, default_out, load_run
+from analysis.load import (LEVELS, CONTROL, Run, answer_truncated, cell_of, constrained_answers, default_out,
+                           load_run, unconstrained_surveys)
 from harness.parser import METHODS as _PARSER_METHODS
 from harness.transcript import MENTOR, SEEKER
 
@@ -156,6 +160,16 @@ def run_rates(run: Run, by: str = "ideology") -> tuple[dict, list[dict]]:
                          "dyad_id": s["dyad_id"], "attempt": s.get("attempt"), "item_id": s["item_id"],
                          "pattern": n, "category": c, "match": m, "text": s.get("raw_text"),
                          "answer": s.get("answer")})
+    ref = constrained_answers(run)
+    for s in unconstrained_surveys(run):
+        if s.get("error"):
+            continue
+        d, ph = dy[s["dyad_id"]], s["phase"]
+        ans = None if answer_truncated(s) else s.get("answer")
+        add(f"unconstrained_parsed_{ph}", d, ans is not None)
+        k = (s["dyad_id"], int(s.get("attempt", 1)), ph, s["item_id"])
+        if k in ref:
+            add(f"unconstrained_agree_{ph}", d, ans is not None and ans == ref[k])
     for s in run.scores:
         d = dy.get(s["dyad_id"])
         if d is None:
@@ -187,8 +201,10 @@ def attempt_test(runs: list[Run]) -> dict:
 ORDER = ["cache_warning", "truncated", "truncated_dyads", "finish_length", f"finish_length_{SEEKER}",
          f"finish_length_{MENTOR}", "attempt_gt1_analysed", "attempt_gt1_ever", "survey_null_pre",
          "survey_null_post", "survey_salvaged_pre", "survey_salvaged_post", "refusal_turns", "refusal_dyads",
-         "disclaimer_turns", "disclaimer_dyads", "survey_refusal_pre", "survey_refusal_post", "judge_null",
-         "judge_error_unresolved", "flagged"]
+         "disclaimer_turns", "disclaimer_dyads", "survey_refusal_pre", "survey_refusal_post",
+         "unconstrained_parsed_pre", "unconstrained_parsed_post", "unconstrained_agree_pre",
+         "unconstrained_agree_post", "judge_null", "judge_error_unresolved", "flagged"]
+
 
 
 def _group_order(groups):

@@ -13,6 +13,7 @@ one mentor arm; `estimate` and `rates` take `--run-dir` once per arm.
 ```bash
 python -m analysis.load     --run-dir data/wave1-qwen                  # exclusion log, tidy dyad table
 python -m analysis.outcomes --run-dir data/wave1-qwen                  # indices and change scores
+python -m analysis.outcomes --run-dir data/wave1-qwen --baseline data/baseline-qwen   # + baseline mean, SD
 python -m analysis.estimate --run-dir data/wave1-qwen --run-dir data/wave1-oss --run-dir data/wave1-olmo
 python -m analysis.rates    --run-dir data/wave1-qwen --run-dir data/wave1-oss --by topic_ideology
 python -m analysis.calibrate sample --run-dir data/pilot-2026-09-18 --n 120
@@ -21,21 +22,43 @@ python -m analysis.verify_dialogue --run-dir data/wave1-qwen --dyad-id <id>     
 python -m analysis.synth --out /tmp/data --run-id synthetic                     # a dry-run dataset
 ```
 
-Flags come from `flags.jsonl` (written by `python -m harness.run flags`), or from `--threshold T` on
-`load`, `estimate` and `rates`, which applies `harness.scorer.flag_dialogues` to the main-cadence scores.
+Flags come from `flags.jsonl` (written by `python -m harness.run flags`; rows of another `--scope` are
+ignored), or from `--threshold T` on `load`, `estimate` and `rates`, which applies
+`harness.scorer.flag_dialogues` to the main-scope score rows.
+
+Which rows are analysed:
+
+- **Survey rows.** The pass named by `--origin` (default `run`) at the instrument's settings: the JSON
+  schema, temperature 0, 32 tokens. `--survey-temperature` and `--survey-n-predict` pick a pass made with
+  `survey --temperature/--n-predict` instead. Rows of that origin at other settings are never mixed in:
+  they are set aside and logged as `survey_settings`. The unconstrained check (`survey --no-schema
+  --sample N`, rows with `schema: false`) never enters the outcome tables; `rates` compares it with the
+  constrained answers, and `--include-unconstrained` analyses it in place of the constrained pass (only
+  the sampled dyads then have outcomes). A row with `truncated: true` or answer_method `truncated` is a
+  missing answer (`missing_survey`).
+- **Score rows.** Each row's `scope` says which `score` pass wrote it. Adherence, `judge_failure` and the
+  flag rule read `main` rows; the mentor stance analyses (H3, trajectory) read `stance` rows; the
+  judge-agreement statistic pairs the primary stance judge with the second judge's rows marked
+  `subsample`. `pilot` rows (every turn, for calibration) feed none of these; the control's raw
+  alignment, which only `pilot` scores now, is reported apart. A row without a scope (written before it
+  was recorded) is `main` for a seeker row and `stance` for a mentor row on the main cadence (turns 4, 8,
+  ... and the final turn), `pilot` otherwise.
+- **Baseline rows.** `data/<run_id>/baseline.jsonl` from `harness.run baseline` (PAP §10 option C), one
+  run directory per arm: `load.load_baseline` and `load.baseline_distributions` give the answer
+  distribution per arm and item, `outcomes.baseline_reference` the per-arm mean and SD of each index.
 
 ## Modules
 
 | Module | What it does |
 |---|---|
-| `load.py` | Reads a run directory. Keeps the latest complete attempt per dyad (`harness.scorer.latest_complete_attempts`, the harness's own rule) and drops every other attempt's rows. Applies the technical exclusions, each with a scope: `not_run`, `incomplete`, `error_rows`, `short_dialogue`, `truncated` (dyad: out of the ITT sample); `missing_survey` (one index); `judge_failure` (one turn, counted); `unscored` (out of the adherence sample). Attaches mean seeker adherence and the flag. Writes `exclusions.md/.json/.jsonl` and `dyads.csv`, with counts by reason x ideology and by cell and a chi-square test of incompleteness against ideology |
-| `outcomes.py` | Reads the instrument the run recorded (`manifest.json` `batteries.path`), checks its sha256, and falls back to the matching version in git history. Index definitions come from its `indices` block, else from the remediation plan's Shared definitions. Recodes by `direction`. Builds `ideological`, `therm_gap`, `affective_abs` and `norms`, plus `topic_item` (the dialogue's own topic item, PAP S6). Change = post - pre. `--json-only`, `--available-items` and `--impute-refusals mid/low/high` are the PAP §6 sensitivities |
-| `estimate.py` | The PAP §7 models, pooled over arms with arm fixed effects: level model (ITT per level against the bare control), slope model (H1), shape test and its classification (H2), H3 at the turn level and the dyad level, secondary tests S1-S6, per-protocol, and the §7.5 robustness checks. Holm and Benjamini-Hochberg as §8. Writes `estimates.md` and `estimates.json` |
-| `rates.py` | Every rate the REPRODUCIBILITY §6 appendix checklist asks for, by arm and by `--by` (ideology, topic, openness, topic_ideology, cell): `cache_warning`, `truncated`, `finish_reason=length`, `attempt > 1` (with a chi-square against condition), null and salvaged answers by `answer_method`, judge nulls and unresolved errors, the flag rate, and refusals. Writes `rates.md`, `rates.json`, `refusals.jsonl` |
+| `load.py` | Reads a run directory. Keeps the latest complete attempt per dyad (`harness.scorer.latest_complete_attempts`, the harness's own rule) and drops every other attempt's rows. Selects the survey pass and the score scopes (above). Applies the technical exclusions, each with a scope: `not_run`, `incomplete`, `error_rows`, `short_dialogue`, `truncated` (dyad: out of the ITT sample); `missing_survey` (one index); `survey_settings` (rows set aside, counted); `judge_failure` (one turn, counted); `unscored` (out of the adherence sample). Attaches mean seeker adherence and the flag. Writes `exclusions.md/.json/.jsonl` and `dyads.csv`, with counts by reason x ideology and by cell and a chi-square test of incompleteness against ideology. Accessors: `unconstrained_surveys`, `constrained_answers`, `load_baseline`, `baseline_distributions` |
+| `outcomes.py` | Reads the instrument the run recorded (`manifest.json` `batteries.path`), checks its sha256, and falls back to the matching version in git history. Index definitions come from its `indices` block, else from the remediation plan's Shared definitions. Recodes by `direction`. Builds `ideological`, `therm_gap`, `affective_abs` and `norms`, plus `topic_item` (the dialogue's own topic item, PAP S6). Change = post - pre. `--json-only`, `--available-items` and `--impute-refusals mid/low/high` are the PAP §6 sensitivities. `baseline_reference` (`--baseline`, once per arm) gives each index's mean and SD over the no-dialogue baseline's administrations, written to `baseline_reference.json` and `outcomes.md` |
+| `estimate.py` | The PAP §7 models, pooled over arms with arm fixed effects: level model (ITT per level against the bare control), slope model (H1), shape test and its classification (H2), H3 at the turn level (stance-scope alignment on main-scope adherence) and the dyad level, judge agreement on the second judge's subsample, secondary tests S1-S6, per-protocol, and the §7.5 robustness checks. Holm and Benjamini-Hochberg as §8. Writes `estimates.md` and `estimates.json` |
+| `rates.py` | Every rate the REPRODUCIBILITY §6 appendix checklist asks for, by arm and by `--by` (ideology, topic, openness, topic_ideology, cell): `cache_warning`, `truncated`, `finish_reason=length`, `attempt > 1` (with a chi-square against condition), null and salvaged answers by `answer_method`, the unconstrained check (answers parsed, and agreement with the constrained answer to the same item), judge nulls and unresolved errors, the flag rate, and refusals. Writes `rates.md`, `rates.json`, `refusals.jsonl` |
 | `calibrate.py` | `sample` writes a label sheet of 100-150 seeker turns stratified by ideology x turn bin, with the persona and the line and an empty `label` column (never the judge's score). `score` reads it back: Krippendorff's alpha (interval) with a bootstrap CI, quadratic-weighted kappa, and the threshold that maximises balanced accuracy for `score < threshold` |
 | `verify_dialogue.py` | REPRODUCIBILITY §4a as code. Rebuilds every prompt of a dyad from `dyads.jsonl`, `turns.jsonl` and the template source in `manifest.json`, and compares its sha256, the model hash and the derived seed with each row; with the instrument, the pre and post survey prompts too. Reports the first mismatch |
 | `stats.py` | OLS (HC1, CR1), a linear mixed model with one or two nested random intercepts by REML with Satterthwaite df, Wald F, Holm, BH, Fieller, Welch, Lee bounds, and the t/F/chi-square tails |
-| `synth.py` | A synthetic run in the harness's formats, with planted effects and planted anomalies (`truth.json`); the tests are built on it |
+| `synth.py` | A synthetic run in the harness's formats (survey rows with `schema`, `temperature`, `top_p`, `n_predict`, `finish_reason`, `predicted_n`, `truncated`; score rows with `scope` and `subsample`), with planted effects and planted anomalies (`truth.json`), optionally an unconstrained check and a second stance judge on a subsample; `make_baseline` writes a no-dialogue baseline run. The tests are built on it |
 | `power.py` | The PAP's power and MDE simulation (workstream W4; `docs/pap/README.md`) |
 
 ## Estimands
@@ -79,7 +102,8 @@ functions are used for the tails when present).
 - `verify_dialogue` renders with empty BOS/EOS strings, because the manifest archives the template
   source but not the tokens. It warns when a template prints `bos_token` or `eos_token`; pass
   `--bos/--eos` then.
-- Score rows do not record their scope, so `--threshold` flags use the main cadence (turns 4, 8, ... and
-  the final turn), which keeps pilot-scope rows from the same judge out of the registered rule.
+- A score row written before `scope` was recorded gets its scope from the turn cadence, so an old pilot
+  pass's rows on turns 4, 8, ... count as main (or stance). `load` notes how many rows had no scope.
+
 - The residual-variance-by-arm check (§7.5c) is a two-step reweighting, not a heteroscedastic REML fit.
   The ANCOVA check (§7.5d) is not built: it applies only if the PI adopts PAP §10 option B.

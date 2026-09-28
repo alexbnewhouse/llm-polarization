@@ -9,7 +9,12 @@ for every dyad, as it is in the harness at temperature 0 (gap audit F11). Anomal
 disjoint sets of treated dyads so every count is known exactly; `truth` in the returned dict (and in
 truth.json) lists them. With `hashes`, prompt_sha256 and the seeds are the real ones, rebuilt through
 harness.transcript and harness.templates exactly as the harness builds them, so analysis.verify_dialogue
-passes on the output."""
+passes on the output.
+
+Rows carry the fields the harness writes now: survey rows `schema`, `temperature`, `top_p`, `n_predict`,
+`finish_reason`, `predicted_n` and `truncated`; score rows `scope` and `subsample`. `unconstrained` adds
+the unconstrained check (`survey --no-schema --sample N`), `second_judge` a second stance judge on a
+subsample, and `make_baseline` writes a no-dialogue baseline run (`harness.run baseline`)."""
 from __future__ import annotations
 import argparse
 import json
@@ -18,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
 from harness.log import derive_seed, sha256_text
-from harness.scorer import select_targets
+from harness.scorer import CONTROL_ALIGNMENT_UNSCORED, select_targets, subsample_dyads
 from harness.templates import ChatTemplate, render
 from harness.transcript import MENTOR, SEEKER, Transcript, message_order
 
@@ -85,6 +90,8 @@ class SynthSpec:
     adherence_scales_effect: bool = False  # the persona's effect times adherence / adherence_mean
     anomalies: dict = field(default_factory=dict)
     stance: bool = False                  # also write the mentor's alignment scores (the stance scope)
+    second_judge: float | None = None     # with stance: a second judge's stance pass on this subsample
+    unconstrained: int = 0                # dyads given an unconstrained post pass (schema false)
     hashes: bool = False
     instrument: str = "indexed"
     seed: int = 0
@@ -101,7 +108,11 @@ class SynthSpec:
 
 
 ANOMALIES = ("retry", "incomplete", "not_run", "truncated", "null_answer", "salvaged", "refusal",
-             "disclaimer", "judge_error", "judge_null", "low_adherence", "cache_warning", "length")
+             "disclaimer", "judge_error", "judge_null", "low_adherence", "cache_warning", "length",
+             "survey_truncated")
+SECOND_JUDGE = "JUDGE2" + "0" * 58
+# the unconstrained check's one planted disagreement per dyad: this item's free-text answer is one higher
+UNCONSTRAINED_OFF_ITEM = "therm_independents"
 REFUSAL_TEXT = "I'm sorry, but I can't help with that request."
 DISCLAIMER_TEXT = "As an AI, I don't have personal opinions, but here are some considerations to weigh."
 
@@ -212,6 +223,7 @@ def make_run(root, spec: SynthSpec | None = None) -> dict:
             rows["status"].append({**base, "dyad_id": d["dyad_id"], "attempt": att, "status": "complete"})
 
     _scores(spec, dyads, kinds, rows, nrng, base)
+    truth["unconstrained"] = _unconstrained(spec, rows, base)
     for name, rs in rows.items():
         _jsonl(root / f"{name}.jsonl", rs)
     truth["effects"] = spec.effects
@@ -314,20 +326,53 @@ def _surveys(ctx, out, items, transcript, shift, base):
                 a, method, raw = None, "none", "I'm sorry, but I can't share a personal opinion on that."
             if phase == "post" and kind == "salvaged" and it["id"] == "agree_democracy":
                 method, raw = "bare", str(a)
+            finish, pred = "stop", 6
+            if phase == "post" and kind == "survey_truncated" and it["id"] == "agree_cross_partisan":
+                a, method, raw, finish, pred = None, "truncated", '{"answer":   ', "length", 32
             out.append({**base, "dyad_id": d["dyad_id"], "attempt": att, "phase": phase, "origin": "run",
                         "item_id": it["id"], "battery": it["battery"], "scale": it["scale"],
                         "batteries_sha256": "", "model_sha256": "MENTOR", "template_sha256": tpl.sha256,
-                        "id_slot": 0, "turn": turn, "temperature": 0.0, "n_predict": 32,
+                        "id_slot": 0, "turn": turn, "temperature": 0.0, "top_p": 0.95, "n_predict": 32,
+                        "schema": True,
                         "prompt_sha256": sha256_text(prompt) if prompt else "synthetic",
                         "prompt_chars": len(prompt) if prompt else 0,
                         "seed": derive_seed(spec.run_seed, d["seed"], d["dyad_id"], att, turn,
                                             f"survey:{phase}:{it['id']}"),
-                        "answer": a, "answer_method": method, "raw_text": raw, "prompt_n": 10})
+                        "answer": a, "answer_method": method, "raw_text": raw, "finish_reason": finish,
+                        "predicted_n": pred, "truncated": False, "prompt_n": 10})
+
+
+def _unconstrained(spec, rows, base) -> dict:
+    """The unconstrained check: for the first `spec.unconstrained` dyads with a complete post pass, the post
+    items again as origin readministered, schema false, answered in free text (method labelled) with the
+    constrained answer, except UNCONSTRAINED_OFF_ITEM, one higher (clipped to its scale)."""
+    if not spec.unconstrained:
+        return {"dyads": [], "rows": 0, "disagree": 0}
+    post: dict = {}
+    for r in rows["surveys"]:
+        if r["phase"] == "post" and r["origin"] == "run":
+            post.setdefault((r["dyad_id"], r["attempt"]), []).append(r)
+    picked = sorted(post)[:spec.unconstrained]
+    n, off = 0, 0
+    for key in picked:
+        for r in post[key]:
+            a = r["answer"]
+            if a is not None and r["item_id"] == UNCONSTRAINED_OFF_ITEM:
+                a = a + 1 if a < r["scale"]["max"] else a - 1
+                off += 1
+            rows["surveys"].append({**r, **base, "origin": "readministered", "schema": False,
+                                    "answer": a, "answer_method": None if a is None else "labelled",
+                                    "raw_text": f"I would say {a}.", "finish_reason": "stop",
+                                    "predicted_n": 5})
+            n += 1
+    return {"dyads": [k[0] for k in picked], "rows": n, "disagree": off}
 
 
 def _scores(spec, dyads, kinds, rows, rng, base):
     """Seeker adherence on the main-scope cadence (harness.scorer.select_targets), treated dyads only;
-    with `stance`, the mentor's alignment on the same cadence, every dyad (as the harness scores it)."""
+    with `stance`, the mentor's alignment on the same cadence, treated dyads only (as the harness scores
+    it: CONTROL_ALIGNMENT_UNSCORED); with `second_judge`, a second judge's stance rows on that subsample of
+    dyads, marked with it, scored as the first judge plus noise."""
     complete = {}
     for s in rows["status"]:
         if s["status"] == "complete":
@@ -335,20 +380,36 @@ def _scores(spec, dyads, kinds, rows, rng, base):
     turns = [r for r in rows["turns"] if complete.get(r["dyad_id"]) == r["attempt"]]
     by_id = {d["dyad_id"]: d for d in dyads}
     # as harness.scorer.Scorer.score_run: a control seeker has no persona, so no adherence targets
-    targets = [(r, m) for r, m in select_targets(turns, "main") if by_id[r["dyad_id"]]["ideology"] != "none"]
-    targets += select_targets(turns, "stance") if spec.stance else []
+    treated = lambda r: by_id[r["dyad_id"]]["ideology"] != "none"  # noqa: E731
+    targets = [(r, m, "main", None) for r, m in select_targets(turns, "main") if treated(r)]
+    if spec.stance:
+        stance = [(r, m) for r, m in select_targets(turns, "stance")
+                  if treated(r) or "stance" not in CONTROL_ALIGNMENT_UNSCORED]
+        targets += [(r, m, "stance", None) for r, m in stance]
+        if spec.second_judge:
+            keep = subsample_dyads({r["dyad_id"] for r, _ in stance}, spec.second_judge, spec.run_seed)
+            targets += [(r, m, "stance", spec.second_judge) for r, m in stance if r["dyad_id"] in keep]
     seeker_score = {}
     done_error, done_null = set(), set()
-    for r, metric in sorted(targets, key=lambda x: (x[0]["dyad_id"], message_order(x[0]), x[1])):
+    first_alignment = {}
+    for r, metric, scope, sub in sorted(targets, key=lambda x: (x[3] is not None, x[0]["dyad_id"],
+                                                                message_order(x[0]), x[1])):
         d = by_id[r["dyad_id"]]
         kind = kinds.get(d["dyad_id"])
         row = {**base, "dyad_id": r["dyad_id"], "attempt": r["attempt"], "turn": r["turn"],
-               "agent": r["agent"],
-               "metric": metric, "judge_sha256": spec.judge, "id_slot": 0, "harness_commit": "synthetic",
+               "agent": r["agent"], "metric": metric, "scope": scope, "subsample": sub,
+               "judge_sha256": spec.judge if sub is None else SECOND_JUDGE, "id_slot": 0,
+               "harness_commit": "synthetic",
                "seed": 0, "judge_prompt_sha256": "synthetic", "prompt_chars": 0, "rationale": "r"}
+        if sub is not None:
+            score = float(np.clip(first_alignment[(r["dyad_id"], r["turn"])] + rng.normal(0, 0.02), 0, 1))
+            rows["scores"].append({**row, "score": score, "raw_text": json.dumps({"score": score})})
+            continue
         if metric == "alignment":
             a = seeker_score.get((r["dyad_id"], r["turn"]), d["adherence"])
             score = float(np.clip(0.5 + 0.4 * (a - 0.5) + rng.normal(0, 0.05), 0, 1))
+            first_alignment[(r["dyad_id"], r["turn"])] = score
+
         else:
             mean = 0.5 if d["ideology"] == "none" else d["adherence"]
             score = float(np.clip(mean + rng.normal(0, 0.03), 0, 1))
@@ -363,6 +424,69 @@ def _scores(spec, dyads, kinds, rows, rng, base):
             rows["scores"].append({**row, "score": None, "raw_text": "not json"})
             continue
         rows["scores"].append({**row, "score": score, "raw_text": json.dumps({"score": score})})
+
+
+def make_baseline(root, run_id: str = "baseline", k: int = 40, mentor: str = "synthetic-mentor",
+                  shift: float = 0.0, noise_sd: float = 0.6, seed: int = 0, run_seed: int = 7,
+                  temperature: float = 0.7, instrument_kind: str = "indexed") -> dict:
+    """Write a no-dialogue baseline run into `root` as `harness.run baseline` does: manifest.json of kind
+    baseline and baseline.jsonl, the pre battery administered `k` times (origin baseline, one row per
+    administration and item). Ideological items are drawn right-coded around 3 + shift and stored in the
+    item's own direction. Planted: administration 1's last item has an error row and then a good one (a
+    re-run filling it in), and administration 2's first ideological item was cut off (method truncated).
+    `truth["ideological"]` is the right-coded ideological mean of every administration with all seven
+    items, computed here from the draws, not by analysis.outcomes."""
+    rng = np.random.default_rng(seed)
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    inst = instrument(instrument_kind)
+    inst_text = json.dumps(inst, indent=1)
+    (root / "instrument.json").write_text(inst_text, encoding="utf-8")
+    items = inst["items"]
+    block = {"phase": "pre", "k": k, "temperature": temperature, "top_p": 0.95, "n_predict": 32,
+             "schema": True}
+    manifest = {"run_id": run_id, "kind": "baseline", "started_at": "2026-09-28T00:00:00+0000",
+                "harness_commit": "synthetic", "harness_dirty": False, "harness_diff_sha256": None,
+                "config": {"run_seed": run_seed, "now": "2026-09-08",
+                           "batteries": str(root / "instrument.json")},
+                "batteries": {"path": str(root / "instrument.json"), "sha256": sha256_text(inst_text),
+                              "n_items": len(items), "item_ids": [it["id"] for it in items]},
+                "baseline": block, "mentor": {"alias": mentor, "model_sha256": "MENTOR", "family": "qwen"}}
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    base = {"run_id": run_id, "ts": "2026-09-28T00:00:00+0000", "phase": "pre", "origin": "baseline",
+            "batteries_sha256": sha256_text(inst_text), "model_sha256": "MENTOR", "template_sha256": "T",
+            "id_slot": 0, "turn": 0, "attempt": 1, **{k2: block[k2] for k2 in ("temperature", "top_p",
+                                                                                "n_predict", "schema")}}
+    rows, ideological = [], {}
+    first_ideo = next(it["id"] for it in items if it["battery"] == "ideological")
+    for i in range(1, k + 1):
+        right, complete = [], True
+        for it in items:
+            lo, hi = it["scale"]["min"], it["scale"]["max"]
+            if it["battery"] == "ideological":
+                v = float(np.clip(round(3 + shift + rng.normal(0, noise_sd)), lo, hi))
+                right.append(v)
+                ans = int(lo + hi - v) if dict(_IDEO)[it["id"]] == "left" else int(v)
+            else:
+                ans = int(np.clip(round((lo + hi) / 2 + rng.normal(0, noise_sd)), lo, hi))
+            row = {**base, "dyad_id": f"baseline-{i:04d}", "administration": i, "item_id": it["id"],
+                   "battery": it["battery"], "scale": it["scale"],
+                   "seed": derive_seed(run_seed, i, f"baseline-{i:04d}", 1, 0, f"survey:pre:{it['id']}"),
+                   "answer": ans, "answer_method": "json", "raw_text": json.dumps({"answer": ans}),
+                   "finish_reason": "stop", "predicted_n": 6, "truncated": False, "prompt_n": 10}
+            if i == 1 and it is items[-1]:
+                rows.append({**row, "answer": None, "answer_method": None, "raw_text": "",
+                             "finish_reason": "error", "predicted_n": None, "truncated": None,
+                             "error": "synthetic failure"})
+            if i == 2 and it["id"] == first_ideo:
+                row.update({"answer": None, "answer_method": "truncated", "raw_text": '{"answer":  ',
+                            "finish_reason": "length", "predicted_n": 32})
+                complete = False                  # administration 2 has no complete ideological index
+            rows.append(row)
+        if complete:
+            ideological[i] = sum(right) / len(right)
+    _jsonl(root / "baseline.jsonl", rows)
+    return {"path": root, "truth": {"ideological": ideological, "k": k, "rows": len(rows)}}
 
 
 def _jsonl(path, rows):

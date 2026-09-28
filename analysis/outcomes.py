@@ -1,7 +1,7 @@
 """Per-dyad pre and post answers, recoded, the four indices and their change scores.
 
     python -m analysis.outcomes --run-dir data/<run_id> [--batteries PATH] [--json-only] [--available-items]
-        [--impute-refusals mid|low|high] [--out DIR]
+        [--impute-refusals mid|low|high] [--baseline data/<baseline_run_id> ...] [--out DIR]
 
 The instrument is the file the run recorded in manifest.json (`batteries.path`), checked against the
 recorded `batteries.sha256`. When the file on disk no longer hashes to it, the matching version is
@@ -20,13 +20,18 @@ from 1.0.0), otherwise from the remediation plan's Shared definitions:
 
 affective_abs changes as |post gap| - |pre gap| (PAP 3.4).
 
-An index with any of its items missing (null answer, error, absent row) is missing for that dyad, which
+An index with any of its items missing (null answer, error, a reply cut off, absent row) is missing for
+that dyad, which
 is logged as `missing_survey` for that index only; the dyad stays in the other indices. `--json-only`
 also treats answers salvaged from free text (`answer_method` other than json) as missing, the
 sensitivity check REPRODUCIBILITY.md asks for. The PAP §6 sensitivities: `--available-items` (a mean
 index from the items present when 5 of 7 ideological or 2 of 3 norms items are there) and
 `--impute-refusals` (a null answer whose reply reads as a refusal, analysis.rates, put at the midpoint or
-at either recoded end, for bounds)."""
+at either recoded end, for bounds).
+
+`baseline_reference` reads the no-dialogue baseline (`harness.run baseline`, PAP §10 option C): per arm,
+the mean and SD of every index over the K administrations, the scale for how large a movement is.
+`--baseline` (once per arm) writes it to baseline_reference.json and adds it to outcomes.md."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -35,8 +40,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from analysis._util import fmt, md_table, write_csv
-from analysis.load import LEVELS, CONTROL, Run, add_common_args, default_out, load_from_args
+import numpy as np
+from analysis._util import fmt, md_table, write_csv, write_json
+from analysis.load import (LEVELS, CONTROL, Baseline, Run, add_common_args, answer_truncated, default_out,
+                           load_baseline, load_from_args)
 from analysis.rates import is_refusal
 from harness.log import sha256_file, sha256_text
 
@@ -96,8 +103,10 @@ def _from_git(path: str, sha: str) -> tuple[str, str] | None:
     return None
 
 
-def load_instrument(run: Run, override: str | None = None, allow_mismatch: bool = False) -> Instrument:
-    """The instrument `run` recorded, verified by sha256 (see the module docstring)."""
+def load_instrument(run: Run | Baseline, override: str | None = None,
+                    allow_mismatch: bool = False) -> Instrument:
+    """The instrument `run` (a run or a baseline run) recorded, verified by sha256 (see the module
+    docstring)."""
     rec = run.manifest.get("batteries") or {}
     want = rec.get("sha256")
     warnings = []
@@ -201,8 +210,8 @@ def answers_by_dyad(run: Run, json_only: bool = False) -> tuple[dict, dict, set]
     None."""
     out: dict = {}
     refused: set = set()
-    counts = {"rows": 0, "error": 0, "null": 0, "refused": 0, "salvaged": 0, "salvaged_dropped": 0,
-              "duplicates": 0}
+    counts = {"rows": 0, "error": 0, "null": 0, "truncated": 0, "refused": 0, "salvaged": 0,
+              "salvaged_dropped": 0, "duplicates": 0}
     for r in run.surveys:
         counts["rows"] += 1
         slot = out.setdefault((r["dyad_id"], r["phase"]), {})
@@ -212,7 +221,10 @@ def answers_by_dyad(run: Run, json_only: bool = False) -> tuple[dict, dict, set]
             continue
         val = r.get("answer")
         method = r.get("answer_method")
-        if val is None:
+        if answer_truncated(r):                        # cut off: missing, and not read as a refusal
+            counts["truncated"] += 1
+            val = None
+        elif val is None:
             counts["null"] += 1
             if is_refusal(r.get("raw_text")):
                 counts["refused"] += 1
@@ -341,11 +353,74 @@ def item_changes(run: Run, inst: Instrument, index: str = "ideological",
     return out
 
 
+def _baseline_values(inst: Instrument, answers: dict) -> dict[str, list[float]]:
+    """{index: values over the administrations}; topic_item once per topic as `topic_item:<topic>`."""
+    order = [n for n in INDICES if n in inst.indices] + [n for n in inst.indices if n not in INDICES]
+    vals: dict[str, list[float]] = {}
+    for ans in answers.values():
+        cache: dict = {}
+        for name in order:
+            if inst.indices[name]["kind"] == "topic":
+                for topic in inst.indices[name]["items"]:
+                    v = index_value(inst, name, ans, topic, cache)
+                    vals.setdefault(f"{name}:{topic}", [])
+                    if v is not None:
+                        vals[f"{name}:{topic}"].append(v)
+                continue
+            cache[name] = index_value(inst, name, ans, None, cache)
+            vals.setdefault(name, [])
+            if cache[name] is not None:
+                vals[name].append(cache[name])
+    return vals
+
+
+def baseline_reference(baselines, inst: Instrument | None = None) -> dict[str, dict]:
+    """PAP §10 option C: {arm: {index: {n, missing, mean, sd}}} from each arm's no-dialogue baseline, the
+    pre battery administered K times (analysis.load.load_baseline). `baselines` is a list of Baseline or
+    of baseline run directories, one per arm. An administration with an item an index needs missing
+    leaves that index out (counted in `missing`). SD is the sample SD (ddof 1). The instrument is each
+    baseline's own recorded one unless `inst` is given; `settings` repeats the run's temperature, top_p,
+    n_predict and schema, since the reference means little without them."""
+    out: dict[str, dict] = {}
+    for b in baselines:
+        b = b if isinstance(b, Baseline) else load_baseline(b)
+        if b.arm in out:
+            raise ValueError(f"two baseline runs for arm {b.arm!r}")
+        ins = inst or load_instrument(b)
+        k = len(b.answers)
+        ref = {}
+        for name, v in _baseline_values(ins, b.answers).items():
+            ref[name] = {"n": len(v), "missing": k - len(v),
+                         "mean": float(np.mean(v)) if v else None,
+                         "sd": float(np.std(v, ddof=1)) if len(v) > 1 else None}
+        out[b.arm] = {"run_id": b.run_id, "administrations": k, "settings": b.settings, "counts": b.counts,
+                      "indices": ref}
+    return out
+
+
+def baseline_markdown(ref: dict) -> str:
+    """The baseline reference as a table: mean (SD) of each index per arm."""
+    arms = list(ref)
+    names = list(dict.fromkeys(n for a in arms for n in ref[a]["indices"]))
+    rows = []
+    for n in names:
+        cells = []
+        for a in arms:
+            e = ref[a]["indices"].get(n) or {}
+            cells.append("" if e.get("mean") is None else f"{fmt(e['mean'])} ({fmt(e['sd'])}, n={e['n']})")
+        rows.append([n] + cells)
+    head = [f"{a} ({ref[a]['run_id']}; K={ref[a]['administrations']}, temperature "
+            f"{ref[a]['settings'].get('temperature')})" for a in arms]
+    return "\n".join(["## No-dialogue baseline: mean (SD) per arm", "",
+                      md_table(["index"] + head, rows)]) + "\n"
+
+
 def summary_markdown(run: Run, inst: Instrument, rows: list[dict], counts: dict) -> str:
     """Mean change by topic and ideology level for each index, ITT sample."""
     out = [f"# Outcomes: {run.run_id} ({run.arm})", "",
            f"Instrument {inst.source} (sha256 {inst.sha256[:12]}). Survey rows {counts['rows']}: "
-           f"{counts['null']} null, {counts['error']} error, {counts['salvaged']} salvaged"
+           f"{counts['null']} null, {counts['truncated']} cut off, {counts['error']} error, "
+           f"{counts['salvaged']} salvaged"
            + (" (dropped: --json-only)" if counts["salvaged_dropped"] else "") + ".", ""]
     out += [f"- {w}" for w in inst.warnings]
     levels = list(LEVELS) + [CONTROL]
@@ -374,6 +449,8 @@ def add_instrument_args(p: argparse.ArgumentParser) -> None:
                         "norms)")
     p.add_argument("--impute-refusals", choices=("mid", "low", "high"), default=None,
                    help="sensitivity: refused items at the scale midpoint or at either recoded end")
+    p.add_argument("--baseline", action="append", default=[],
+                   help="a no-dialogue baseline run directory (harness.run baseline); repeat per arm")
 
 
 def outcomes_from_args(a, run: Run) -> tuple[Instrument, list[dict], dict]:
@@ -396,10 +473,21 @@ def main(argv=None) -> int:
     out = Path(a.out) if a.out else default_out(a.run_dir)
     write_csv(out / "outcomes.csv", rows)
     md = summary_markdown(run, inst, rows, counts)
+    wrote = "outcomes.csv, outcomes.md"
+    if a.baseline:
+        try:
+            ref = baseline_reference(a.baseline)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        write_json(out / "baseline_reference.json", ref)
+        md += "\n" + baseline_markdown(ref)
+        wrote += ", baseline_reference.json"
     (out / "outcomes.md").write_text(md, encoding="utf-8")
     print(md)
-    print(f"wrote {out}/outcomes.csv, outcomes.md")
+    print(f"wrote {out}/{wrote}")
     return 0
+
 
 
 if __name__ == "__main__":

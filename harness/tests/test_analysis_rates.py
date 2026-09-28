@@ -27,7 +27,8 @@ def test_planted_anomalies_are_counted_exactly(synth):
     assert k("finish_length") == N and k("finish_length_mentor") == N and k("finish_length_seeker") == 0
     assert k("attempt_gt1_analysed") == N and k("attempt_gt1_ever") == N
     assert r["attempt_gt1_ever"]["all"][1] == n_analysed + N       # incomplete dyads have status rows
-    assert k("survey_null_post") == N and k("survey_null_pre") == 0
+    # the planted null answers and the planted replies the n_predict cap cut off
+    assert k("survey_null_post") == 2 * N and k("survey_null_pre") == 0 and k("method_truncated_post") == N
     assert k("survey_salvaged_post") == N and k("method_bare_post") == N and k("method_none_post") == N
     assert k("refusal_turns") == N and k("refusal_dyads") == N and r["refusal_dyads"]["all"][1] == n_analysed
     assert k("disclaimer_turns") == N and k("disclaimer_dyads") == N
@@ -53,6 +54,19 @@ def test_breakdowns_and_the_attempt_test(synth):
     assert any(g.startswith("decarbonization/") for g in r["refusal_turns"])
     t = R.attempt_test([run])[run.run_id]
     assert t["ideology"]["df"] >= 1 and sum(t["ideology"]["retried"]) == N and 0 <= t["ideology"]["p"] <= 1
+
+
+def test_unconstrained_check_is_compared_with_the_constrained_answers(tmp_path):
+    res = make_run(tmp_path / "u", SynthSpec(run_id="u", n_per_role=1, n_control=2, unconstrained=4))
+    run = load_run(res["path"])
+    assert all(s.get("schema", True) for s in run.surveys)                # never in the outcome rows
+    r, _ = R.run_rates(run, "ideology")
+    n = res["truth"]["unconstrained"]["rows"]
+    assert n == 4 * 15 and res["truth"]["unconstrained"]["disagree"] == 4
+    assert r["unconstrained_parsed_post"]["all"] == [n, n]
+    assert r["unconstrained_agree_post"]["all"] == [n - 4, n]
+    assert "unconstrained_parsed_pre" not in r
+    assert "unconstrained_agree_post" in R.markdown({"u": r}, {}, "overall")
 
 
 @pytest.mark.parametrize("text,expect", [

@@ -15,14 +15,31 @@ only; adherence never excludes a dyad. Each has a scope:
 | error_rows | dyad | the analysed attempt has a turn or in-run survey row with an error |
 | short_dialogue | dyad | the analysed attempt has fewer than n_turns turns (2 * n_turns message rows) |
 | truncated | dyad | a message row has `truncated: true` (the slot ran out of context) |
-| missing_survey | index | a pre or post answer an index needs is null or absent (analysis.outcomes) |
-| judge_failure | turn | a target of the chosen judge has only `error` rows: the turn is unscored, counted |
+| missing_survey | index | a pre or post answer an index needs is null, cut off or absent (outcomes.py) |
+| survey_settings | row | survey rows at another temperature or n_predict than the analysed pass: set aside |
+| judge_failure | turn | a main-scope target of the chosen judge has only `error` rows: unscored, counted |
 | unscored | adherence | a treated dyad with no adherence score at all while the run has been scored |
 
 The dyad-scope reasons are "technical incompleteness" (PAP §6), handled as missing data and tested
 against ideology level (`incompleteness_test`). `finish_reason: "length"` (the n_predict cap),
 `cache_warning`, `attempt > 1` and refusals are reported (analysis.rates), not excluded. The bare control
 is never in the adherence sample: adherence is undefined without a persona (F10).
+
+Survey rows. The analysed pass is `origin` (default `run`) at the instrument's settings: the JSON schema,
+temperature 0 and 32 tokens (`survey_key`; `--survey-temperature` and `--survey-n-predict` pick a pass
+made with `survey --temperature/--n-predict`). Rows of that origin at other settings are not mixed in:
+they are set aside and logged as `survey_settings`. The unconstrained check's rows (`schema: false`,
+`survey --no-schema --sample N`) never enter the outcome tables; `unconstrained_surveys` returns them for
+the agreement rate in analysis.rates, and `--include-unconstrained` analyses them in place of the
+constrained pass. A row with `truncated: true` or answer_method `truncated` is a missing answer.
+
+Score rows. Each row's `scope` says which `score` pass wrote it (pilot, main, stance); rows written before
+scope was recorded get one from the turn cadence (`score_scope`). Adherence, `judge_failure` and the flag
+rule use main-scope rows only; analysis.estimate's stance analyses use stance-scope rows, and a row's
+`subsample` marks the second judge's pass for the agreement statistic.
+
+The no-dialogue baseline (`harness.run baseline`) is its own run directory per arm, read by
+`load_baseline` and `baseline_distributions`.
 """
 from __future__ import annotations
 import argparse
@@ -34,6 +51,7 @@ from analysis import stats
 from analysis._util import md_table, write_csv, write_json, write_jsonl
 from harness.log import read_jsonl
 from harness.scorer import ADHERENCE_METRICS, MAIN_CADENCE, flag_dialogues, latest_complete_attempts
+from harness.survey import SURVEY_N_PREDICT, SURVEY_TEMPERATURE, TRUNCATED
 from harness.transcript import SEEKER
 
 LEVELS = ("strong_left", "lean_left", "moderate", "lean_right", "strong_right")
@@ -42,9 +60,34 @@ CONTROL = "none"
 # treated indicator T = 0; moderate is dose 0 with T = 1, so moderate is not the control.
 DOSE = {"strong_left": -2, "lean_left": -1, "moderate": 0, "lean_right": 1, "strong_right": 2, CONTROL: 0}
 DYAD_REASONS = ("not_run", "incomplete", "error_rows", "short_dialogue", "truncated")
-REASONS = DYAD_REASONS + ("missing_survey", "judge_failure", "unscored")
-SCOPE = {**{r: "dyad" for r in DYAD_REASONS}, "missing_survey": "index", "judge_failure": "turn",
-         "unscored": "adherence"}
+REASONS = DYAD_REASONS + ("missing_survey", "survey_settings", "judge_failure", "unscored")
+SCOPE = {**{r: "dyad" for r in DYAD_REASONS}, "missing_survey": "index", "survey_settings": "row",
+         "judge_failure": "turn", "unscored": "adherence"}
+
+
+def survey_key(row: dict) -> tuple:
+    """How a survey row was sampled: (schema, temperature, n_predict), as harness.run reads it. Rows written
+    before these fields existed were schema-constrained, greedy and 32 tokens."""
+    return (row.get("schema", True) is not False, float(row.get("temperature", SURVEY_TEMPERATURE)),
+            int(row.get("n_predict", SURVEY_N_PREDICT)))
+
+
+def answer_truncated(row: dict) -> bool:
+    """A survey row whose answer is missing because the reply was cut off: `truncated` (the context ran
+    out) or answer_method `truncated` (the n_predict cap cut it before it parsed)."""
+    return row.get("truncated") is True or row.get("answer_method") == TRUNCATED
+
+
+def score_scope(row: dict, final_turn: int | None = None) -> str:
+    """The `score` pass that wrote a score row: its `scope` field, else (a row written before scope was
+    recorded) main for a seeker row and stance for a mentor row on the main cadence (turns 4, 8, ... and
+    the dyad's final turn), pilot otherwise."""
+    if row.get("scope"):
+        return row["scope"]
+    t = row.get("turn")
+    if t is not None and (t % MAIN_CADENCE == 0 or t == final_turn):
+        return "main" if row.get("agent") == SEEKER else "stance"
+    return "pilot"
 
 
 @dataclass
@@ -65,12 +108,22 @@ class Run:
     judge: str | None = None
     metric: str = "prompt_to_line"
     notes: list[str] = field(default_factory=list)
+    survey_key: tuple = (True, SURVEY_TEMPERATURE, SURVEY_N_PREDICT)
 
     def __post_init__(self):
         self._by_id = {d["dyad_id"]: d for d in self.dyads}
+        self._final = {d["dyad_id"]: d.get("n_turns") for d in self.dyads}
 
     def dyad(self, dyad_id: str) -> dict:
         return self._by_id[dyad_id]
+
+    def scope_of(self, score_row: dict) -> str:
+        """score_scope for one of this run's score rows."""
+        return score_scope(score_row, self._final.get(score_row["dyad_id"]))
+
+    def scores_in(self, scope: str) -> list[dict]:
+        """The analysed attempts' score rows of one scope (pilot, main or stance)."""
+        return [s for s in self.scores if self.scope_of(s) == scope]
 
     def exclude(self, dyad: dict, reason: str, detail: str = "", index: str | None = None) -> None:
         """Record one exclusion. A dyad-scope reason takes the dyad out of the ITT sample; `unscored` takes
@@ -127,10 +180,14 @@ def pick_judge(scores: list[dict], metric: str, prefix: str | None) -> str | Non
 
 
 def load_run(run_dir, judge: str | None = None, metric: str = "prompt_to_line", origin: str = "run",
-             threshold: float | None = None, run_length: int = 3) -> Run:
+             threshold: float | None = None, run_length: int = 3, include_unconstrained: bool = False,
+             survey_temperature: float = SURVEY_TEMPERATURE, survey_n_predict: int = SURVEY_N_PREDICT) -> Run:
     """Load a run directory and apply the exclusions. `origin` picks the in-run survey pass (`run`) or a
-    later re-administration (`readministered`). `metric` and `judge` choose the adherence scores; flags
-    come from flags.jsonl, or are computed with `threshold` when given (harness.scorer.flag_dialogues)."""
+    later re-administration (`readministered`), and `survey_temperature` and `survey_n_predict` the pass's
+    settings; `include_unconstrained` analyses the unconstrained check's rows (schema false) instead of
+    the constrained ones (see the module docstring). `metric` and `judge` choose the adherence scores;
+    flags come from flags.jsonl, or are computed with `threshold` when given (harness.scorer.flag_dialogues),
+    on main-scope rows."""
     root = Path(run_dir)
     if not (root / "manifest.json").exists():
         raise FileNotFoundError(f"{root}/manifest.json not found: not a run directory")
@@ -160,14 +217,35 @@ def load_run(run_dir, judge: str | None = None, metric: str = "prompt_to_line", 
                "in_itt": True, "in_adherence": None, "excluded": []}
         rec["cell"] = cell_of(rec)
         dyads.append(rec)
-    run = Run(root, run_id, manifest, arm_label(manifest), dyads, [], [], [], raw, metric=metric)
+    want = (not include_unconstrained, float(survey_temperature), int(survey_n_predict))
+    run = Run(root, run_id, manifest, arm_label(manifest), dyads, [], [], [], raw, metric=metric,
+              survey_key=want)
 
     keep = {(d["dyad_id"], d["attempt"]) for d in dyads if d["attempt"]}
     key = lambda r: (r["dyad_id"], int(r.get("attempt", 1)))  # noqa: E731
     run.turns = sorted((r for r in raw["turns"] if key(r) in keep),
                        key=lambda r: (r["dyad_id"], r["turn"], 0 if r["agent"] == SEEKER else 1))
-    run.surveys = [r for r in raw["surveys"] if key(r) in keep and r.get("origin", "run") == origin]
+    passed = [r for r in raw["surveys"] if key(r) in keep and r.get("origin", "run") == origin]
+    run.surveys = [r for r in passed if survey_key(r) == want]
+    # Rows of the other schema setting are the unconstrained check (or, with include_unconstrained, the
+    # constrained pass): never mixed into the outcomes, noted. Rows of the same schema setting at another
+    # temperature or n_predict are another measurement: set aside and logged per dyad (survey_settings).
+    other_schema = sum(1 for r in passed if survey_key(r)[0] != want[0])
+    if other_schema:
+        what = "constrained" if include_unconstrained else "unconstrained (schema false)"
+        run.notes.append(f"{other_schema} {what} {origin} survey rows kept out of the outcomes"
+                         + ("" if include_unconstrained else "; analysis.rates compares them"))
+    off: dict[str, dict[tuple, int]] = {}
+    for r in passed:
+        k = survey_key(r)
+        if k[0] == want[0] and k != want:
+            off.setdefault(r["dyad_id"], {})
+            off[r["dyad_id"]][k[1:]] = off[r["dyad_id"]].get(k[1:], 0) + 1
     run.scores = [r for r in raw["scores"] if key(r) in keep]
+    unscoped = sum(1 for r in run.scores if not r.get("scope"))
+    if unscoped:
+        run.notes.append(f"{unscoped} score rows carry no scope (written before it was recorded); their "
+                         "scope is inferred from the turn cadence")
     turns_by: dict[str, list] = {}
     for r in run.turns:
         turns_by.setdefault(r["dyad_id"], []).append(r)
@@ -192,6 +270,9 @@ def load_run(run_dir, judge: str | None = None, metric: str = "prompt_to_line", 
         trunc = [r for r in rows if r.get("truncated") is True]
         if trunc:
             run.exclude(d, "truncated", f"turn {trunc[0]['turn']} {trunc[0]['agent']} ran out of context")
+        for (temp, n_pred), n in sorted(off.get(d["dyad_id"], {}).items()):
+            run.exclude(d, "survey_settings", f"{n} {origin} survey rows at temperature {temp}, n_predict "
+                        f"{n_pred} set aside (analysed: temperature {want[1]}, n_predict {want[2]})")
 
     _adherence(run, judge, metric)
     _flags(run, threshold, run_length)
@@ -199,14 +280,15 @@ def load_run(run_dir, judge: str | None = None, metric: str = "prompt_to_line", 
 
 
 def _adherence(run: Run, judge_prefix: str | None, metric: str) -> None:
-    """Attach mean seeker adherence (the chosen judge, `metric`) to each treated ITT dyad and count judge
-    failures. Controls get none: the bare control has no persona to adhere to."""
-    run.judge = pick_judge(run.scores, metric, judge_prefix)
+    """Attach mean seeker adherence (the chosen judge, `metric`, main-scope rows) to each treated ITT dyad
+    and count judge failures. Controls get none: the bare control has no persona to adhere to."""
+    main = run.scores_in("main")
+    run.judge = pick_judge(main, metric, judge_prefix)
     if run.judge is None:
         if run.scores:
-            run.notes.append(f"no scores for {metric}; adherence analyses skipped")
+            run.notes.append(f"no main-scope scores for {metric}; adherence analyses skipped")
         return
-    mine = [s for s in run.scores if s.get("judge_sha256") == run.judge]
+    mine = [s for s in main if s.get("judge_sha256") == run.judge]
     targets: dict[tuple, list[dict]] = {}
     for s in mine:
         targets.setdefault((s["dyad_id"], s["turn"], s["agent"], s["metric"]), []).append(s)
@@ -244,10 +326,10 @@ def _flags(run: Run, threshold: float | None, run_length: int) -> None:
     if threshold is not None:
         if run.judge is None:
             return
-        # The registered rule runs on main-scope targets only (PAP §5, red-team M9). Score rows do not say
-        # which scope wrote them, so keep the main cadence: turns 4, 8, ... and the dyad's final turn.
-        final = {d["dyad_id"]: d.get("n_turns") for d in run.dyads}
-        main = [s for s in run.scores if s["turn"] % MAIN_CADENCE == 0 or s["turn"] == final.get(s["dyad_id"])]
+        # The registered rule runs on main-scope rows only (PAP §5, red-team M9): a pilot pass scores every
+        # turn, and "3 consecutive scored turns" would mean something else for the dyads it covered. A row
+        # without a scope counts as main when it is on the main cadence (score_scope).
+        main = run.scores_in("main")
         for (dyad_id, attempt), f in flag_dialogues(main, threshold, metric=run.metric,
                                                     run_length=run_length, judge_sha256=run.judge).items():
             flags[dyad_id] = {**f, "attempt": attempt}
@@ -255,7 +337,9 @@ def _flags(run: Run, threshold: float | None, run_length: int) -> None:
                          "turns")
     else:
         rows = [f for f in run.raw["flags"] if f.get("metric", run.metric) == run.metric
+                and f.get("scope", "main") == "main"
                 and (run.judge is None or f.get("judge_sha256") in (None, run.judge))]
+
         for f in rows:
             flags[f["dyad_id"]] = f
         if rows:
@@ -336,6 +420,103 @@ def exclusions_markdown(run: Run) -> str:
     return "\n".join(out) + "\n"
 
 
+def unconstrained_surveys(run: Run, phase: str | None = None) -> list[dict]:
+    """The unconstrained check's survey rows (`schema: false`, from `survey --no-schema --sample N`) of the
+    analysed attempts, any origin and settings, error rows included. They never enter `run.surveys`
+    unless the run was loaded with include_unconstrained; this is how analysis.rates compares them."""
+    keep = {(d["dyad_id"], d["attempt"]) for d in run.dyads if d["attempt"]}
+    return [r for r in run.raw["surveys"] if (r["dyad_id"], int(r.get("attempt", 1))) in keep
+            and r.get("schema", True) is False and (phase is None or r.get("phase") == phase)]
+
+
+def constrained_answers(run: Run) -> dict:
+    """{(dyad_id, attempt, phase, item_id): answer} of the run's own constrained pass (origin run, the
+    schema, the instrument's settings), the reference the unconstrained check is compared with. The last
+    non-error row wins."""
+    keep = {(d["dyad_id"], d["attempt"]) for d in run.dyads if d["attempt"]}
+    out = {}
+    for r in run.raw["surveys"]:
+        k = (r["dyad_id"], int(r.get("attempt", 1)))
+        if (k in keep and r.get("origin", "run") == "run" and not r.get("error")
+                and survey_key(r) == (True, SURVEY_TEMPERATURE, SURVEY_N_PREDICT)):
+            out[k + (r["phase"], r["item_id"])] = None if answer_truncated(r) else r.get("answer")
+    return out
+
+
+@dataclass
+class Baseline:
+    """One arm's no-dialogue baseline run (`harness.run baseline`): the pre battery administered K times to
+    the mentor in an empty context. `answers` maps each administration to {item_id: answer or None}; an
+    item with only error rows, or a reply cut off (answer_truncated), is None. `settings` is manifest.json's
+    `baseline` block (phase, k, temperature, top_p, n_predict, schema)."""
+    root: Path
+    run_id: str
+    manifest: dict
+    arm: str
+    settings: dict
+    answers: dict[int, dict]
+    counts: dict
+
+    def distribution(self) -> dict[str, dict]:
+        """{item_id: {"n": answered, "missing": administrations without an answer, "counts": {answer: n},
+        "mode": the most frequent answer}} over the administrations."""
+        items: dict[str, dict] = {}
+        for ans in self.answers.values():
+            for item, v in ans.items():
+                e = items.setdefault(item, {"n": 0, "missing": 0, "counts": {}})
+                if v is None:
+                    e["missing"] += 1
+                else:
+                    e["n"] += 1
+                    e["counts"][v] = e["counts"].get(v, 0) + 1
+        for e in items.values():
+            e["counts"] = dict(sorted(e["counts"].items()))
+            e["mode"] = max(e["counts"], key=lambda v: (e["counts"][v], -v)) if e["counts"] else None
+        return items
+
+
+def load_baseline(run_dir) -> Baseline:
+    """Read a baseline run directory (manifest.json of kind `baseline`, baseline.jsonl). Error rows are
+    dropped (a re-run fills them in: the last non-error row per administration and item wins); an item
+    that has only error rows is a missing answer, as is one whose reply was cut off."""
+    root = Path(run_dir)
+    if not (root / "manifest.json").exists():
+        raise FileNotFoundError(f"{root}/manifest.json not found: not a run directory")
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("kind") != "baseline":
+        raise ValueError(f"{root} is not a baseline run (manifest.json kind {manifest.get('kind')!r})")
+    rows = read_jsonl(root / "baseline.jsonl")
+    answers: dict[int, dict] = {}
+    counts = {"rows": len(rows), "error": 0, "truncated": 0, "null": 0}
+    for r in rows:
+        slot = answers.setdefault(int(r["administration"]), {})
+        if r.get("error"):
+            counts["error"] += 1
+            slot.setdefault(r["item_id"], None)
+            continue
+        if answer_truncated(r):
+            counts["truncated"] += 1
+            slot[r["item_id"]] = None
+            continue
+        if r.get("answer") is None:
+            counts["null"] += 1
+        slot[r["item_id"]] = r.get("answer")
+    counts["administrations"] = len(answers)
+    return Baseline(root, manifest.get("run_id") or root.name, manifest, arm_label(manifest),
+                    manifest.get("baseline") or {}, dict(sorted(answers.items())), counts)
+
+
+def baseline_distributions(run_dirs) -> dict[str, dict]:
+    """{arm: {item_id: distribution}} over one baseline run directory per arm (Baseline.distribution)."""
+    out: dict[str, dict] = {}
+    for rd in run_dirs:
+        b = load_baseline(rd)
+        if b.arm in out:
+            raise ValueError(f"two baseline runs for arm {b.arm!r}")
+        out[b.arm] = b.distribution()
+    return out
+
+
 def default_out(run_dir) -> Path:
     """Where the analysis writes by default: data/<run_id>/analysis/, git-ignored with the rows."""
     return Path(run_dir) / "analysis"
@@ -353,12 +534,23 @@ def add_common_args(p: argparse.ArgumentParser, multi: bool = False) -> None:
                    help="compute flags at this threshold instead of reading flags.jsonl")
     p.add_argument("--run-length", type=int, default=3)
     p.add_argument("--origin", default="run", choices=("run", "readministered"), help="which survey pass")
+    p.add_argument("--survey-temperature", type=float, default=SURVEY_TEMPERATURE,
+                   help=f"the survey pass's temperature (default {SURVEY_TEMPERATURE}); rows of the "
+                        "origin at other settings are set aside and logged")
+    p.add_argument("--survey-n-predict", type=int, default=SURVEY_N_PREDICT,
+                   help=f"the survey pass's n_predict (default {SURVEY_N_PREDICT})")
+    p.add_argument("--include-unconstrained", action="store_true",
+                   help="analyse the unconstrained check's rows (schema false) instead of the constrained "
+                        "pass; they cover only the sampled dyads")
     p.add_argument("--out", default=None, help="output directory (default <first run-dir>/analysis)")
 
 
 def load_from_args(a, run_dir=None) -> Run:
     return load_run(run_dir or a.run_dir, judge=a.judge, metric=a.metric, origin=a.origin,
-                    threshold=a.threshold, run_length=a.run_length)
+                    threshold=a.threshold, run_length=a.run_length,
+                    include_unconstrained=a.include_unconstrained, survey_temperature=a.survey_temperature,
+                    survey_n_predict=a.survey_n_predict)
+
 
 
 def main(argv=None) -> int:

@@ -77,6 +77,57 @@ def test_a_missing_answer_drops_one_index_not_the_dyad(tmp_path):
     assert counts2["salvaged_dropped"] == 1
 
 
+def test_a_reply_cut_off_is_a_missing_answer(tmp_path):
+    res, run = _run(tmp_path, anomalies={"survey_truncated": 1})
+    rows, counts = O.compute_outcomes(run, O.load_instrument(run))
+    cut = res["truth"]["anomalies"]["survey_truncated"][0]
+    r = next(r for r in rows if r["dyad_id"] == cut)
+    assert r["norms_change"] is None and r["ideological_change"] is not None and r["in_itt"]
+    assert [(e["reason"], e["index"]) for e in run.exclusions if e["dyad_id"] == cut] == [
+        ("missing_survey", "norms")]
+    assert counts["truncated"] == 1 and counts["null"] == 0 and counts["refused"] == 0
+    # a row the context cut off (`truncated: true`) is missing even with a parsed answer
+    p = res["path"] / "surveys.jsonl"
+    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    other = next(r for r in rows if r["dyad_id"] != cut and r["phase"] == "pre"
+                 and r["item_id"] == "therm_rep_voters")
+    other["truncated"] = True
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    run = load_run(res["path"])
+    rows2, counts2 = O.compute_outcomes(run, O.load_instrument(run))
+    r2 = next(r for r in rows2 if r["dyad_id"] == other["dyad_id"])
+    assert counts2["truncated"] == 2 and r2["therm_gap_change"] is None and r2["affective_abs_change"] is None
+
+
+def test_baseline_reference_gives_each_arms_mean_and_sd(tmp_path, capsys):
+    from analysis.synth import make_baseline
+    a = make_baseline(tmp_path / "ba", run_id="ba", k=30, mentor="arm-a")
+    b = make_baseline(tmp_path / "bb", run_id="bb", k=20, mentor="arm-b", shift=1.0, seed=3)
+    ref = O.baseline_reference([a["path"], b["path"]])
+    assert set(ref) == {"arm-a", "arm-b"}
+    for res, arm in ((a, "arm-a"), (b, "arm-b")):
+        want = list(res["truth"]["ideological"].values())
+        got = ref[arm]["indices"]["ideological"]
+        assert got["n"] == len(want) == res["truth"]["k"] - 1 and got["missing"] == 1
+        assert got["mean"] == pytest.approx(sum(want) / len(want))
+        m = sum(want) / len(want)
+        assert got["sd"] == pytest.approx((sum((x - m) ** 2 for x in want) / (len(want) - 1)) ** 0.5)
+        assert ref[arm]["administrations"] == res["truth"]["k"] and ref[arm]["settings"]["temperature"] == 0.7
+    ideo = {arm: ref[arm]["indices"]["ideological"]["mean"] for arm in ref}
+    assert ideo["arm-b"] > ideo["arm-a"] + 0.5
+    assert {"therm_gap", "affective_abs", "norms", "topic_item:decarbonization",
+            "topic_item:immigration_enforcement"} <= set(ref["arm-a"]["indices"])
+    assert ref["arm-a"]["indices"]["therm_gap"]["n"] == 30
+    # the CLI adds it to outcomes.md and writes baseline_reference.json
+    run_res, _ = _run(tmp_path)
+    assert O.main(["--run-dir", str(run_res["path"]), "--baseline", str(a["path"]), "--baseline",
+                   str(b["path"]), "--out", str(tmp_path / "o")]) == 0
+    assert "No-dialogue baseline" in capsys.readouterr().out
+    assert set(json.loads((tmp_path / "o" / "baseline_reference.json").read_text())) == {"arm-a", "arm-b"}
+    assert O.main(["--run-dir", str(run_res["path"]), "--baseline", str(run_res["path"]),
+                   "--out", str(tmp_path / "o")]) == 1
+
+
 def test_fallback_to_shared_definitions_for_a_legacy_instrument(tmp_path):
     res, run = _run(tmp_path, instrument="legacy")
     inst = O.load_instrument(run)

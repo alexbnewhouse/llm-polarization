@@ -24,10 +24,11 @@ a balanced grid is the nested ANOVA the power calculation uses.
   Classified as accommodation-consistent (Holm-adjusted A > 0 and rho's CI excludes 1),
   symmetric-drift-consistent (A not significant, rho's CI includes 1 and excludes 8, both intensity
   contrasts >= 0) or inconclusive.
-- H3, turn level: agree = 2 x alignment - 1 on the seeker's prompt_to_line at the same scored turn,
-  with turn and cell (topic x ideology x openness) fixed effects, arm, and random intercepts for role and
-  dyad (nested). Robustness: cumulative mean adherence to turn t. Dyad level: the slope model on treated
-  dyads plus centred mean adherence and dose x adherence.
+- H3, turn level: agree = 2 x alignment - 1 (stance-scope rows) on the seeker's prompt_to_line (main-scope
+  rows) at the same scored turn, with turn and cell (topic x ideology x openness) fixed effects, arm, and
+  random intercepts for role and dyad (nested). Robustness: cumulative mean adherence to turn t. Dyad
+  level: the slope model on treated dyads plus centred mean adherence and dose x adherence. Judge
+  agreement pairs the primary stance judge with the second judge's `subsample`-marked rows.
 - secondary: S1 arm x dose (a Wald test; per-arm slopes), S2 affective_abs on intensity, S3 therm_gap on
   dose, S4 norms on intensity, S5 openness x dose, S6 the topic item on dose, and H3; BH across the family.
 - robustness (primary outcome): (a) item-level stacked model with item fixed effects and dyad (and role)
@@ -430,10 +431,17 @@ def lee(rows, outcome, topic) -> dict:
 
 # ---- turn level -----------------------------------------------------------------------------------
 
+def _stance_scores(run: Run) -> list[dict]:
+    """The run's mentor `alignment` rows from stance-scope passes (`score --scope stance`), the turn-level
+    DV. Pilot-scope rows (every turn, for calibration) never enter the stance analyses."""
+    return [s for s in run.scores_in("stance") if s.get("metric") == "alignment" and s.get("agent") == MENTOR]
+
+
 def stance_judge(runs: list[Run], prefix: str | None) -> tuple[str | None, list[str]]:
     """The primary stance judge: the one matching `prefix`, else the adherence judge when it scored
-    alignment, else the judge that scored the most dyads (the second judge scores a subsample)."""
-    scores = [s for run in runs for s in run.scores if s.get("metric") == "alignment" and not s.get("error")]
+    alignment, else the judge with a full (not `subsample`-marked) stance pass that scored the most dyads
+    (the second judge scores a subsample). Stance-scope rows only."""
+    scores = [s for run in runs for s in _stance_scores(run) if not s.get("error")]
     judges = sorted({s["judge_sha256"] for s in scores})
     if not judges:
         return None, []
@@ -442,15 +450,18 @@ def stance_judge(runs: list[Run], prefix: str | None) -> tuple[str | None, list[
     for j in judges:
         if j in {run.judge for run in runs}:
             return j, judges
+    full = {s["judge_sha256"] for s in scores if s.get("subsample") is None}
     cover = {j: len({(s.get("run_id"), s["dyad_id"]) for s in scores if s["judge_sha256"] == j})
              for j in judges}
-    return max(judges, key=lambda j: cover[j]), judges
+    return max(judges, key=lambda j: (j in full, cover[j])), judges
 
 
 def _adherence_scores(run: Run) -> list[dict]:
-    """The run's usable seeker adherence scores: the chosen judge and metric, not null, not an error."""
-    return [s for s in run.scores if s.get("judge_sha256") == run.judge and s.get("metric") == run.metric
-            and s.get("agent") == SEEKER and s.get("score") is not None and not s.get("error")]
+    """The run's usable seeker adherence scores: main-scope rows of the chosen judge and metric, not null,
+    not an error."""
+    return [s for s in run.scores_in("main") if s.get("judge_sha256") == run.judge
+            and s.get("metric") == run.metric and s.get("agent") == SEEKER and s.get("score") is not None
+            and not s.get("error")]
 
 
 def turn_rows(runs: list[Run], judge: str, dyads: set | None = None) -> list[dict]:
@@ -463,10 +474,9 @@ def turn_rows(runs: list[Run], judge: str, dyads: set | None = None) -> list[dic
         for s in _adherence_scores(run):
             if s["dyad_id"] in dy:
                 seeker.setdefault(s["dyad_id"], {})[s["turn"]] = s["score"]
-        for s in run.scores:
+        for s in _stance_scores(run):
             d = dy.get(s["dyad_id"])
-            if (d is None or s.get("metric") != "alignment" or s.get("agent") != MENTOR
-                    or s.get("judge_sha256") != judge or s.get("score") is None or s.get("error")):
+            if (d is None or s.get("judge_sha256") != judge or s.get("score") is None or s.get("error")):
                 continue
             if dyads is not None and (run.run_id, d["dyad_id"]) not in dyads:
                 continue
@@ -504,18 +514,30 @@ def h3_turn(rows, topic, arms, covariate: str = "adh") -> dict:
 
 
 def judge_agreement(runs: list[Run], judges: list[str]) -> dict:
-    """Krippendorff's alpha (interval) on `alignment` between the first two judges, on shared targets."""
+    """Krippendorff's alpha (interval) on stance-scope `alignment` between the primary judge (judges[0])
+    and the second judge, on shared targets. The second judge is the first other judge with rows marked
+    `subsample` (`score --scope stance --subsample F`), whose marked rows are its targets; failing that,
+    the first other judge and all its stance rows."""
     if len(judges) < 2:
         return {"skipped": "one stance judge"}
-    a, b = judges[:2]
+    usable = [(run.run_id, s) for run in runs for s in _stance_scores(run)
+              if s.get("score") is not None and not s.get("error")]
+    marked = {s["judge_sha256"] for _, s in usable if s.get("subsample") is not None}
+    a = judges[0]
+    b = next((j for j in judges[1:] if j in marked), judges[1])
     by: dict = {a: {}, b: {}}
-    for run in runs:
-        for s in run.scores:
-            if s.get("metric") == "alignment" and s.get("judge_sha256") in by and s.get("score") is not None:
-                by[s["judge_sha256"]][(run.run_id, s["dyad_id"], s["turn"])] = s["score"]
+    fractions = set()
+    for run_id, s in usable:
+        j = s.get("judge_sha256")
+        if j == a:
+            by[a][(run_id, s["dyad_id"], s["turn"])] = s["score"]
+        elif j == b and (b not in marked or s.get("subsample") is not None):
+            by[b][(run_id, s["dyad_id"], s["turn"])] = s["score"]
+            fractions.add(s.get("subsample"))
     shared = sorted(set(by[a]) & set(by[b]))
     alpha = krippendorff_interval([[by[a][k], by[b][k]] for k in shared]) if shared else None
     return {"judges": [a, b], "n": len(shared), "alpha": alpha, "dyads": sorted({k[:2] for k in shared}),
+            "subsample": sorted(f for f in fractions if f is not None) or None,
             "exploratory": alpha is None or alpha < 0.667}
 
 
@@ -538,13 +560,18 @@ def signed_stance(alignment: float, dose: int | None) -> float | None:
 
 
 def control_alignment(runs: list[Run], judge: str) -> dict:
-    """Control dyads' raw `alignment`, reported apart and never modelled (stance is undefined there)."""
-    v = []
+    """Control dyads' raw `alignment`, reported apart and never modelled (stance is undefined there). main
+    and stance scope leave it unscored (harness.scorer.CONTROL_ALIGNMENT_UNSCORED), so these are pilot
+    rows, or rows written before that default; `scopes` says which."""
+    v, scopes = [], set()
     for run in runs:
         ctrl = {d["dyad_id"] for d in run.dyads if d["control"]}
-        v += [s["score"] for s in run.scores if s.get("metric") == "alignment" and s.get("score") is not None
-              and s.get("judge_sha256") == judge and s["dyad_id"] in ctrl]
-    return {"n": len(v), "mean": float(np.mean(v)) if v else None}
+        for s in run.scores:
+            if (s.get("metric") == "alignment" and s.get("score") is not None and not s.get("error")
+                    and s.get("judge_sha256") == judge and s["dyad_id"] in ctrl):
+                v.append(s["score"])
+                scopes.add(run.scope_of(s))
+    return {"n": len(v), "mean": float(np.mean(v)) if v else None, "scopes": sorted(scopes)}
 
 
 def adherence_drift(runs: list[Run]) -> dict:
@@ -807,7 +834,11 @@ def _h3_md(h3: dict, cols: list[str]) -> list[str]:
         ag = h3.get("agreement", {})
         if ag.get("n"):
             low = "; below 0.667: the turn-level stance results are exploratory" if ag["exploratory"] else ""
-            out.append(f"Two judges: Krippendorff alpha {fmt(ag['alpha'])} on {ag['n']} shared targets{low}")
+            sub = (f" (second judge's subsample {', '.join(map(str, ag['subsample']))})"
+                   if ag.get("subsample") else "")
+            out.append(f"Two judges: Krippendorff alpha {fmt(ag['alpha'])} on {ag['n']} shared "
+                       f"targets{sub}{low}")
+
             out += [f"- subsample refit with {j}: theta {_c(v.get('theta'))}"
                     for j, v in (h3.get("subsample_refit") or {}).items()]
             out.append("")
