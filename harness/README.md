@@ -118,6 +118,15 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
   same `--run-id` retries the dyad as a new attempt. A systematic loss fails every dyad at its second turn,
   which is the point.
 
+### Reasoning is kept out of the transcript (2026-09-28)
+
+The harness calls raw `/completion`, so llama-server never separates a model's reasoning from its answer.
+After each turn the harness does: `reasoning_content` from the server, every `<think>...</think>` block,
+and the text before an unmatched `</think>` go to the row's `reasoning` field, and only what is left is
+the line the partner sees and the judge scores. A reply with gpt-oss harmony channel markup
+(`<|channel|>`, `<|start|>assistant`, `<|message|>`) or a `<think>` it never closes has no clean answer to
+pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `UnterminatedThink`).
+
 ## What the config fields mean
 
 | Field | What it does |

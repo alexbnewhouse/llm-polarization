@@ -1,5 +1,6 @@
 """One dyad, end to end: seeker opens, agents alternate, every generation logged with provenance."""
 from __future__ import annotations
+import re
 from dataclasses import dataclass
 from harness.client import ServerError
 from harness.log import JsonlWriter, derive_seed, now_iso, sha256_text
@@ -65,6 +66,44 @@ class DialogueError(Exception):
         self.dyad_id, self.turn, self.agent, self.cause = dyad_id, turn, agent, cause
 
 
+class HarmonyMarkup(Exception):
+    """A reply carries gpt-oss harmony channel markup (`<|channel|>`, `<|start|>assistant`, `<|message|>`) in
+    its text: the raw /completion path does not parse the channels, so the model's private analysis would
+    reach the partner and the judge as its line. The dyad fails rather than pass it on."""
+
+
+class UnterminatedThink(Exception):
+    """A reply opens a <think> block and never closes it: there is reasoning and no answer to pass on."""
+
+
+HARMONY_MARKERS = ("<|channel|>", "<|start|>assistant", "<|message|>")
+_THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def split_reasoning(text: str, raw: dict | None = None) -> tuple[str, str | None]:
+    """(the text to pass to the partner, the reasoning kept out of it). Reasoning is what the server
+    returned separately (`reasoning_content`), every <think>...</think> block in the text, and the text
+    before an unmatched </think> (a template that opens <think> in the generation prompt). A reply with
+    neither comes back unchanged with None. Raises HarmonyMarkup or UnterminatedThink."""
+    marker = next((m for m in HARMONY_MARKERS if m in text), None)
+    if marker:
+        raise HarmonyMarkup(f"harmony channel markup {marker!r} in the reply text; the model's channels are "
+                            "not parsed on this path, so its analysis would reach the partner")
+    parts = [str((raw or {}).get("reasoning_content") or "").strip()]
+    if "<think>" in text or "</think>" in text:
+        if text.count("</think>") > text.count("<think>"):
+            head, text = text.split("</think>", 1)
+            parts.append(head)
+        parts += _THINK_BLOCK.findall(text)
+        text = _THINK_BLOCK.sub("", text)
+        if "<think>" in text or "</think>" in text:
+            raise UnterminatedThink("a <think> block in the reply is never closed; there is no answer to "
+                                    "pass on")
+        text = text.strip()
+    reasoning = "\n\n".join(p.strip() for p in parts if p.strip())
+    return text, reasoning or None
+
+
 def _common_prefix_len(a: str, b: str) -> int:
     """Return the length of the longest common leading substring of a and b."""
     n = min(len(a), len(b))
@@ -124,23 +163,35 @@ class DialogueRunner:
         except ServerError as e:
             row.update({"prompt_n": None, "predicted_n": None, "expected_new": None, "cache_warning": None,
                         "truncated": None, "tokens_evaluated": None, "tokens_cached": None,
-                        "finish_reason": "error", "text": "", "timings": {}, "error": str(e),
+                        "finish_reason": "error", "text": "", "reasoning": None, "timings": {},
+                        "error": str(e),
                         "adherence": None, "ts": self.clock()})
             self.turns_log.write(row)
             raise DialogueError(spec.dyad_id, turn, agent, e) from e
         last_prompt[agent] = prompt
+        try:
+            text, reasoning = split_reasoning(comp.text, comp.raw)
+            leak = None
+        except (HarmonyMarkup, UnterminatedThink) as e:
+            text, reasoning, leak = comp.text, None, e
         row.update({"prompt_n": comp.prompt_n, "predicted_n": comp.predicted_n, "expected_new": expected,
                     "cache_warning": comp.prompt_n > expected + self.cache_margin,
                     # The server's own context accounting: `truncated` true means this slot ran out of
                     # context, which finish_reason "length" (the n_predict cap) does not distinguish.
                     "truncated": comp.truncated, "tokens_evaluated": comp.tokens_evaluated,
                     "tokens_cached": comp.tokens_cached,
-                    "finish_reason": comp.finish_reason, "text": comp.text, "timings": comp.timings,
-                    "adherence": None, "ts": self.clock()})
+                    "finish_reason": comp.finish_reason, "text": text,
+                    # What the model reasoned before answering, kept out of `text` and so out of the
+                    # partner's view and the judge's; null when the reply had none.
+                    "reasoning": reasoning, "timings": comp.timings, "adherence": None, "ts": self.clock()})
+        if leak is not None:
+            row["error"] = f"{type(leak).__name__}: {leak}"
         self.turns_log.write(row)
+        if leak is not None:
+            raise DialogueError(spec.dyad_id, turn, agent, leak)
         limit = s.cache_reuse_limit
         if limit is not None and mid_dialogue and row["cache_warning"] and comp.prompt_n > limit:
             raise DialogueError(spec.dyad_id, turn, agent, CacheReuseLost(
                 f"KV cache reuse lost: prefilled {comp.prompt_n} tokens on slot {h.slot}, expected about "
                 f"{expected} (limit {limit}); the row is logged with cache_warning"))
-        return comp.text
+        return text

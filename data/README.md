@@ -84,9 +84,15 @@ This is where the treatment lives. The persona is copied here, not referenced.
 `n_predict`, `prompt_sha256`, `prompt_chars`, `seed`, `prompt_n` (tokens the server actually prefilled),
 `predicted_n`, `expected_new` (tokens it *should* have prefilled if the cache held), `cache_warning`,
 `truncated` / `tokens_evaluated` / `tokens_cached` (the server's context accounting; null on builds that
-do not report them), `finish_reason` (`stop`, `length` or `error`), `text` (the generation), `timings`
+do not report them), `finish_reason` (`stop`, `length` or `error`), `text` (the generation as passed to
+the partner and scored by the judge), `reasoning` (what the model reasoned before answering, kept out of
+`text`: the server's `reasoning_content`, every `<think>...</think>` block, and the text before an
+unmatched `</think>`; null when there was none), `timings`
 (the server's own per-request numbers), `adherence` (always null; the scorer writes the equivalent into
-`scores.jsonl`), `ts`. On a failure there is also `error`, and the numeric fields are null.
+`scores.jsonl`), `ts`. On a failure there is also `error`, and the numeric fields are null. A reply
+that carries gpt-oss harmony channel markup (`<|channel|>`, `<|start|>assistant`, `<|message|>`), or opens
+a `<think>` block it never closes, is logged with `error` (`HarmonyMarkup: ...` or `UnterminatedThink: ...`)
+and its raw `text`, and the dyad fails: the partner never sees it.
 
 Two messages per turn: seeker then mentor. A 40-turn dialogue is 80 rows.
 

@@ -194,3 +194,53 @@ def test_cache_reuse_limit_none_disables_the_hard_failure(tmp_path):
     sc.complete = cold_complete
     runner.run(spec(n_turns=2), attempt=1)
     assert all(r["cache_warning"] for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER)
+
+
+# --- red-team H1: reasoning output is kept out of the partner's view --------------------------------------
+
+class ReasoningClient(FakeClient):
+    """Returns `reasoning_content` beside the reply, as a server that parses reasoning does."""
+    def complete(self, prompt, **kw):
+        c = FakeClient.complete(self, prompt, **kw)
+        c.raw = {"content": c.text, "reasoning_content": "private plan"}
+        return c
+
+
+def test_reasoning_returned_separately_is_logged_and_never_passed_on(tmp_path):
+    runner, sc, mc, _ = make_runner(tmp_path, mentor_replies=["Here is my advice."])
+    runner.agents[MENTOR].client = ReasoningClient(["Here is my advice."])
+    runner.run(spec(n_turns=2), attempt=1)
+    rows = log.read_jsonl(tmp_path / "turns.jsonl")
+    mentor = [r for r in rows if r["agent"] == MENTOR]
+    assert all(r["reasoning"] == "private plan" and r["text"] == "Here is my advice." for r in mentor)
+    assert all(r["reasoning"] is None for r in rows if r["agent"] == SEEKER)
+    assert "private plan" not in sc.calls[1]["prompt"] and "Here is my advice." in sc.calls[1]["prompt"]
+
+
+def test_a_think_block_is_stripped_into_the_reasoning_field(tmp_path):
+    reply = "<think>I am playing Dana, stay in role</think>\n\nQuestion?"
+    runner, sc, mc, _ = make_runner(tmp_path, seeker_replies=[reply])
+    runner.run(spec(n_turns=2), attempt=1)
+    seeker = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER]
+    assert seeker[0]["text"] == "Question?" and seeker[0]["reasoning"] == "I am playing Dana, stay in role"
+    assert all("<think>" not in c["prompt"] and "stay in role" not in c["prompt"] for c in mc.calls)
+    assert "Question?" in mc.calls[0]["prompt"]
+    from harness.dialogue import split_reasoning, UnterminatedThink
+    assert split_reasoning("plan</think>Answer") == ("Answer", "plan")          # the prompt opened <think>
+    assert split_reasoning("Plain reply.\n") == ("Plain reply.\n", None)         # untouched
+    with pytest.raises(UnterminatedThink):
+        split_reasoning("<think>still thinking when n_predict ran out")
+
+
+def test_harmony_channel_markup_fails_the_dyad_instead_of_reaching_the_partner(tmp_path):
+    harmony = ("<|channel|>analysis<|message|>The user leans right; I should push back on them.<|end|>"
+               "<|start|>assistant<|channel|>final<|message|>Here is my advice.")
+    runner, sc, mc, _ = make_runner(tmp_path, mentor_replies=[harmony])
+    with pytest.raises(DialogueError) as e:
+        runner.run(spec(n_turns=2), attempt=1)
+    from harness.dialogue import HarmonyMarkup
+    assert isinstance(e.value.cause, HarmonyMarkup) and "harmony channel markup" in str(e.value)
+    rows = log.read_jsonl(tmp_path / "turns.jsonl")
+    assert rows[-1]["agent"] == MENTOR and rows[-1]["error"].startswith("HarmonyMarkup")   # logged first
+    assert rows[-1]["text"] == harmony
+    assert len(sc.calls) == 1                                       # the seeker never saw it
