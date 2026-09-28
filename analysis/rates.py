@@ -7,7 +7,7 @@ Denominators are the analysed attempts (the latest complete attempt of each dyad
 because those are the rows the paper's numbers come from; `attempt > 1` is counted over dyads, and
 judge rows over the whole scores file. Rates:
 
-- cache_warning, truncated, finish_reason=length: message rows (length also by agent);
+- cache_warning, empty_reply, truncated, finish_reason=length: message rows (length also by agent);
 - attempt > 1: dyads analysed at a retry, and dyads that ever needed one, with a chi-square test of
   independence against condition (REPRODUCIBILITY §5.5: failures are not random);
 - survey answer_method: every method's count by phase; null (answer is null) and salvaged (a number
@@ -118,6 +118,7 @@ def run_rates(run: Run, by: str = "ideology") -> tuple[dict, list[dict]]:
         add("cache_warning", d, r.get("cache_warning") is True)
         add("truncated", d, r.get("truncated") is True)
         add("finish_length", d, r.get("finish_reason") == "length")
+        add("empty_reply", d, r.get("empty_reply") is True)
         add(f"finish_length_{r['agent']}", d, r.get("finish_reason") == "length")
         if r["agent"] == MENTOR:
             found = detect(r.get("text"))
@@ -198,12 +199,13 @@ def attempt_test(runs: list[Run]) -> dict:
     return res
 
 
-ORDER = ["cache_warning", "truncated", "truncated_dyads", "finish_length", f"finish_length_{SEEKER}",
-         f"finish_length_{MENTOR}", "attempt_gt1_analysed", "attempt_gt1_ever", "survey_null_pre",
-         "survey_null_post", "survey_salvaged_pre", "survey_salvaged_post", "refusal_turns", "refusal_dyads",
-         "disclaimer_turns", "disclaimer_dyads", "survey_refusal_pre", "survey_refusal_post",
-         "unconstrained_parsed_pre", "unconstrained_parsed_post", "unconstrained_agree_pre",
-         "unconstrained_agree_post", "judge_null", "judge_error_unresolved", "flagged"]
+ORDER = ["cache_warning", "empty_reply", "truncated", "truncated_dyads", "finish_length",
+         f"finish_length_{SEEKER}", f"finish_length_{MENTOR}", "attempt_gt1_analysed",
+         "attempt_gt1_ever", "survey_null_pre", "survey_null_post", "survey_salvaged_pre",
+         "survey_salvaged_post", "refusal_turns", "refusal_dyads", "disclaimer_turns",
+         "disclaimer_dyads", "survey_refusal_pre", "survey_refusal_post", "unconstrained_parsed_pre",
+         "unconstrained_parsed_post", "unconstrained_agree_pre", "unconstrained_agree_post",
+         "judge_null", "judge_error_unresolved", "flagged"]
 
 
 

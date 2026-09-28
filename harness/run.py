@@ -986,8 +986,12 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str, allow_code_change: bool 
             raise e
     interrupted = stop.is_set()
     complete, failed = results.count("complete"), results.count("failed")
+    ran = {(spec.dyad_id, attempt) for spec, attempt in work}
+    empty = sum(1 for r in read_jsonl(paths.turns)
+                if r.get("empty_reply") and (r["dyad_id"], r.get("attempt", 1)) in ran)
     print(f"done: {complete} complete, {failed} failed" +
-          (f", {len(work) - complete - failed} not run" if interrupted else ""))
+          (f", {len(work) - complete - failed} not run" if interrupted else "") +
+          f"; {empty} empty replies (turns.jsonl empty_reply)")
     if interrupted:
         print(f"stopped by Ctrl-C; re-run with --run-id {run_id} to resume", file=sys.stderr)
         return 130

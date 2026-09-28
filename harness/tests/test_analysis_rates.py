@@ -45,6 +45,17 @@ def test_planted_anomalies_are_counted_exactly(synth):
     assert refused == set(res["truth"]["anomalies"]["refusal"])
 
 
+def test_empty_replies_are_counted_over_message_rows(synth):
+    # Red-team L8: an empty reply is logged, not failed; the rate counts it.
+    run = load_run(synth["b"]["path"])
+    rows = [r for r in run.turns if not r.get("error") and r.get("finish_reason") != "error"]
+    for r in rows[:2]:
+        r["empty_reply"] = True
+    r, _ = R.run_rates(run, "ideology")
+    assert r["empty_reply"]["all"] == [2, len(rows)]
+    assert "empty_reply" in R.markdown({"b": r}, {}, "overall")
+
+
 def test_breakdowns_and_the_attempt_test(synth):
     run = load_run(synth["a"]["path"])
     for by in R.BY:

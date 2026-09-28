@@ -1484,3 +1484,22 @@ def test_check_probes_the_reinforced_seekers_cache_pattern():
     assert rows["cache_reuse"][0] is True
     ok, detail = rows["cache_reuse_reinforced"]
     assert ok is False and "re-prefilled from before the reminder" in detail
+
+
+def test_run_counts_empty_replies_in_its_summary(tmp_path, monkeypatch, capsys):
+    # Red-team L8: empty replies do not fail a dyad; the run summary counts them.
+    clients = _fake_servers(tmp_path, monkeypatch)
+    factory = R.LlamaClient
+    def silent_seeker(url, timeout=None):
+        c = factory(url, timeout)
+        if url == "http://s":
+            c.replies = [" "]
+        return c
+    monkeypatch.setattr(R, "LlamaClient", silent_seeker)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    cfg = write_cfg(tmp_path)
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    assert "done: 2 complete, 0 failed; 4 empty replies (turns.jsonl empty_reply)" in capsys.readouterr().out
+    turns = log.read_jsonl(log.run_paths(tmp_path / "data", "r1").turns)
+    assert sum(bool(r.get("empty_reply")) for r in turns) == 4 and clients

@@ -198,6 +198,10 @@ class DialogueRunner:
                     "reasoning": reasoning, "timings": comp.timings, "adherence": None, "ts": self.clock()})
         if no_timings:
             row["timings_missing"] = True
+        # An empty reply is logged, counted and passed on, not a dyad failure: refusal-like silence is a
+        # finding to report by condition (PAP, Refusals), and a retry would select it out of the sample.
+        if not text.strip():
+            row["empty_reply"] = True
         if leak is not None:
             row["error"] = f"{type(leak).__name__}: {leak}"
         self.turns_log.write(row)

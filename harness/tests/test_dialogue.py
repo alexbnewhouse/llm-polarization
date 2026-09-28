@@ -263,3 +263,16 @@ def test_missing_timings_are_marked_not_read_as_zero(tmp_path, capsys):
     seeker = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER]
     assert all("timings_missing" not in r for r in seeker)
     assert capsys.readouterr().err.count("reported no timings") == 1          # warned once, not every turn
+
+
+def test_an_empty_reply_is_flagged_and_passed_on_not_failed(tmp_path):
+    # Red-team L8: an empty or whitespace-only reply (or one that was only reasoning) is logged with
+    # empty_reply and the dialogue goes on; refusal-like silence is a finding, not a failure.
+    runner, sc, mc, _ = make_runner(tmp_path, mentor_replies=["", "  \n", "<think>hm</think>", "Fine."])
+    t = runner.run(spec(n_turns=4), attempt=1)
+    assert t.n_messages == 8
+    rows = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == MENTOR]
+    assert [r.get("empty_reply", False) for r in rows] == [True, True, True, False]
+    assert all("error" not in r for r in rows)
+    seeker = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER]
+    assert all("empty_reply" not in r for r in seeker)
