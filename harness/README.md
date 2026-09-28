@@ -124,7 +124,7 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 |---|---|
 | `run_seed` | The one number every generation seed is derived from, together with the per-dyad `seed`. Change it and you get a different run. Record it in the paper. |
 | `now` | The date fed to templates that print the current date (gpt-oss does). Pinned so the prompt is the same tomorrow. Changing it changes every prompt for those models: freeze it for the life of the study, not per run. |
-| `concurrency` | How many dialogues run at once. `null` means "as many as the smaller server has slots". More than a server's slots is refused: llama.cpp wraps an out-of-range slot id, so two dialogues would share a slot. |
+| `concurrency` | How many dialogues run at once, and how many judge slots `score` uses at once. `null` means "as many as the smaller server has slots" (for `score`, the judge's). More than a server's slots is refused: llama.cpp wraps an out-of-range slot id, so two dialogues would share a slot. |
 | `cache_reuse_limit` | Tokens. A mid-dialogue turn that prefills more than this when the cache should have held fails the dyad. Default 1000; must exceed `2 * n_predict` plus the reminder. `null` disables. Operational: not compared on resume. |
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
 | `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |

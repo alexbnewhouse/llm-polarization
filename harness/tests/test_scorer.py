@@ -140,11 +140,12 @@ def test_score_run_duplicate_row_uses_position_not_value_equality(tmp_path):
     judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
     sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
     sc.score_run(p, "pilot", manifest)
-    # pilot order (seeker rows only here): S1(prompt_to_line, line_to_line), DUP#1@turn2(prompt_to_line,
-    # line_to_line), DUP#2@turn2(prompt_to_line, line_to_line), S3(prompt_to_line, line_to_line) ->
-    # index 3 is the first DUP row's line_to_line call, index 5 is the second DUP row's.
-    first_dup_call = jc.calls[3]
-    second_dup_call = jc.calls[5]
+    # Targets go in (dyad, attempt, metric, turn) order, and the sort is stable, so the line_to_line calls
+    # are S1, DUP#1, DUP#2, S3: index 1 is the first DUP row's, index 2 the second's.
+    l2l = [c for c in jc.calls if "EARLIER LINES" in c["prompt"]]
+    assert len(l2l) == 4
+    first_dup_call = l2l[1]
+    second_dup_call = l2l[2]
     assert "- DUP" not in first_dup_call["prompt"]                    # must not see its own line as "earlier"
     assert second_dup_call["prompt"].count("- DUP") == 1              # sees the first DUP row's line exactly once
 
@@ -323,3 +324,44 @@ def test_cross_judge_agreement_on_shared_targets():
     assert pair["within_0.1"] == 1.0
     assert a["per_judge"]["J1"]["n"] == 4 and a["per_judge"]["J2"]["n"] == 4      # the null row is not a score
     assert scorer.cross_judge_agreement(j1, metric="alignment")["pairs"] == []
+
+
+def test_score_run_orders_targets_by_dyad_metric_turn_and_uses_one_slot_per_worker(tmp_path):
+    # Parallelism H2: scoring was serial on slot 0, in turns.jsonl order, which interleaves dyads and
+    # metrics so consecutive judge prompts shared no prefix.
+    p = log.run_paths(tmp_path, "r1")
+    st, tw, dw = log.JsonlWriter(p.status), log.JsonlWriter(p.turns), log.JsonlWriter(p.dyads)
+    for d in ("b", "a", "c"):
+        dw.write({"dyad_id": d, "attempt": 1, "condition": {"topic": "t"}, "persona_text": "P",
+                  "persona_reminder": "", "persona_mode": "once", "seed": 1, "n_turns": 3})
+        st.write({"dyad_id": d, "attempt": 1, "status": "complete"})
+    for turn in (1, 2, 3):                                  # file order interleaves the dyads
+        for d in ("b", "a", "c"):
+            tw.write({"dyad_id": d, "attempt": 1, "turn": turn, "agent": SEEKER, "text": f"{d}{turn}",
+                      "finish_reason": "stop"})
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
+
+    def scorer_with(concurrency, scores):
+        jc = FakeClient(['{"score": 0.5, "rationale": "x"}'])
+        judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
+        return Scorer("r1", 99, judge, log.JsonlWriter(scores), GenSettings(), clock=lambda: "T",
+                      concurrency=concurrency), jc
+    sc, jc = scorer_with(1, p.scores)
+    assert sc.score_run(p, "pilot", manifest) == 18
+    order = [(r["dyad_id"], r["metric"], r["turn"]) for r in log.read_jsonl(p.scores)]
+    assert order == sorted(order) and order[:3] == [("a", "line_to_line", t) for t in (1, 2, 3)]
+    serial = {(r["dyad_id"], r["turn"], r["metric"]): r for r in log.read_jsonl(p.scores)}
+    p2 = log.run_paths(tmp_path, "r2")
+    for name in ("status", "turns", "dyads"):
+        getattr(p2, name).write_text(getattr(p, name).read_text())
+    sc, jc = scorer_with(3, p2.scores)
+    assert sc.score_run(p2, "pilot", manifest) == 18 and sc.errors == 0
+    rows = log.read_jsonl(p2.scores)
+    by_dyad = {}
+    for r in rows:
+        by_dyad.setdefault(r["dyad_id"], set()).add(r["id_slot"])
+    assert all(len(s) == 1 for s in by_dyad.values()) and {s.pop() for s in by_dyad.values()} == {0, 1, 2}
+    # the same rows as the serial pass, but for id_slot
+    drop_slot = lambda r: {k: v for k, v in r.items() if k != "id_slot"}
+    assert all(drop_slot(r) == drop_slot(serial[(r["dyad_id"], r["turn"], r["metric"])]) for r in rows)
+    assert sc.score_run(p2, "pilot", manifest) == 0                     # resume logic unchanged

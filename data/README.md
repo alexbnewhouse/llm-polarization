@@ -130,8 +130,10 @@ Scope `pilot` scores every turn for both agents; scope `main` scores the seeker 
 4, 8, 12, ... plus the dyad's final turn; scope `stance` scores the mentor's `alignment` on that same
 cadence, for the two-judge subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on
 the run's `run_seed` from `manifest.json`, so a second judge's config need not repeat it; the score seeds
-use it too). Scoring is idempotent **per judge**: a row that already exists for this judge without an
-`error` is never scored again, and a second judge scores the same targets afresh. A row with `score: null` (an unparseable judge reply) counts as done; a
+use it too). `score` works through the targets in (dyad, attempt, metric, turn) order, one dyad at a
+time per judge slot, `concurrency` slots at once, so `id_slot` is the slot that dyad's worker held and
+file order is not target order. Scoring is idempotent
+**per judge**: a row that already exists for this judge without an `error` is never scored again, and a second judge scores the same targets afresh. A row with `score: null` (an unparseable judge reply) counts as done; a
 row with `error` (the judge server failed) is retried on the next `score` and leaves the failed row in
 place.
 

@@ -752,12 +752,15 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
         return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
+    # As `run` does: null is one worker per judge slot; check has refused more workers than slots.
+    concurrency = cfg["concurrency"] or int(entry["total_slots"])
     scorer = Scorer(run_id, int(manifest["config"]["run_seed"]), judge, JsonlWriter(paths.scores),
-                    _settings(cfg), harness_commit=_git_commit())
+                    _settings(cfg), harness_commit=_git_commit(), concurrency=concurrency)
     scorer.check_independence(manifest, cfg[MENTOR].get("family"))     # before any record of the pass
     record = write_judge_manifest(paths, entry, scope, subsample)
     n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
-    print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "") + f"); "
+    print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "")
+          + f", concurrency {concurrency}); "
           f"judge record {record.name}" + (f"; {scorer.errors} judge calls failed, re-run score to retry them"
                                            if scorer.errors else ""))
     return 2 if scorer.errors else 0

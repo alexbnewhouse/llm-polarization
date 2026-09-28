@@ -1,8 +1,11 @@
 """Offline scoring with a judge model: seeker adherence and mentor stance per logged turn, written to
 scores.jsonl; plus the adherence flag rule (flags.jsonl) and cross-judge agreement, both computed from it."""
 from __future__ import annotations
+import dataclasses
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from harness.client import ServerError
 from harness.dialogue import AgentHandle, GenSettings
 from harness.log import JsonlWriter, RunPaths, derive_seed, now_iso, read_jsonl, resume_index, sha256_text
@@ -231,13 +234,15 @@ def parse_score(text: str) -> tuple[float | None, str]:
 class Scorer:
     """Scores a run's logged turns with a third model and appends the results to scores.jsonl."""
     def __init__(self, run_id: str, run_seed: int, judge: AgentHandle, scores_log: JsonlWriter,
-                 settings: GenSettings, clock=now_iso, harness_commit: str = ""):
-        """Wire up the run identity, judge agent, output log, generation settings, clock and the harness
-        commit that is doing the scoring (scoring can happen long after the run, from different code)."""
+                 settings: GenSettings, clock=now_iso, harness_commit: str = "", concurrency: int = 1):
+        """Wire up the run identity, judge agent, output log, generation settings, clock, the harness
+        commit that is doing the scoring (scoring can happen long after the run, from different code) and
+        how many judge slots to use at once."""
         self.run_id, self.run_seed, self.judge = run_id, run_seed, judge
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
         self.harness_commit = harness_commit
         self.errors = 0          # error rows written by the last score_run
+        self.concurrency = max(1, int(concurrency))
 
     def check_independence(self, manifest: dict, mentor_family: str | None = None) -> None:
         """Raise ValueError for a judge that is the seeker or the mentor of this run, or of the mentor's
@@ -264,7 +269,9 @@ class Scorer:
                   mentor_family: str | None = None) -> int:
         """Score every not-yet-scored target for the run's complete dyads and return how many rows were
         written, after check_independence. Rows are done per judge, so a second judge scores the same
-        targets."""
+        targets. Targets go in (dyad_id, attempt, metric, turn) order, one dyad at a time per worker on
+        its own judge slot, so consecutive prompts on a slot share the dyad's growing prefix and the judge
+        prefills only what was added; `concurrency` workers run at once on slots 0..concurrency-1."""
         self.check_independence(manifest, mentor_family)
         self.errors = 0
         complete = latest_complete_attempts(read_jsonl(paths.status))
@@ -282,47 +289,78 @@ class Scorer:
         # See tests/test_scorer.py::test_score_run_duplicate_row_uses_position_not_value_equality.
         positions: dict[tuple, dict[int, int]] = {
             k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
-        written = 0
-        for row, metric in select_targets(turns, scope, subsample=subsample, run_seed=self.run_seed):
+        targets = [(row, metric) for row, metric in select_targets(turns, scope, subsample=subsample,
+                                                                   run_seed=self.run_seed)
+                   if (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric) not in done]
+        # A stable sort: value-identical duplicate rows keep their file order.
+        targets.sort(key=lambda t: (str(t[0]["dyad_id"]), t[0].get("attempt", 1), t[1], t[0]["turn"]))
+        groups: dict[tuple, list] = {}
+        for t in targets:
+            groups.setdefault((t[0]["dyad_id"], t[0].get("attempt", 1)), []).append(t)
+
+        def score_one(judge: AgentHandle, row: dict, metric: str) -> bool:
+            """Score one target on `judge`'s slot and write its row; True when it wrote a non-error row."""
             key = (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric)
-            if key in done:
-                continue
             # The dyad row carries the per-dyad seed the run used, so a score seed is derived from the same
             # (run_seed, dyad_seed) pair the dialogue was: look the row up before deriving the seed.
             spec = dyads.get(key[:2])
             seed = derive_seed(self.run_seed, int((spec or {}).get("seed", 0)), row["dyad_id"], key[1],
                                row["turn"], f"judge:{row['agent']}:{metric}")
             out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
-                   "agent": row["agent"], "metric": metric, "judge_sha256": self.judge.model_sha256,
-                   "id_slot": self.judge.slot, "harness_commit": self.harness_commit, "seed": seed}
+                   "agent": row["agent"], "metric": metric, "judge_sha256": judge.model_sha256,
+                   "id_slot": judge.slot, "harness_commit": self.harness_commit, "seed": seed}
             if spec is None:
                 out.update({"judge_prompt_sha256": "", "prompt_chars": None, "score": None, "rationale": "",
                             "raw_text": "", "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
                 self.scores_log.write(out)
-                self.errors += 1
-                continue
+                return False
             history = histories[key[:2]]
             idx = positions[key[:2]][id(row)]
             prior_own = [r["text"] for r in history[:idx] if r["agent"] == row["agent"]]
             # The partner's most recent line before this one; None on the seeker's opening turn, when
             # the partner has not spoken.
             partner = next((r["text"] for r in reversed(history[:idx]) if r["agent"] != row["agent"]), None)
-            messages = build_judge_messages(metric, spec.get("persona_text", ""), spec.get("condition", {}).get("topic", ""),
-                                            row["text"], prior_own, partner)
-            prompt = render(self.judge.template, messages, now=self.settings.now, enable_thinking=self.settings.enable_thinking)
+            topic = spec.get("condition", {}).get("topic", "")
+            messages = build_judge_messages(metric, spec.get("persona_text", ""), topic, row["text"],
+                                            prior_own, partner)
+            prompt = render(judge.template, messages, now=self.settings.now,
+                            enable_thinking=self.settings.enable_thinking)
             out["judge_prompt_sha256"] = sha256_text(prompt)
             out["prompt_chars"] = len(prompt)
             try:
-                comp = self.judge.client.complete(prompt, id_slot=self.judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
-                                                  temperature=JUDGE_TEMPERATURE, json_schema=score_schema(),
-                                                  cache_prompt=True)
+                comp = judge.client.complete(prompt, id_slot=judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
+                                             temperature=JUDGE_TEMPERATURE, json_schema=score_schema(),
+                                             cache_prompt=True)
             except ServerError as e:
                 out.update({"score": None, "rationale": "", "raw_text": "", "error": str(e), "ts": self.clock()})
                 self.scores_log.write(out)
-                self.errors += 1
-                continue
+                return False
             score, rationale = parse_score(comp.text)
             out.update({"score": score, "rationale": rationale, "raw_text": comp.text, "ts": self.clock()})
             self.scores_log.write(out)
-            written += 1
-        return written
+            return True
+
+        # One worker per judge slot, as `run` does for dialogues: `free` holds the slots not in use, and a
+        # dyad's targets stay on one slot so its cache is reused from one target to the next.
+        free = list(range(self.concurrency))
+        lock = threading.Lock()
+        counts = {"written": 0, "errors": 0}
+
+        def job(group: list) -> None:
+            with lock:
+                slot = free.pop()
+            try:
+                judge = dataclasses.replace(self.judge, slot=slot)
+                for row, metric in group:
+                    ok = score_one(judge, row, metric)
+                    with lock:
+                        counts["written" if ok else "errors"] += 1
+            finally:
+                with lock:
+                    free.append(slot)
+
+        with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
+            for f in [ex.submit(job, g) for g in groups.values()]:
+                f.result()
+        self.errors = counts["errors"]
+        return counts["written"]
