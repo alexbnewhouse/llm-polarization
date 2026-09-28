@@ -63,6 +63,33 @@ def test_load_batteries_rejects_bad_item(tmp_path):
         survey.load_batteries(p)
 
 
+@pytest.mark.parametrize("change, message", [
+    ({"scale": {"min": 5, "max": 1}}, "must be below"),
+    ({"scale": {"min": 3, "max": 3}}, "must be below"),
+    ({"scale": {"min": 1.0, "max": 5}}, "must be integers"),
+    ({"scale": {"min": 1, "max": "5"}}, "must be integers"),
+    ({"scale": {"min": False, "max": 5}}, "must be integers"),
+    ({"text": ""}, "has no text"),
+    ({"text": "   \n"}, "has no text"),
+    ({"text": None}, "has no text"),
+])
+def test_load_batteries_rejects_a_bad_scale_or_no_text(tmp_path, change, message):
+    # Red-team L6: these would otherwise surface as every dyad failing its pre-survey.
+    good = {"id": "x", "battery": "b", "text": "t", "scale": {"min": 1, "max": 5}}
+    p = tmp_path / "b.json"
+    p.write_text(json.dumps({"items": [{**good, "id": "ok"}, {**good, **change}]}))
+    with pytest.raises(ValueError, match=message):
+        survey.load_batteries(p)
+
+
+def test_load_batteries_rejects_a_duplicate_id(tmp_path):
+    item = {"id": "x", "battery": "b", "text": "t", "scale": {"min": 1, "max": 5}}
+    p = tmp_path / "b.json"
+    p.write_text(json.dumps([item, {**item, "text": "u"}]))
+    with pytest.raises(ValueError, match="duplicate survey item id x"):
+        survey.load_batteries(p)
+
+
 def test_answer_schema_and_parse():
     item = {"id": "i", "battery": "b", "text": "t", "scale": {"min": 1, "max": 5}}
     s = survey.answer_schema(item)

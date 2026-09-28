@@ -29,8 +29,9 @@ class SurveyError(Exception):
 
 
 def load_batteries(path: str | Path) -> list[dict]:
-    """Load the survey items (a list, or an object with `items`) and check each has id, battery, text and
-    scale.min/max, with ids unique. File order is administration order."""
+    """Load the survey items (a list, or an object with `items`) and check each has id, battery, non-empty
+    text and integer scale.min < scale.max, with ids unique. File order is administration order. A bad
+    scale would otherwise surface later, as every dyad failing its pre-survey (red-team L6)."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     items = data["items"] if isinstance(data, dict) else data
     seen = set()
@@ -38,8 +39,17 @@ def load_batteries(path: str | Path) -> list[dict]:
         for k in ("id", "battery", "text", "scale"):
             if k not in it:
                 raise ValueError(f"survey item missing {k!r}: {it}")
+        if not isinstance(it["text"], str) or not it["text"].strip():
+            raise ValueError(f"survey item {it['id']} has no text")
         if not isinstance(it["scale"], dict) or "min" not in it["scale"] or "max" not in it["scale"]:
             raise ValueError(f"survey item {it['id']} needs scale.min and scale.max")
+        lo, hi = it["scale"]["min"], it["scale"]["max"]
+        # bool is an int in Python; 1.0 and "5" are not integer bounds either.
+        if type(lo) is not int or type(hi) is not int:
+            raise ValueError(f"survey item {it['id']}: scale.min and scale.max must be integers, got {lo!r} "
+                             f"and {hi!r}")
+        if lo >= hi:
+            raise ValueError(f"survey item {it['id']}: scale.min {lo} must be below scale.max {hi}")
         if it["id"] in seen:
             raise ValueError(f"duplicate survey item id {it['id']}")
         seen.add(it["id"])
