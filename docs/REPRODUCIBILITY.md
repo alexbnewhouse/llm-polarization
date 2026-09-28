@@ -21,15 +21,15 @@ list before you archive it. If an item is false, the run is still usable — but
 | # | The standard | Where it is satisfied today |
 |---|---|---|
 | 1 | Every model used is pinned by the SHA-256 of its GGUF file, not by a name or a tag. | `manifest.json` → `seeker.model_sha256`, `mentor.model_sha256`; `judge-<sha>.json` → `model_sha256`; and on every row of `turns.jsonl`, `surveys.jsonl` and `scores.jsonl`. |
-| 2 | Every model's chat template is pinned by hash, and the harness's rendering was proved identical to the server's before the run started. | `manifest.json` → `template_sha256`; `harness check` runs the parity test twice (with and without a leading system message) and `run` runs `check` first. |
+| 2 | Every model's chat template is pinned by hash, and the harness's rendering was proved identical to the server's before the run started. | `manifest.json` → `template_sha256`; `harness check` runs the parity test twice (with and without a leading system message), with the config's `enable_thinking` on both sides, and `run` runs `check` first and records its rows in `manifest.json` → `check`. A template that prints the date is compared on the server's date, and a leading BOS the server drops is ignored; the row says so each time (`harness/README.md`, Servers). |
 | 3 | The template *source string* is archived, not only its hash. | `manifest.json` → `seeker.template_source`, `mentor.template_source`; `judge-<sha>.json` → `template_source`. The template the server itself reports is stored beside it as `server_chat_template`. |
 | 4 | Every random choice is seeded from one number, and every seed is written down. | `run_seed` in `manifest.json` → `config`, the per-dyad `seed` in `dyads.jsonl`, and the derived per-generation seed on every row of `turns.jsonl`, `surveys.jsonl` and `scores.jsonl`. |
 | 5 | The exact prompt sent for every generation is recoverable, or its hash is logged. | `prompt_sha256` on every row of all three files, and recoverable end to end from the archive alone (section 4a). |
-| 6 | The sampling parameters for every generation are recorded. | Dialogue turns: `temperature`, `top_p`, `n_predict` on the row itself, and `manifest.json` → `config.generation`. Surveys: `temperature`, `n_predict` on the row. Judge: `judge-<sha>.json`. Server-side defaults the harness never sets (`top_k`, `min_p`, penalties): `manifest.json` → `default_generation_settings`. |
+| 6 | The sampling parameters for every generation are recorded. | Dialogue turns: `temperature`, `top_p`, `n_predict` on the row itself, and `manifest.json` → `config.generation`. Surveys: `temperature`, `top_p`, `n_predict` and `schema` on the row. Judge: `judge-<sha>.json`, with `samplers`. Every other sampler (`top_k`, `min_p`, the penalties, DRY, XTC, mirostat) is sent on every request at llama.cpp's defaults or the config's `generation` values, so no server's own flags change a generation; the servers' defaults are recorded as `sampler_defaults` and a resume refuses a change. |
 | 7 | The software environment is recorded: Python, jinja2, gguf-py, OS. | `manifest.json` → `environment` (`python`, `platform`, `jinja2`, `harness_version`, `gguf_py_path`, `gguf_py_commit`). `harness/requirements.lock` pins the development environment. |
-| 8 | The llama.cpp build and commit are recorded. | `manifest.json` → `build_info`, from the server's `/props`. |
+| 8 | The llama.cpp build and commit are recorded. | `manifest.json` → `build_info`, from the server's `/props`; a resume, a `survey` pass and a `baseline` re-run refuse another build, other sampler defaults or another per-slot `n_ctx`. |
 | 9 | The server's flags, backend and GPU are recorded. | `build_info`, `total_slots`, `model_ftype` and `default_generation_settings` from `/props`, and `environment.gpu` (nvidia-smi / rocm-smi / `/sys/class/drm`). The exact `llama-server` command line is **(open)**: it is not in the manifest, and the operating point in `models/RUN_APPROACH.md` is the intended configuration. Say in the appendix that you took the flags from there. |
-| 10 | The harness's own git commit is recorded, and the tree was clean. | `manifest.json` → `harness_commit` (read in the harness's own directory), `harness_dirty` (null when git could not say) and `harness_diff_sha256`. A run refuses to start when the commit cannot be read, and prints a WARN when the tree is dirty or its state unknown. A resume from another commit, another uncommitted diff or an unreadable git state is refused, so every row of a run comes from the recorded code. `scores.jsonl` rows carry the commit that scored them, which is often a later one. |
+| 10 | The harness's own git commit is recorded, and the tree was clean. | `manifest.json` → `harness_commit` (read in the harness's own directory), `harness_dirty` (null when git could not say) and `harness_diff_sha256`. A run refuses to start when the commit cannot be read, and prints a WARN when the tree is dirty or its state unknown. A resume from another commit, another uncommitted diff or an unreadable git state is refused, so every row of a run comes from the recorded code, unless `run --allow-code-change` was given: then `manifest.json` → `resume_overrides` records each change, and every `started` row in `status.jsonl` carries the commit that ran that attempt. `scores.jsonl` rows carry the commit that scored them, which is often a later one. |
 | 11 | The run manifest is sufficient to re-run any single dialogue. | Yes. See section 4. |
 | 12 | The survey items and their version are recorded with the run. | `manifest.json` → `batteries` `{path, sha256, n_items, item_ids}`, and a resume refuses a file that no longer hashes to it; `batteries_sha256` on every `surveys.jsonl` row; `version` and `adapted` inside `instruments/batteries.json`, which is committed. The wording is recoverable by checking out the commit whose file hashes to `batteries.sha256`. |
 | 13 | The judge model and the judge prompt are recorded. | `judge-<sha>.json`: model path and hash, template hash and source, build info, scope, `temperature`, `n_predict`, and the judge prompt text (`judge_system`, `judge_tasks`) verbatim. Plus `judge_sha256`, `judge_prompt_sha256` and `harness_commit` on every `scores.jsonl` row. |
@@ -47,7 +47,13 @@ configuration — a resume refuses when the run-affecting config differs (`seeke
 `generation`, `run_seed`, `batteries`, `now`), and equally when the instrument's content, an input dyad
 row, a served model, template or llama.cpp build, or the harness code differs from what `manifest.json`
 records (`manifest.json` → `resume_compares`). `concurrency`, `data_dir`, `gguf_py_path`,
-`cache_reuse_limit` and `grid` are operational and may change on a resume.
+`cache_reuse_limit`, `grid` and `study` are operational and may change on a resume.
+
+Across runs, the study lock (`study.json`, config `study`; `harness/README.md`, "The study lock") pins
+what every arm must share: `run_seed`, `now`, the wave manifest, the instrument, the grid and the judge.
+`check` reports it, `run` and `baseline` refuse a config that differs, and `score` refuses another judge.
+A descope is a subset of the wave manifest by `dyad_id` (`harness.randomize --subset-of`), never a new
+randomization, and its assignment log records the parent's sha256.
 
 The field-by-field data dictionary is `data/README.md`, derived from the code. In outline:
 
@@ -59,7 +65,8 @@ The field-by-field data dictionary is `data/README.md`, derived from the code. I
 | `dyads.jsonl` | dyad attempt | the treatment: condition, persona text in full, reminder, mode, per-dyad seed, `n_turns` |
 | `turns.jsonl` | message | model hash, slot, sampling, prompt hash, seed, the generation, cache accounting, context accounting, timings |
 | `surveys.jsonl` | item × dyad × phase | phase, `origin`, item id/battery/scale, instrument hash, mentor model and template hash, slot, seed, answer and raw text |
-| `scores.jsonl` | (turn, agent, metric) | judge hash, scoring commit, seed, judge prompt hash, score, rationale, raw text |
+| `scores.jsonl` | (turn, agent, metric) | scope, judge hash, scoring commit, seed, judge prompt hash, score, rationale, raw text |
+| `baseline.jsonl` | item × administration (a `baseline` run) | as a survey row, with `administration`: the pre battery K times, no dialogue |
 | `status.jsonl` | status transition | `started` / `complete` / `failed` + reason. Resume and analysis both read it |
 | `flags.jsonl` | scored, complete dyad | the adherence flag and its inputs; derived from `scores.jsonl` and replaced on every `flags` run |
 
@@ -71,7 +78,8 @@ wrong. Use a new `run_id` against the new instrument instead. It refuses, too, a
 differs from the run's (`run_seed`, `now` and `generation` are in every survey seed or prompt). An item
 already re-administered for a dyad in that phase is never asked again, so a second pass only fills in
 what a failed one left, and there is at most one `readministered` row per (dyad, attempt, phase, item)
-without an `error`.
+without an `error` for each sampling (`schema`, `temperature`, `n_predict`): the unconstrained check
+(`--no-schema`) and a `--temperature` pass are measurements of their own.
 
 If you re-run the same `run_id` with a changed run-affecting config, a changed instrument or input dyad
 row, against a model, template or llama.cpp build that differs from the manifest's, or from different
@@ -268,10 +276,10 @@ is appended after it, and `run`, `survey` or `score` with `--repair-torn-line` c
 `<name>.torn-<time>` and drops that one line (or adds its newline, when it is a whole row).
 
 **8. Scoring is idempotent, with one asymmetry to declare.** `score` skips any (dyad, attempt, turn,
-agent, metric) that already has a row without an `error`. A row whose `score` is `null` — the judge
-replied but the reply did not parse — counts as done and is never retried. A row with an `error` — the
-judge server failed — is retried on the next `score`, and the failed row stays in the file. Report the
-number of null scores; both behaviours are deliberate, and neither rewrites a row.
+agent, metric) that already has a row from that judge, in that scope, without an `error`. A row whose
+`score` is `null` — the judge replied but the reply did not parse — counts as done and is never retried. A
+row with an `error` — the judge server failed — is retried on the next `score`, and the failed row stays
+in the file. Report the number of null scores; both behaviours are deliberate, and neither rewrites a row.
 
 **9. What is fully deterministic, and should be said so.** The seeds
 (`sha256(run_seed|dyad_seed|dyad_id|attempt|turn|agent)`), the prompt strings and therefore
@@ -309,7 +317,10 @@ so anything still open is closed before the last wave rather than after.
 - [ ] Model SHA-256s in the manifest match the GGUF files in the archive.
 - [ ] The `run_seed` is stated in the paper.
 - [ ] The `now` value is the same across every run in the study — it is in every prompt for the
-      gpt-oss-family arms. Nothing enforces it across runs; check it by hand.
+      gpt-oss-family arms. The study lock enforces it, with `run_seed`, the manifest, the instrument, the
+      grid and the judge, for every run whose config names `study`: check that every run's
+      `manifest.study` is the committed `study.json`.
+- [ ] `manifest.resume_overrides` is absent, or each override is explained in the appendix.
 - [ ] `manifest.environment` is present and its `jinja2` version is the one in the methods section.
 - [ ] `manifest.environment.gpu` and `build_info` are reported, and the appendix says the server flags
       were the operating point in `models/RUN_APPROACH.md`.
@@ -323,6 +334,7 @@ so anything still open is closed before the last wave rather than after.
 - [ ] The judge is confirmed to be a third model, distinct from both seeker and mentor. (The harness
       refuses otherwise, so this is already true if `score` ran.)
 - [ ] The judge passed `check` before scoring (`score` refuses otherwise).
+- [ ] Every arm was scored by the judge `study.json` pins (`score` refuses another when `study` is set).
 
 **The appendix text**
 
@@ -333,7 +345,8 @@ so anything still open is closed before the last wave rather than after.
 - [ ] The number of dyads with `attempt > 1` is reported, with a check against condition.
 - [ ] The number of survey items that failed to parse (`answer: null`) is reported, and so is the number
       whose answer was salvaged from free text (`answer_method` other than `json`) and the number cut off
-      by the cap (`answer_method: "truncated"`).
+      by the cap (`answer_method: "truncated"`), and the unconstrained check (`survey --no-schema --sample`):
+      how often the free-text answer equals the constrained one.
 - [ ] The number of turns with `finish_reason: "length"` is reported — those turns hit the 300-token cap
       and their text is truncated by design.
 - [ ] Section 4 of this document — the reproduce-one-dialogue procedure — is included verbatim or

@@ -194,9 +194,9 @@ pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `Un
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 | `family` (in `seeker`, `mentor`, `judge`) | The model family slug (`qwen`, `gpt-oss`, `olmo`, `glm`, `llama`, `gemma`, `mistral`, `deepseek`, `phi`), when the GGUF name, its directory and the server alias do not show it: an ollama blob served without `--alias` does not. `score` refuses when the judge's or the mentor's family is unknown, so set it for those; `check` warns. The mentor's may also be set in the `score` config when `manifest.json` has none. |
 
-`concurrency`, `data_dir`, `gguf_py_path`, `cache_reuse_limit` and `grid` are operational: changing them
-and resuming the same `run_id` is allowed. What a `run` resume compares with `manifest.json` —
-`RESUME_COMPARES` in `harness/run.py`, recorded in the manifest as `resume_compares` — is:
+`concurrency`, `data_dir`, `gguf_py_path`, `cache_reuse_limit`, `grid` and `study` are operational:
+changing them and resuming the same `run_id` is allowed. What a `run` resume compares with `manifest.json`
+— `RESUME_COMPARES` in `harness/run.py`, recorded in the manifest as `resume_compares` — is:
 
 - the run-affecting config, `RUN_AFFECTING_CONFIG` in `harness/log.py`: `seeker`, `mentor`, `judge`,
   `generation` (the whole block, so `generation.timeout` is compared too, even though it changes no
@@ -303,8 +303,8 @@ What the parity rows allow, and say when they use it (2026-09-28):
 ## Output
 
 Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha12>.json`, `dyads.jsonl`, `status.jsonl`,
-`turns.jsonl`, `surveys.jsonl`, `scores.jsonl` and `flags.jsonl`. Every file and every field:
-`data/README.md`.
+`turns.jsonl`, `surveys.jsonl`, `scores.jsonl` and `flags.jsonl`, or, for a `baseline` run,
+`manifest.json` and `baseline.jsonl`. Every file and every field: `data/README.md`.
 
 ## Terms (fixed 2026-09-02)
 
