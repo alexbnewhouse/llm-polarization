@@ -173,7 +173,7 @@ pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `Un
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
 | `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |
 | `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
-| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |
+| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. Also every other llama.cpp sampler, at llama.cpp's defaults unless set here: `top_k` 40, `min_p` 0.05, `typical_p` 1, `top_n_sigma` -1, `repeat_penalty` 1, `repeat_last_n` 64, `presence_penalty` 0, `frequency_penalty` 0, `dry_multiplier` 0, `xtc_probability` 0, `mirostat` 0 (`SAMPLER_DEFAULTS` in `harness/client.py`). They go out on every dialogue, survey and judge request, so what a server was started with cannot change a generation, and they are compared on resume with the rest of `generation`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
 | `study` | Path to the study lock, `study.json` (below), or `null` (the default) for none. Operational: not compared on resume, because what it holds is compared directly. |
 | `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. Two URLs count as one server when they resolve to the same address, port and path (every loopback name is one address; a trailing slash is ignored), or when the servers report the same model file, model hash, build, slot count and per-slot context. |
@@ -192,7 +192,8 @@ and resuming the same `run_id` is allowed. What a `run` resume compares with `ma
   (`data/<run_id>/input-dyads.jsonl`): `condition`, `persona_text`, `persona_reminder`, `persona_mode`,
   `seed`, `n_turns`. A dyad added to the input manifest is refused; a dyad dropped from it is not (a
   descope is a subset);
-- each served model's sha256, its template's sha256, and its llama.cpp `build_info`;
+- each served model's sha256, its template's sha256, its llama.cpp `build_info`, its sampler defaults
+  (`/props` `default_generation_settings.params`) and its per-slot `n_ctx`;
 - the harness commit, and whether the tree was dirty: a dirty tree resumes only with the same
   uncommitted diff under `harness/` and `instruments/` (`harness_diff_sha256`), and a git state that
   cannot be read refuses.

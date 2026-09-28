@@ -58,8 +58,10 @@ refuses a judge from the mentor's family, and an unknown one), `family_source` (
 null), `template_sha256`, `template_source`
 (the chat template in full), `server_chat_template` (what the server reports at `/props`, or null),
 `build_info` (the llama.cpp build and commit), `model_ftype`, `total_slots`,
-`default_generation_settings` (the server's own sampler defaults — `top_k`, `min_p` and the penalties
-that the harness never sets).
+`sampler_defaults` (`default_generation_settings.params`: the server's own sampler defaults, which the
+harness overrides on every request with the config's `generation` values, recorded so a restart with other
+flags is seen; a resume refuses a change), `n_ctx` (the per-slot context; compared on resume too),
+`default_generation_settings` (all of `/props` `default_generation_settings`, as it was).
 
 ## `input-dyads.jsonl`
 
@@ -78,7 +80,8 @@ sha256, assignment}`, `filter` `{per_variant, control, ideology, topic}`, `rows`
 ## `judge-<sha12>.json`
 
 The judge's provenance, written by `score`: the same fields as a role block above, plus `scope`,
-`subsample` (the dyad fraction, or null), `temperature`, `n_predict`, `judge_system` and `judge_tasks` (the judge prompt text verbatim),
+`subsample` (the dyad fraction, or null), `temperature`, `n_predict`, `samplers` (every other sampler
+the judge requests were sent with), `judge_system` and `judge_tasks` (the judge prompt text verbatim),
 `harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of
 a run and never rewritten, while scoring happens later and often from a different commit. A later pass
 with the same judge whose record differs in anything but `ts` (another scope, subsample or harness

@@ -343,7 +343,7 @@ class Scorer:
             try:
                 comp = judge.client.complete(prompt, id_slot=judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
                                              temperature=JUDGE_TEMPERATURE, json_schema=score_schema(),
-                                             cache_prompt=True)
+                                             cache_prompt=True, samplers=self.settings.samplers)
             except ServerError as e:
                 out.update({"score": None, "rationale": "", "raw_text": "", "error": str(e), "ts": self.clock()})
                 self.scores_log.write(out)

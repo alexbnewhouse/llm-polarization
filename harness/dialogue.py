@@ -2,8 +2,8 @@
 from __future__ import annotations
 import re
 import sys
-from dataclasses import dataclass
-from harness.client import ServerError
+from dataclasses import dataclass, field
+from harness.client import SAMPLER_DEFAULTS, ServerError
 from harness.log import JsonlWriter, derive_seed, now_iso, sha256_text
 from harness.templates import ChatTemplate, render
 from harness.transcript import Transcript, SEEKER, MENTOR
@@ -32,6 +32,8 @@ class GenSettings:
     # A mid-dialogue turn that prefills more than this many tokens, when the harness expected far fewer,
     # fails the dyad (CacheReuseLost). None disables the hard failure; cache_warning is still logged.
     cache_reuse_limit: int | None = 1000
+    # Every other sampler, sent explicitly on every request (harness.client.SAMPLER_DEFAULTS).
+    samplers: dict = field(default_factory=lambda: dict(SAMPLER_DEFAULTS))
 
 
 @dataclass
@@ -161,7 +163,8 @@ class DialogueRunner:
         try:
             expected = expected_new_tokens(h.client, prompt, last_prompt[agent])
             comp = h.client.complete(prompt, id_slot=h.slot, seed=seed, n_predict=s.n_predict,
-                                     temperature=s.temperature, top_p=s.top_p, cache_prompt=True)
+                                     temperature=s.temperature, top_p=s.top_p, cache_prompt=True,
+                                     samplers=s.samplers)
         except ServerError as e:
             row.update({"prompt_n": None, "predicted_n": None, "expected_new": None, "cache_warning": None,
                         "truncated": None, "tokens_evaluated": None, "tokens_cached": None,

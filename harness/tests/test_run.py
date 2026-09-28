@@ -1052,3 +1052,51 @@ def test_a_third_ctrl_c_abandons_the_dyads_in_flight(tmp_path, monkeypatch, caps
         ("d0", "failed", "abandoned"), ("d1", "failed", "abandoned")]
     assert "abandoned 2 dyads" in capsys.readouterr().err
     assert R.plan_work(manifest_rows(5), status)[0][1] == 2          # retried as a new attempt
+
+
+def test_samplers_go_out_on_every_request_and_a_resume_compares_the_servers_defaults(tmp_path, monkeypatch,
+                                                                                        capsys):
+    # Red-team M2: the config's samplers are sent on dialogue, survey and judge requests alike, and a
+    # server restarted with other sampler defaults or another context size refuses the resume.
+    from harness.client import SAMPLER_DEFAULTS
+    clients = _fake_servers(tmp_path, monkeypatch)
+    factory = R.LlamaClient
+    params = {"top_k": 40, "min_p": 0.05, "repeat_penalty": 1.0}
+    def with_defaults(url, timeout=None, p=params, n_ctx=8192):
+        c = factory(url, timeout)
+        c.props = (lambda base: lambda: {**base, "default_generation_settings": {"params": dict(p),
+                                                                                 "n_ctx": n_ctx}})(c.props())
+        return c
+    monkeypatch.setattr(R, "LlamaClient", with_defaults)
+    gen = {"top_k": 20, "repeat_penalty": 1.1}
+    cfg = write_cfg(tmp_path, generation=gen)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    run = lambda: R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"])
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "failed")
+    assert run() == 2
+    mf = json.loads(log.run_paths(tmp_path / "data", "r1").manifest.read_text())
+    assert mf["mentor"]["sampler_defaults"] == params and mf["mentor"]["n_ctx"] == 8192
+    assert mf["config"]["generation"]["top_k"] == 20 and mf["config"]["generation"]["min_p"] == 0.05
+    want = {**SAMPLER_DEFAULTS, **gen}
+    assert R._settings(R.load_config(cfg)).samplers == want
+    monkeypatch.setattr(R, "LlamaClient", lambda url, timeout=None: with_defaults(url, timeout,
+                                                                                    p={**params, "top_k": 1}))
+    capsys.readouterr()
+    assert run() == 1
+    assert "mentor.sampler_defaults differ from manifest.json in top_k" in capsys.readouterr().err
+    monkeypatch.setattr(R, "LlamaClient", lambda url, timeout=None: with_defaults(url, timeout, n_ctx=4096))
+    assert run() == 1
+    assert "n_ctx is now 4096" in capsys.readouterr().err
+    # every request a real dyad and a scoring pass send carries the samplers
+    monkeypatch.setattr(R, "LlamaClient", with_defaults)
+    monkeypatch.undo()
+    clients = _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path, generation=gen)
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r2"]) == 0
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r2", "--scope", "pilot"]) == 0
+    sent = [c for url in ("http://s", "http://m", "http://j") for c in clients[url].calls if c["n_predict"] != 1]
+    assert sent and all(c["samplers"] == want for c in sent)
+    assert {c["n_predict"] for c in sent} == {300, 32, 160}                 # dialogue, survey, judge
+    judge = json.loads(next(log.run_paths(tmp_path / "data", "r2").root.glob("judge-*.json")).read_text())
+    assert judge["samplers"] == want

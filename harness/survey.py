@@ -112,7 +112,7 @@ class SurveyRunner:
                                                    n_predict=self.n_predict, temperature=self.temperature,
                                                    top_p=self.top_p,
                                                    json_schema=answer_schema(it) if self.schema else None,
-                                                   cache_prompt=True)
+                                                   cache_prompt=True, samplers=self.settings.samplers)
             except ServerError as e:
                 row.update({"answer": None, "answer_method": None, "raw_text": "", "finish_reason": "error",
                             "predicted_n": None, "truncated": None, "prompt_n": None, "error": str(e),

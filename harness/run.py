@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import jinja2
 from harness import __version__, log, study
-from harness.client import LlamaClient, ServerError
+from harness.client import SAMPLER_DEFAULTS, LlamaClient, ServerError
 from harness.grid import check_conditions, load_grid
 from harness.randomize import assignment_log_path
 from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
@@ -40,7 +40,10 @@ DEFAULT_CONFIG = {
     # Operational, like concurrency: a mid-dialogue turn that prefills more than this many tokens when the
     # cache should have held fails the dyad (harness/dialogue.py CacheReuseLost). null disables it.
     "cache_reuse_limit": 1000,
-    "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600, "enable_thinking": False},
+    # temperature, top_p and n_predict for dialogue turns, and every other sampler at llama.cpp's default,
+    # sent on every request (dialogue, survey, judge) so the server's own flags cannot change them.
+    "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600,
+                   "enable_thinking": False, **SAMPLER_DEFAULTS},
     "seeker": {"url": None, "gguf_path": None}, "mentor": {"url": None, "gguf_path": None},
     "judge": {"url": None, "gguf_path": None},
     # The study lock (harness/study.py): a study.json every arm's run, baseline and scoring pass must match.
@@ -120,7 +123,12 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
                       # (an arm started with --chat-template overrides it). None if /props does not say.
                       "server_chat_template": props.get("chat_template"),
                       "build_info": props.get("build_info", ""), "model_ftype": props.get("model_ftype"),
-                      "total_slots": props.get("total_slots"), "default_generation_settings": props.get("default_generation_settings", {})}
+                      "total_slots": props.get("total_slots"),
+                      "default_generation_settings": props.get("default_generation_settings", {}),
+                      # The server's sampler defaults and per-slot context as it was started, compared on
+                      # resume: a server restarted with other flags is another server (red-team M2).
+                      "sampler_defaults": (props.get("default_generation_settings") or {}).get("params"),
+                      "n_ctx": (props.get("default_generation_settings") or {}).get("n_ctx")}
     return handle, manifest_entry
 
 
@@ -356,7 +364,8 @@ def _settings(cfg: dict) -> GenSettings:
     """Build the GenSettings the run will use for dialogue turns from the config's generation block."""
     g = cfg["generation"]
     return GenSettings(g["temperature"], g["top_p"], g["n_predict"], cfg["now"], g["enable_thinking"],
-                       cache_reuse_limit=cfg.get("cache_reuse_limit"))
+                       cache_reuse_limit=cfg.get("cache_reuse_limit"),
+                       samplers={k: g.get(k, v) for k, v in SAMPLER_DEFAULTS.items()})
 
 
 def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
@@ -496,7 +505,7 @@ def _load_manifest(paths: RunPaths) -> dict:
     return json.loads(paths.manifest.read_text(encoding="utf-8"))
 
 
-IDENTITY_KEYS = ("model_sha256", "template_sha256", "build_info")
+IDENTITY_KEYS = ("model_sha256", "template_sha256", "build_info", "sampler_defaults", "n_ctx")
 # The treatment fields of a dyad row. A resume compares them, per dyad_id, with the copy of the input
 # manifest the run started with.
 DYAD_FIELDS = ("condition", "persona_text", "persona_reminder", "persona_mode", "seed", "n_turns")
@@ -519,6 +528,11 @@ def _identity_changes(existing: dict, entries: dict, roles) -> list[str]:
         was, now = existing.get(role) or {}, entries[role]
         for key in IDENTITY_KEYS:
             if key in was and was[key] != now.get(key):
+                if isinstance(was[key], dict) and isinstance(now.get(key), dict):
+                    diff = sorted(k for k in set(was[key]) | set(now[key])
+                                  if was[key].get(k) != now[key].get(k))
+                    out.append(f"{role}.{key} differ from manifest.json in {_few(diff)}")
+                    continue
                 out.append(f"{role}.{key} is now {_short(key, now.get(key))}, manifest.json records "
                            f"{_short(key, was[key])}")
     return out
@@ -1018,7 +1032,7 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
         # The judge, and the run's own run_seed, now, manifest and instrument, must be the study's: a judge
         # accepted for one arm and not another is a judge-by-arm confound (gap audit F9).
         study.check(cfg["study"], {**study.run_values(manifest), "judge": study.judge_values(entry)})
-    record = write_judge_manifest(paths, entry, scope, subsample)
+    record = write_judge_manifest(paths, entry, scope, subsample, samplers=_settings(cfg).samplers)
     n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
     notes = [f"judge record {record.name}"]
     if scorer.control_excluded:
@@ -1135,12 +1149,14 @@ def cmd_study(cfg: dict, manifest_path: str) -> int:
     return 0
 
 
-def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, subsample: float | None = None) -> Path:
+def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, subsample: float | None = None,
+                         samplers: dict | None = None) -> Path:
     """Record the judge's provenance beside the run, in its own small file. It cannot go into
     manifest.json: that file is written once when the run starts and is deliberately never rewritten, and
     scoring happens later -- often from a different harness commit and against a model the run never saw."""
     judge = dict(entry)      # entry already carries url, alias, model_path, both hashes, the template
     judge.update({"scope": scope, "subsample": subsample, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
+                  "samplers": samplers,
                   "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
                   "harness_commit": _git_commit(), "ts": now_iso()})
     # Same judge, different scoring pass (another scope, subsample or harness commit): a new record beside

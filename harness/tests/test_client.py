@@ -70,3 +70,18 @@ def test_parse_completion_keeps_the_servers_context_accounting():
     assert c.tokens_evaluated == 900 and c.tokens_cached == 850
     old = C.parse_completion({"content": "x"})          # a build that reports none of the three
     assert (old.truncated, old.tokens_evaluated, old.tokens_cached) == (None, None, None)
+
+
+def test_complete_sends_every_sampler_and_nothing_overrides_the_request(monkeypatch):
+    # Red-team M2: top_k, min_p, the penalties, DRY, XTC and mirostat were whatever each server was started
+    # with, so two arm servers could sample differently in silence.
+    cl = C.LlamaClient("http://127.0.0.1:1")
+    seen = {}
+    monkeypatch.setattr(cl, "_post", lambda p, b: seen.setdefault("body", b) or {"content": ""})
+    cl.complete("P", id_slot=2, seed=7, n_predict=5, temperature=0.7,
+                samplers={**C.SAMPLER_DEFAULTS, "top_k": 20, "prompt": "not this", "seed": 0})
+    b = seen["body"]
+    assert all(b[k] == v for k, v in C.SAMPLER_DEFAULTS.items() if k != "top_k") and b["top_k"] == 20
+    assert b["prompt"] == "P" and b["seed"] == 7 and b["id_slot"] == 2
+    assert C.SAMPLER_DEFAULTS["top_k"] == 40 and C.SAMPLER_DEFAULTS["min_p"] == 0.05
+    assert C.SAMPLER_DEFAULTS["repeat_penalty"] == 1.0

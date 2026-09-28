@@ -6,6 +6,15 @@ import urllib.error, urllib.request
 from dataclasses import dataclass
 
 
+# llama.cpp's own sampler defaults (common/common.h at b10488), sent on every /completion so that what a
+# server was started with (--top-k, --min-p, --repeat-penalty, DRY, XTC, mirostat ...) cannot change a
+# generation: two arm servers started with different flags would otherwise differ in silence (red-team M2).
+# The config's `generation` block overrides any of them; temperature, top_p and seed are sent separately.
+SAMPLER_DEFAULTS = {"top_k": 40, "min_p": 0.05, "typical_p": 1.0, "top_n_sigma": -1.0, "repeat_penalty": 1.0,
+                    "repeat_last_n": 64, "presence_penalty": 0.0, "frequency_penalty": 0.0,
+                    "dry_multiplier": 0.0, "xtc_probability": 0.0, "mirostat": 0}
+
+
 class ServerError(Exception):
     """A llama-server request failed: connection, timeout, or an HTTP error status."""
     pass
@@ -104,11 +113,12 @@ class LlamaClient:
 
     def complete(self, prompt: str, *, id_slot: int, seed: int, n_predict: int, temperature: float,
                  top_p: float = 0.95, json_schema: dict | None = None, cache_prompt: bool = True,
-                 stop: list[str] | None = None) -> Completion:
+                 stop: list[str] | None = None, samplers: dict | None = None) -> Completion:
         """One /completion request on slot `id_slot`. `json_schema` is sent only when given and `stop` only
-        when non-empty; `cache_prompt` lets the slot reuse its KV cache for the shared prefix."""
-        body = {"prompt": prompt, "id_slot": id_slot, "seed": seed, "n_predict": n_predict,
-                "temperature": temperature, "top_p": top_p, "cache_prompt": cache_prompt}
+        when non-empty; `cache_prompt` lets the slot reuse its KV cache for the shared prefix. `samplers`
+        (SAMPLER_DEFAULTS, or the config's values for them) go into the body as they are."""
+        body = {**(samplers or {}), "prompt": prompt, "id_slot": id_slot, "seed": seed,
+                "n_predict": n_predict, "temperature": temperature, "top_p": top_p, "cache_prompt": cache_prompt}
         if json_schema is not None:
             body["json_schema"] = json_schema
         if stop:
