@@ -123,6 +123,35 @@ def _context_budget(cfg: dict, props: dict, max_n_turns: int) -> tuple[str, bool
     return ("context_budget", int(n_ctx) >= need, f"n_ctx {int(n_ctx)} per slot vs {detail}")
 
 
+def _slot_check(handle: AgentHandle, cfg: dict, props: dict) -> tuple[str, bool | None, str]:
+    """Does the server have a free slot for every worker? `concurrency` (null: the server's slot count)
+    must not exceed the slot count -- llama.cpp wraps an out-of-range id_slot, so two dyads would share a
+    slot and the logged id_slot would be wrong -- and none of slots 0..concurrency-1 may be busy, which
+    means another client (a second run, another arm on a shared seeker server) is using them."""
+    try:
+        slots = handle.client.slots()
+        n, busy = len(slots), sorted(s.get("id") for s in slots if s.get("is_processing"))
+        source = "/slots"
+    except (ServerError, AttributeError):
+        n, busy, source = props.get("total_slots"), None, "/props total_slots"
+    want = cfg.get("concurrency")
+    if not n:
+        if want is None:
+            return ("slots", False, "the server reports no slot count; set `concurrency` in the config")
+        return ("slots", None, f"the server reports no slot count; concurrency {want} is not checked")
+    need = want or n
+    if need > n:
+        return ("slots", False, f"concurrency {need} exceeds the server's {n} slots ({source}); llama.cpp "
+                "wraps the slot id, so two dyads would share a slot")
+    busy = None if busy is None else [b for b in busy if b is not None and b < need]
+    if busy:
+        return ("slots", False, f"slot(s) {', '.join(map(str, busy))} of the {need} needed are busy: another "
+                "client is using this server")
+    if busy is None:
+        return ("slots", None, f"{need} of {n} slots needed; no /slots, so a busy slot cannot be seen")
+    return ("slots", True, f"{need} of {n} slots needed, none busy")
+
+
 CACHE_PROBE_MARGIN = 64
 # The probe's first message is padded to a few hundred tokens: with a one-line prompt a full re-prefill
 # would still sit inside the 64-token margin and the probe could not tell a cold slot from a warm one.
@@ -161,6 +190,8 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
       the GGUF. A warning rather than a failure: the Olmo arm is deliberately served
       `--no-jinja --chat-template chatml`, and the parity rows above are the gate that matters.
     - `context_budget` (only when a dyad manifest is given): does the longest dialogue fit in a slot?
+    - `slots`: `concurrency` fits the server's slot count and none of the needed slots is busy (_slot_check).
+      The cache probe is not sent to a busy slot.
     - `cache_reuse`: two completions on this agent's slot, the second extending the first; the server must
       prefill only the new tokens. Catches a server without prompt caching, or a template that rewrites the
       prefix between turns, before a wave spends a day finding out (models/RUN_APPROACH.md: the largest
@@ -194,7 +225,12 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
                         "--chat-template; template parity is the gate"))
     if max_n_turns:
         results.append(_context_budget(cfg, props, max_n_turns))
-    results.append(_cache_reuse_probe(handle, now))
+    slot_row = _slot_check(handle, cfg, props)
+    results.append(slot_row)
+    if slot_row[1] is False and "busy" in slot_row[2]:
+        results.append(("cache_reuse", False, "not probed: the server's slots are in use"))
+    else:
+        results.append(_cache_reuse_probe(handle, now))
     if handle.name == SEEKER:
         try:
             render(handle.template, FIXTURE_MESSAGES, now=now)
@@ -514,9 +550,9 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
         # The input manifest as the run started with it, so a resume can compare dyad rows field by field.
         shutil.copyfile(manifest_path, paths.input_dyads)
     log.write_manifest(paths, manifest)
-    # concurrency: null in the config means "one dialogue per slot, limited by the smaller server".
-    server_slots = min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
-    concurrency = cfg["concurrency"] or server_slots
+    # concurrency: null in the config means "one dialogue per slot, limited by the smaller server". check
+    # has already refused a concurrency above either server's slot count, or null with no count known.
+    concurrency = cfg["concurrency"] or min(int(s_entry["total_slots"]), int(m_entry["total_slots"]))
     work = plan_work(rows, read_jsonl(paths.status))
     print(f"run {run_id}: {len(work)} of {len(rows)} dyads to run, concurrency {concurrency}")
     if not work:
@@ -839,16 +875,18 @@ def main(argv: list[str] | None = None) -> int:
         cfg = load_config(a.config)
         if a.cmd == "check":
             return cmd_check(cfg, a.manifest)
-        if a.cmd == "run":
-            return cmd_run(cfg, a.manifest, a.run_id)
-        if a.cmd == "survey":
-            return cmd_survey(cfg, a.run_id, a.phase)
         if a.cmd == "flags":
             return cmd_flags(cfg, a.run_id, a.threshold, a.metric, a.run_length, a.judge)
         if a.cmd == "agreement":
             return cmd_agreement(cfg, a.run_id, a.metric)
-        return cmd_score(cfg, a.run_id, a.scope, a.subsample)
-    except (ServerError, ManifestMismatch, ValueError) as e:
+        # run, survey and score append rows: one process per run_id at a time.
+        with log.run_lock(run_paths(cfg["data_dir"], a.run_id), a.cmd):
+            if a.cmd == "run":
+                return cmd_run(cfg, a.manifest, a.run_id)
+            if a.cmd == "survey":
+                return cmd_survey(cfg, a.run_id, a.phase)
+            return cmd_score(cfg, a.run_id, a.scope, a.subsample)
+    except (ServerError, ManifestMismatch, ValueError, log.RunLocked) as e:
         # Everything the operator can get wrong -- a dead server, a changed model, a malformed manifest or
         # config -- becomes one error line and exit 1, never a traceback.
         print(f"error: {e}", file=sys.stderr)

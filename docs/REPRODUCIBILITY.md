@@ -349,8 +349,8 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   `manifest.json` is deliberately never rewritten, so the archival step is the written procedure in
   section 3 rather than code.
 - **`write_manifest` is not atomic across processes** and `JsonlWriter` reopens the file per write. Both
-  assume one `run` process per `run_id`, which is how the study is operated; the per-write open and flush
-  is the right durability trade for a research log.
+  assume one process per `run_id`, which `run`, `survey` and `score` enforce with a lock on
+  `data/<run_id>/.lock`; the per-write open and flush is the right durability trade for a research log.
 - **`cmd_run` builds its agents twice**, once inside `check` and once for the run: two extra `/props`
   round-trips per run, in exchange for the manifest recording `/props` as it stands at the moment the run
   actually starts.

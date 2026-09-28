@@ -24,6 +24,9 @@ class FakeClient:
         return {"model_path": "/fake/model.gguf", "total_slots": 4, "build_info": "fake", "model_alias": "fake",
                 "default_generation_settings": {}}
 
+    def slots(self):
+        return [{"id": i, "is_processing": False} for i in range(self.props().get("total_slots") or 0)]
+
     def apply_template(self, messages):
         return render(self.tpl, messages)
 

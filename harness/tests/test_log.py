@@ -82,3 +82,26 @@ def test_resume_index_and_next_attempt():
     assert log.next_attempt(idx, "a") == 3
     assert log.next_attempt(idx, "b") is None
     assert log.next_attempt(idx, "c") == 1
+
+
+def test_resume_index_a_later_failed_row_does_not_undo_a_complete_attempt():
+    # Parallelism H1: a second process's 'failed' row written after this attempt's 'complete' used to win
+    # the tie and re-queue a completed dyad as attempt 2.
+    rows = [{"dyad_id": "a", "attempt": 1, "status": "started"},
+            {"dyad_id": "a", "attempt": 1, "status": "complete"},
+            {"dyad_id": "a", "attempt": 1, "status": "failed"}]
+    idx = log.resume_index(rows)
+    assert idx == {"a": {"attempt": 1, "status": "complete"}} and log.next_attempt(idx, "a") is None
+    rows.append({"dyad_id": "a", "attempt": 2, "status": "failed"})          # a higher attempt still wins
+    assert log.resume_index(rows)["a"] == {"attempt": 2, "status": "failed"}
+
+
+def test_run_lock_refuses_a_second_holder_and_is_released(tmp_path):
+    p = log.run_paths(tmp_path, "r1")
+    with log.run_lock(p, "run"):
+        with pytest.raises(log.RunLocked, match="one harness process per run_id"):
+            with log.run_lock(p, "score"):
+                pass
+        assert "(run," in (p.root / ".lock").read_text()
+    with log.run_lock(p, "survey"):                                      # released on exit
+        pass

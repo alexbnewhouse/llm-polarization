@@ -676,3 +676,54 @@ def test_resume_compares_instrument_input_rows_build_and_commit(tmp_path, monkey
 def test_git_dirty_is_unknown_not_clean_when_git_cannot_answer(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "HARNESS_DIR", tmp_path)               # not a git repository
     assert R._git_dirty() is None and R._git_diff_sha256() is None
+
+
+def test_a_second_run_on_the_same_run_id_refuses(tmp_path, monkeypatch, capsys):
+    # Red-team L7 / parallelism H1: two `run` processes on one run_id ran every dyad twice.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    paths = log.run_paths(tmp_path / "data", "r1")
+    with log.run_lock(paths, "run"):
+        for cmd in (["run", "--manifest", str(man)], ["survey"], ["score"]):
+            assert R.main([cmd[0], "--config", str(cfg), "--run-id", "r1", *cmd[1:]]) == 1
+            assert ".lock is held by pid" in capsys.readouterr().err
+    assert not paths.status.exists()
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+
+
+def test_check_refuses_concurrency_above_the_slot_count_and_busy_slots(tmp_path, monkeypatch, capsys):
+    # Parallelism M1 / red-team L3: llama.cpp wraps an out-of-range id_slot, so concurrency 3 on a 2-slot
+    # server would put two dyads on one slot. Parallelism H1: a busy slot is another client's.
+    clients = _fake_servers(tmp_path, monkeypatch)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["check", "--config", str(write_cfg(tmp_path, concurrency=3))]) == 1
+    assert "FAIL slots concurrency 3 exceeds the server's 2 slots" in capsys.readouterr().out
+    assert R.main(["run", "--config", str(write_cfg(tmp_path, concurrency=3)), "--manifest", str(man),
+                   "--run-id", "r1"]) == 1
+    assert R.main(["check", "--config", str(write_cfg(tmp_path, concurrency=2))]) == 0
+    capsys.readouterr()
+    factory = R.LlamaClient
+    def busy(url, timeout=None):
+        c = factory(url, timeout)
+        if url == "http://m":
+            c.slots = lambda: [{"id": 0, "is_processing": False}, {"id": 1, "is_processing": True}]
+        return c
+    monkeypatch.setattr(R, "LlamaClient", busy)
+    assert R.main(["check", "--config", str(write_cfg(tmp_path))]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL slots slot(s) 1 of the 2 needed are busy" in out
+    assert R.main(["check", "--config", str(write_cfg(tmp_path, concurrency=1))]) == 0   # slot 1 not needed
+    # no slot count anywhere: concurrency null is refused, not silently 1
+    def no_slots(url, timeout=None):
+        c = factory(url, timeout)
+        c.props = (lambda p: lambda: {**p, "total_slots": None})(c.props())
+        c.slots = lambda: (_ for _ in ()).throw(ServerError("GET /slots: HTTP 501"))
+        return c
+    monkeypatch.setattr(R, "LlamaClient", no_slots)
+    capsys.readouterr()
+    assert R.main(["check", "--config", str(write_cfg(tmp_path))]) == 1
+    assert "set `concurrency`" in capsys.readouterr().out
+    assert R.main(["check", "--config", str(write_cfg(tmp_path, concurrency=2))]) == 0     # a warning only

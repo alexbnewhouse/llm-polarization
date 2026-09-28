@@ -1,6 +1,6 @@
 """Append-only JSONL logging, run manifest, resume index, seeds and hashing."""
 from __future__ import annotations
-import hashlib, json, threading, time
+import contextlib, fcntl, hashlib, json, os, threading, time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,13 +114,40 @@ def write_manifest(paths: RunPaths, manifest: dict) -> None:
     paths.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+class RunLocked(Exception):
+    """Another harness process holds this run's lock file."""
+
+
+@contextlib.contextmanager
+def run_lock(paths: RunPaths, command: str):
+    """Hold an exclusive lock on data/<run_id>/.lock for the life of one command, or raise RunLocked. Two
+    processes appending to one run would run every dyad twice on the same slots. The lock is an
+    fcntl.flock, so the kernel releases it when the process dies, however it dies."""
+    path = paths.root / ".lock"
+    f = open(path, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.seek(0)
+            holder = f.read().strip() or "another process"
+            raise RunLocked(f"{path} is held by {holder}; one harness process per run_id at a time") from None
+        f.seek(0); f.truncate()
+        f.write(f"pid {os.getpid()} ({command}, since {now_iso()})"); f.flush()
+        yield
+    finally:
+        f.close()
+
+
 def resume_index(status_rows: list[dict]) -> dict[str, dict]:
-    """Latest status per dyad, read from status.jsonl. Later rows win ties (`>=`), so a 'complete'
-    written after a 'started' for the same attempt is what counts."""
+    """Latest status per dyad, read from status.jsonl. A higher attempt wins; within one attempt a later
+    row wins, so a 'complete' written after a 'started' is what counts -- except that nothing after a
+    'complete' undoes it: a stray 'failed' for an attempt that completed does not re-queue it."""
     idx: dict[str, dict] = {}
     for r in status_rows:
         cur = idx.get(r["dyad_id"])
-        if cur is None or r["attempt"] >= cur["attempt"]:
+        if cur is None or r["attempt"] > cur["attempt"] or (r["attempt"] == cur["attempt"]
+                                                           and cur["status"] != "complete"):
             idx[r["dyad_id"]] = {"attempt": r["attempt"], "status": r["status"]}
     return idx
 

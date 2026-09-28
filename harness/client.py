@@ -89,6 +89,11 @@ class LlamaClient:
         """The server's /props: model path and alias, build, slots, chat template, sampler defaults."""
         return self._get("/props")
 
+    def slots(self) -> list[dict]:
+        """The server's /slots: one entry per slot with its `id` and `is_processing`. ServerError when the
+        server was started with --no-slots."""
+        return self._get("/slots")
+
     def apply_template(self, messages: list[dict]) -> str:
         """The server's own rendering of `messages` (/apply-template), which the parity check compares to."""
         return self._post("/apply-template", {"messages": messages})["prompt"]
