@@ -5,7 +5,8 @@ dialogues, and report cross-judge agreement.
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
-import argparse, copy, dataclasses, json, os, platform, shutil, sys, threading
+import argparse, copy, dataclasses, ipaddress, json, os, platform, shutil, socket, sys, threading
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -347,6 +348,44 @@ def _agents(cfg: dict, roles=(SEEKER, MENTOR)) -> dict:
     return out
 
 
+def _endpoint(url: str) -> tuple[frozenset, int | None, str]:
+    """A server URL as (addresses, port, path): the host resolved, every loopback name and address folded
+    into one, a trailing slash dropped. A host that does not resolve stands for itself."""
+    u = urllib.parse.urlsplit(str(url).strip())
+    host = (u.hostname or "").lower()
+    try:
+        port = u.port or {"http": 80, "https": 443}.get(u.scheme)
+    except ValueError:
+        port = None
+    try:
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+    except (OSError, UnicodeError):
+        addrs = {host}
+    folded = set()
+    for a in addrs:
+        try:
+            folded.add("loopback" if ipaddress.ip_address(a.split("%")[0]).is_loopback else a)
+        except ValueError:
+            folded.add("loopback" if a == "localhost" else a)
+    return frozenset(folded), port, u.path.rstrip("/")
+
+
+def _same_server(url_a: str, url_b: str) -> bool:
+    """Whether two URLs reach the same server: same port and path, and an address in common."""
+    a, b = _endpoint(url_a), _endpoint(url_b)
+    return a[1:] == b[1:] and bool(a[0] & b[0])
+
+
+def _same_process(a: dict, b: dict) -> bool:
+    """Whether two manifest entries describe one llama-server by what it reports: the same model file,
+    model hash, build, slot count and per-slot context. Catches two URLs to one process that _same_server
+    cannot see (a proxy, a hostname alias); it would also catch one model on both sides, which the design
+    never uses (the seeker is of a different family from the mentor)."""
+    keys = ("model_path", "model_sha256", "build_info", "total_slots")
+    n_ctx = lambda e: (e.get("default_generation_settings") or {}).get("n_ctx")
+    return all(a.get(k) == b.get(k) for k in keys) and n_ctx(a) == n_ctx(b)
+
+
 def _grid_gate(cfg: dict, rows: list[dict]) -> tuple[str, bool | None, str]:
     """Every manifest row's condition must be a cell of the frozen grid (config `grid`; null disables)."""
     grid_path = cfg.get("grid")
@@ -377,9 +416,10 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
         name, ok, detail = _grid_gate(cfg, rows)
         ok_all = ok_all and ok is not False
         print(f"{'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
-    if cfg[SEEKER].get("url") == cfg[MENTOR].get("url"):
-        print(f"WARN seeker and mentor share {cfg[SEEKER].get('url')}: both pin the same slot, so every "
-              "turn would evict the other agent's KV cache. `run` refuses this.")
+    if _same_server(cfg[SEEKER].get("url"), cfg[MENTOR].get("url")):
+        print(f"WARN seeker and mentor share a server ({cfg[SEEKER].get('url')}, {cfg[MENTOR].get('url')}): "
+              "both pin the same slot, so every turn would evict the other agent's KV cache. `run` refuses "
+              "this.")
     if roles is None:
         roles = [SEEKER, MENTOR] + (["judge"] if (cfg.get("judge") or {}).get("url") else [])
     for role in roles:
@@ -520,10 +560,10 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it, 1 when it refused to start.
     Pre-flight checks only seeker and mentor -- a dialogue run never talks to the judge, so a down judge
     server must not block one; `check` and `score` are what verify the judge."""
-    if cfg[SEEKER]["url"] == cfg[MENTOR]["url"]:
-        print(f"error: seeker.url and mentor.url are both {cfg[SEEKER]['url']}; both agents pin the same "
-              "slot, so they would evict each other's KV cache every turn. Serve them separately.",
-              file=sys.stderr)
+    if _same_server(cfg[SEEKER]["url"], cfg[MENTOR]["url"]):
+        print(f"error: seeker.url {cfg[SEEKER]['url']} and mentor.url {cfg[MENTOR]['url']} are the same "
+              "server; both agents pin the same slot, so they would evict each other's KV cache every turn. "
+              "Serve them separately.", file=sys.stderr)
         return 1
     if cmd_check(cfg, manifest_path, roles=(SEEKER, MENTOR)) != 0:
         print("check failed; not running", file=sys.stderr)
@@ -532,6 +572,11 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     # it is at the moment the run starts.
     agents = _agents(cfg)
     (seeker, s_entry), (mentor, m_entry) = agents[SEEKER], agents[MENTOR]
+    if _same_process(s_entry, m_entry):
+        print(f"error: seeker and mentor report the same model file, model hash, build and slot layout "
+              f"({s_entry['model_path']}, {s_entry['total_slots']} slots): two URLs to one server, whose "
+              "agents would evict each other's KV cache every turn. Serve them separately.", file=sys.stderr)
+        return 1
     paths = run_paths(cfg["data_dir"], run_id)
     commit = _git_commit()
     if not commit:

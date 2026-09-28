@@ -760,3 +760,33 @@ def test_with_slot_keeps_every_field_but_the_slot():
                     family="gemma")
     c = R._with_slot(h, 5)
     assert c.slot == 5 and c.family == "gemma" and c.alias == "a" and h.slot == 0
+
+
+def test_same_server_compares_resolved_endpoints_not_strings():
+    # Red-team M4: a string compare let 127.0.0.1 vs localhost, and a trailing slash, through.
+    same = R._same_server
+    assert same("http://127.0.0.1:8201", "http://localhost:8201")
+    assert same("http://127.0.0.1:8201", "http://127.0.0.1:8201/")
+    assert same("http://[::1]:8201", "http://127.0.0.1:8201")
+    assert not same("http://127.0.0.1:8201", "http://127.0.0.1:8202")
+    assert not same("http://s", "http://m")
+
+
+def test_run_refuses_two_urls_to_one_server(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    run = lambda **over: R.main(["run", "--config", str(write_cfg(tmp_path, **over)), "--manifest", str(man),
+                                 "--run-id", "r1"])
+    assert run(seeker={"url": "http://127.0.0.1:1"},
+               mentor={"url": "http://localhost:1/", "family": "qwen"}) == 1
+    assert "are the same server" in capsys.readouterr().err
+    # Two names the resolver cannot relate, served by one process: what the server reports gives it away.
+    factory = R.LlamaClient
+    one = {}
+    def proxied(url, timeout=None):
+        return one.setdefault("server", factory("http://one", timeout))
+    monkeypatch.setattr(R, "LlamaClient", proxied)
+    assert run() == 1
+    assert "report the same model file" in capsys.readouterr().err
+    assert not (tmp_path / "data" / "r1" / "manifest.json").exists()
