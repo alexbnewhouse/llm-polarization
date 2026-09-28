@@ -1,4 +1,7 @@
 #!/bin/bash
+# Watchdog for gpt-oss:120b (ollama blob) on :8092, 4 slots by default; logs to
+# ~/llm-serving/llama-oss.log.
+#
 # Reference only: no working Vulkan path for MXFP4 on this box (see
 # models/serving/README.md). Kept in sync with the other wrappers so it is not a
 # footgun if anyone resurrects it.

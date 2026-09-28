@@ -1,3 +1,4 @@
+"""Run paths, the JSONL writer, seed derivation, the write-once manifest and the resume index."""
 import json, threading
 from pathlib import Path
 import pytest

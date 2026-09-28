@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Ollama LLM Benchmark Suite for AMD Ryzen AI MAX+ 395 / Radeon 8060S
 # Tests: tokens/sec, TTFT, GPU utilization, model loading time
+#
+# Expects a running ollama daemon with the models pulled. General box tuning, not the study's
+# benchmark (that is models/benchmarks/). Flags: --quick, --all, --model <name>,
+# --category small|medium|large|xl. Writes benchmark_<timestamp>.json and summary_<timestamp>.txt
+# to ./results/.
 
 set -uo pipefail
 

@@ -1,3 +1,4 @@
+"""The canonical transcript and each agent's egocentric view of it."""
 import pytest
 from harness.transcript import Transcript, SEEKER, MENTOR, partner_of
 

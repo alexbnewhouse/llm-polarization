@@ -1,4 +1,9 @@
-"""CLI: check servers, run a dialogue manifest, re-administer surveys, score a run."""
+"""CLI: check servers, run a dialogue manifest, re-administer surveys, score a run, flag low-adherence
+dialogues, and report cross-judge agreement.
+
+    python -m harness.run {check,run,survey,score,flags,agreement} --config config.json ...
+
+Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
 import argparse, copy, json, os, platform, sys, threading
 from concurrent.futures import ThreadPoolExecutor
@@ -158,7 +163,8 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
     - `context_budget` (only when a dyad manifest is given): does the longest dialogue fit in a slot?
     - `cache_reuse`: two completions on this agent's slot, the second extending the first; the server must
       prefill only the new tokens. Catches a server without prompt caching, or a template that rewrites the
-      prefix between turns, before a wave spends a day finding out (`docs`: the largest lever, fails silently).
+      prefix between turns, before a wave spends a day finding out (models/RUN_APPROACH.md: the largest
+      lever, and it fails silently).
     - `trailing_system` (seeker only): does the template accept the persona reminder as a trailing
       system message?"""
     now = cfg.get("now", "2026-09-08")
@@ -250,7 +256,8 @@ class RunContext:
 
 
 def _with_slot(h: AgentHandle, slot: int) -> AgentHandle:
-    """Return a copy of an AgentHandle pinned to a different server slot, for reuse across worker threads."""
+    """Return a copy of an AgentHandle pinned to a different server slot, for reuse across worker threads.
+    The copy does not carry `family`; only the judge's handle needs it, and the judge is never copied."""
     return AgentHandle(h.name, h.client, h.template, h.model_sha256, slot, h.alias)
 
 
@@ -700,9 +707,10 @@ def _batteries_provenance(cfg: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point: parse the check/run/survey/score subcommands, dispatch to the matching cmd_* function,
-    and turn a ServerError, ManifestMismatch or ValueError into a clean error line and exit code 1 instead
-    of a traceback. Other exit codes come from the cmd_* function: 2 (a dyad failed), 130 (Ctrl-C)."""
+    """Entry point: parse the check/run/survey/score/flags/agreement subcommands, dispatch to the matching
+    cmd_* function, and turn a ServerError, ManifestMismatch or ValueError into a clean error line and exit
+    code 1 instead of a traceback. Other exit codes come from the cmd_* function: 1 (a failed check or
+    another refusal), 2 (a dyad failed), 130 (Ctrl-C)."""
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     parsers = {}

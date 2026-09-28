@@ -10,10 +10,14 @@ in `models/RUN_APPROACH.md` can be re-derived from raw numbers.
 | Script | What it does |
 |---|---|
 | `bench-ctx.sh` | W1 sweep: `llama-bench` prefill (pp512) and generation (tg128) at 0, 8k and 32k depth for every candidate model. Model list from `resolve_models.py`. |
-| `resolve_models.py` | Resolves ollama tags and standalone GGUFs to real blob paths with a per-model timeout. |
-| `bench_parallel.py` | Parallel-slot scaling: N concurrent dialogues each holding a depth-D KV cache. Reports cold prefill and warm per-turn generation. **This is what sets the operating point.** Takes `--model`, `--label`, `--plan`, `--out`. |
+| `resolve_models.py` | Resolves ollama tags and standalone GGUFs to real blob paths with a per-model timeout; prints one pipe-separated `label`, `path`, `timeout` line per model, smallest model first. |
+| `bench_parallel.py` | Parallel-slot scaling: N concurrent dialogues each holding a depth-D KV cache. Reports cold prefill and warm per-turn generation. **This is what sets the operating point.** Takes `--model`, `--label`, `--plan`, `--out`, plus `--lcpp` (the `llama-server` binary), `--port` (8199), `--gen` (200 tokens per turn), `--extra` (more server flags), `--ignore-eos` and `--server-log`. |
 | `bench-ollama-ctx.sh`, `bench-ollama-11435.sh`, `bench-ollama-calib.sh` | The same depth sweep through ollama (ROCm) rather than raw llama.cpp, plus a calibration pass. |
 | `chain-ollama.sh`, `chain2.sh`, `chain3.sh`, `finish-bench.sh` | Sequencing wrappers used to chain the overnight sweeps on 2026-08-24. Kept for provenance; not needed to rerun anything. |
+
+The shell scripts hardcode the box's paths (`/home/alex/llm-serving`, `/home/alex/.ollama`) and were run
+from `~/llm-serving/`, where they wrote their `.jsonl` and `.log` output; the copies in `results/` were
+copied here afterwards. Edit the paths before running any of them elsewhere.
 
 ## Results (`results/`)
 
@@ -42,8 +46,10 @@ python3 bench_parallel.py \
   --out results/<label>_parallel.jsonl
 ```
 
-The script starts its own `llama-server` on port 8199 for each plan entry and
-kills it afterwards. It can run while the box's other servers are up as long
+For Olmo-3 add `--ignore-eos --extra "--cache-ram 0"` (see gotchas below and
+`models/RUN_APPROACH.md`). The script starts its own `llama-server` on port 8199
+for each plan entry, always with `--no-jinja --cache-reuse 256`, and kills it
+afterwards. It can run while the box's other servers are up as long
 as GTT has room (`/sys/class/drm/card1/device/mem_info_gtt_used`); each record
 stores the GTT reading at the end of the warm round.
 

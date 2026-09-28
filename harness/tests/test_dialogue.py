@@ -1,3 +1,4 @@
+"""The turn loop: order, log rows, seeds, slot pinning, persona modes and the KV-cache reuse audit."""
 import pytest
 from harness import log
 from harness.dialogue import AgentHandle, GenSettings, DyadSpec, DialogueRunner, DialogueError, CacheReuseLost, expected_new_tokens

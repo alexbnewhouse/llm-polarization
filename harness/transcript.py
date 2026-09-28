@@ -15,7 +15,7 @@ def partner_of(agent: str) -> str:
 
 @dataclass
 class Message:
-    """A single turn message from one agent in the transcript."""
+    """One agent's line. A turn is two messages: the seeker's line, then the mentor's reply."""
     turn: int
     agent: str
     text: str
@@ -40,6 +40,7 @@ class Transcript:
     messages: list[Message] = field(default_factory=list)
 
     def __post_init__(self):
+        """Reject an unknown persona_mode, which view_for would otherwise treat silently as `once`."""
         if self.persona_mode not in PERSONA_MODES:
             raise ValueError(f"persona_mode must be one of {PERSONA_MODES}, got {self.persona_mode!r}")
 

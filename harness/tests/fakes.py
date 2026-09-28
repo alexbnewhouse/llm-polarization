@@ -1,9 +1,15 @@
+"""FakeClient: an in-process stand-in for LlamaClient that the unit tests drive instead of a server."""
 from harness.client import Completion, ServerError
 from harness.templates import ChatTemplate, render
 from harness.tests.conftest import CHATML
 
 
 class FakeClient:
+    """Replies from a fixed list, in turn, and records every completion call in `calls`. Tokens are
+    whitespace-separated words, and each slot remembers its last prompt, so prompt_n counts only the words
+    after the prefix shared with that prompt: the prefix caching the dialogue tests audit. `fail_on=n`
+    makes the n-th completion call raise ServerError."""
+
     def __init__(self, replies=None, fail_on=None):
         self.replies = replies or ["reply"]
         self.fail_on = fail_on

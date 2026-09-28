@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 
 class ServerError(Exception):
-    """Exception raised when the llama-server HTTP request fails or the server responds with an error."""
+    """A llama-server request failed: connection, timeout, or an HTTP error status."""
     pass
 
 
@@ -29,7 +29,8 @@ class Completion:
 
 
 def parse_completion(raw: dict) -> Completion:
-    """Extract completion result from llama-server response dict; determine finish_reason from stop_type or stopped_limit."""
+    """Build a Completion from a llama-server /completion response. finish_reason is "length" when the
+    n_predict cap stopped generation, else "stop"; "error" is set by the caller, never here."""
     timings = raw.get("timings") or {}
     # Newer llama-server reports stop_type; older builds reported stopped_limit. Accept either so a
     # server upgrade does not silently mislabel truncated turns as clean stops.
@@ -48,15 +49,15 @@ def parse_completion(raw: dict) -> Completion:
 
 
 class LlamaClient:
-    """HTTP client for llama-server at a given URL; manages timeouts and wraps network errors as ServerError."""
+    """HTTP client for one llama-server URL. Every network or HTTP failure surfaces as ServerError."""
 
     def __init__(self, url: str, timeout: float = 600):
-        """Initialize client with llama-server URL and optional timeout in seconds (default 600)."""
+        """`timeout` is in seconds and applies to POSTs; GETs are capped at 10 s."""
         self.url = url.rstrip("/")
         self.timeout = timeout
 
     def _post(self, path: str, body: dict) -> dict:
-        """Make POST request to path with JSON body; wrap any network/HTTP error as ServerError."""
+        """POST a JSON body to `path` and return the decoded JSON reply."""
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
         try:
@@ -68,7 +69,7 @@ class LlamaClient:
             raise ServerError(f"POST {path}: {e}") from e
 
     def _get(self, path: str) -> dict:
-        """Make GET request to path; wrap any network/HTTP error as ServerError; timeout capped at 10s."""
+        """GET `path` and return the decoded JSON reply, with the timeout capped at 10 s."""
         try:
             with urllib.request.urlopen(self.url + path, timeout=min(self.timeout, 10)) as r:
                 return json.load(r)
@@ -78,18 +79,18 @@ class LlamaClient:
             raise ServerError(f"GET {path}: {e}") from e
 
     def health(self) -> bool:
-        """Check if server is healthy; return True if /health endpoint returns status ok, False on any error."""
+        """True when /health reports status ok; False on any other reply or on any error."""
         try:
             return self._get("/health").get("status") == "ok"
         except ServerError:
             return False
 
     def props(self) -> dict:
-        """Fetch server properties from /props endpoint and return as dict."""
+        """The server's /props: model path and alias, build, slots, chat template, sampler defaults."""
         return self._get("/props")
 
     def apply_template(self, messages: list[dict]) -> str:
-        """Apply llama-server chat template to messages list and return rendered prompt string."""
+        """The server's own rendering of `messages` (/apply-template), which the parity check compares to."""
         return self._post("/apply-template", {"messages": messages})["prompt"]
 
     def tokenize(self, text: str) -> int:
@@ -99,7 +100,8 @@ class LlamaClient:
     def complete(self, prompt: str, *, id_slot: int, seed: int, n_predict: int, temperature: float,
                  top_p: float = 0.95, json_schema: dict | None = None, cache_prompt: bool = True,
                  stop: list[str] | None = None) -> Completion:
-        """Request text completion with slot pinning; omit json_schema and stop if None; return Completion object."""
+        """One /completion request on slot `id_slot`. `json_schema` is sent only when given and `stop` only
+        when non-empty; `cache_prompt` lets the slot reuse its KV cache for the shared prefix."""
         body = {"prompt": prompt, "id_slot": id_slot, "seed": seed, "n_predict": n_predict,
                 "temperature": temperature, "top_p": top_p, "cache_prompt": cache_prompt}
         if json_schema is not None:

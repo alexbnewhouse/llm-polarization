@@ -1,6 +1,8 @@
 #!/bin/bash
 # Second pass: models that live ONLY in the 11435 daemon's store
 # (/home/alex/.ollama), which the first pass missed by hardcoding :11434.
+# Expects an ollama daemon on :11435. Appends rows to ~/llm-serving/bench_ollama.jsonl
+# (the first pass's file) and progress to bench_ollama.log beside it.
 set -u
 OUT=/home/alex/llm-serving/bench_ollama.jsonl     # append to the same file
 LOG=/home/alex/llm-serving/bench_ollama.log

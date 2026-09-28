@@ -4,6 +4,13 @@ Date: 2026-09-08. Status: approved in conversation (sections 1 through 3), spec 
 Notion task: "Build the dyad harness: two model handles, alternating turns" (W3), extended to cover survey
 administration and the adherence scorer at the researcher's request.
 
+This is the design as approved, with addenda through the fix wave. The code has moved on since:
+`harness/README.md` and `data/README.md` are current, and where this spec and the code disagree the code
+is authoritative. Later changes not reflected below: the `flags` and `agreement` subcommands and the
+`stance` scope (2026-09-14), the same-family judge refusal, the hard `CacheReuseLost` failure (section 4
+said warnings never abort), the grid gate and `harness.randomize` (section 9 listed the randomizer as out
+of scope), the fourth `condition` key `ideology`, and the free-text survey parser (`answer_method`).
+
 ## 1. Purpose
 
 Run LLM-to-LLM dialogues in dyads on the Framework Desktop, log every generation with enough provenance to
@@ -141,7 +148,8 @@ listed in `instruments/survey-batteries.md`; the US adaptation task replaces the
 
 ## 6. Adherence scorer
 
-`run.py score --run <run_id> --judge <url> --scope pilot|main`.
+`python -m harness.run score --config <config> --run-id <run_id> --scope pilot|main`. The judge is the
+config's `judge` block, not a flag.
 
 - **Metrics**, following `abdulhai2025consistently` and `li2024instability`, each scored 0.0 to 1.0 with a
   one-sentence rationale, via `json_schema`:
@@ -201,8 +209,8 @@ listed in `instruments/survey-batteries.md`; the US adaptation task replaces the
   mode).
 - **Live tests** (skipped unless `HARNESS_LIVE_URL` is set, via a module-level `pytest.mark.skipif` — no
   custom marker registration needed): one 2-turn dialogue with
-  seeker and mentor on the same server (different slots), pre/post survey with three items, one scored
-  turn. Runs against a Qwen3-4B llama-server on this desktop's RTX 5080 (`~/llm-serving/llama.cpp`, CUDA
+  seeker and mentor on the same server (`run_dyad` pins both to the worker's slot 0), pre/post survey with
+  the first two items, and a `pilot`-scope score of every turn (six rows). Runs against a Qwen3-4B llama-server on this desktop's RTX 5080 (`~/llm-serving/llama.cpp`, CUDA
   build, `-np 4`), or on the Framework Desktop.
 - **Parity check** doubles as the integration test for the renderer: `run.py check` against every arm's
   server before a wave.

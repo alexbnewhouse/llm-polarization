@@ -1,3 +1,4 @@
+"""The judge: target selection per scope, idempotent scoring, judge refusals, the flag rule, agreement."""
 import json
 import pytest
 from harness import log, scorer

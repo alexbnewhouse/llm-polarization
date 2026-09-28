@@ -1,5 +1,6 @@
 #!/bin/bash
 # Wait for the llama-bench sweep to exit, then run the ollama/ROCm sweep.
+# Runs the box copy ~/llm-serving/bench-ollama-ctx.sh; logs to ~/llm-serving/chain.log.
 set -u
 LOG=/home/alex/llm-serving/chain.log
 : > "$LOG"

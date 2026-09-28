@@ -8,6 +8,7 @@
 # Check these against what you actually want before relying on them.
 #
 # Usage:  ./restore-servers.sh [fim|qwen36moe|qwen38|all]
+# Starts each server in the background with nohup; logs go to ~/llm-serving/llama-<name>.log.
 
 set -u
 LCPP=/home/alex/.local/llamacpp/llama-b10488/llama-server

@@ -1,4 +1,3 @@
-# harness/tests/test_live.py
 """Opt-in end-to-end test against a real llama-server. Set HARNESS_LIVE_URL and GGUF_PY_PATH.
 On the desktop: ~/llm-serving/llama.cpp/build/bin/llama-server -m ~/llm-serving/gguf/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
   -ngl 99 -fa on -np 2 -c 16384 -ctk q8_0 -ctv q8_0 --jinja --port 8090 --host 127.0.0.1

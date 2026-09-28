@@ -6,6 +6,9 @@
 # Approximates context depth by sending a synthetic prompt of ~N tokens and
 # reading prompt_eval_count / eval_count from the response, so the depth is
 # measured rather than assumed.
+#
+# Expects ollama on :11434. Empties and writes ~/llm-serving/bench_ollama.jsonl
+# (one row per model and depth) and bench_ollama.log.
 
 set -u
 OUT=/home/alex/llm-serving/bench_ollama.jsonl
@@ -13,7 +16,9 @@ LOG=/home/alex/llm-serving/bench_ollama.log
 : > "$OUT"; : > "$LOG"
 export OLLAMA_HOST=127.0.0.1:11434
 
-# ~0.75 tokens per word for this filler; overshoot then let the model report actuals.
+# Assumes ~4.2 characters per token for this filler. That undershoots (a 32768
+# target gave 22040 tokens; see bench-ollama-calib.sh), which is why each row
+# records actual_prompt_tokens from the response.
 mkprompt () {  # $1 = target tokens
   python3 -c "
 import sys

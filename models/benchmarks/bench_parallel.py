@@ -46,6 +46,7 @@ def prompt_of(tokens, seed):
 
 
 def wait_ready(proc, port, timeout=600):
+    """Poll /health until the server answers 200; False if it exits first or `timeout` s pass."""
     t0 = time.time()
     while time.time() - t0 < timeout:
         if proc.poll() is not None:
@@ -60,6 +61,7 @@ def wait_ready(proc, port, timeout=600):
 
 
 def call(port, prompt, n_predict, cache, slot):
+    """One /completion request on `slot`; returns wall time and the server's prefill/generation timings."""
     # id_slot pins stream i to slot i for both rounds, exactly as the harness
     # keeps one dialogue per slot. Without it the server picks a slot by prompt
     # similarity, and a mismatch triggers a prompt-cache save that crashes on
@@ -98,6 +100,8 @@ def run_round(port, prompts, n_predict, cache):
 
 
 def run_config(args, depth, npar, kv):
+    """Start a fresh llama-server for one plan entry, run the cold then the warm round, stop the server,
+    and return the JSON record for --out (with an `error` key if the server never came up)."""
     ctx = (depth + 1024) * npar
     cmd = [args.lcpp, "-m", args.model, "--host", "127.0.0.1", "--port", str(args.port),
            "-ngl", "999", "-fa", "on", "-np", str(npar), "-c", str(ctx),
@@ -162,6 +166,7 @@ def run_config(args, depth, npar, kv):
 
 
 def parse_plan(s):
+    """'32768:8:q8_0,...' -> [(32768, 8, 'q8_0'), ...]."""
     plan = []
     for item in s.split(","):
         item = item.strip()

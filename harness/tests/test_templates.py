@@ -1,3 +1,4 @@
+"""Chat-template rendering with jinja2, the check fixtures, the parity check, and GGUF-reading errors."""
 import pytest
 from harness import templates
 from harness.templates import ChatTemplate, render, TemplateError

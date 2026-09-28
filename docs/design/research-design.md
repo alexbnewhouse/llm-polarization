@@ -89,7 +89,7 @@ near zero while the machine does the expensive part.
 | Hardware | Online, tuned, benchmarked. 128 GiB GTT confirmed, operating point measured |
 | Model arm | Decided 2026-09-08 (`docs/decisions/model-arm.md`). **Three arms, not four**: choosing 40 turns cuts glm-4.7-flash |
 | Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40. **40 turns is the chosen row**; with the control the frozen grid is about 24.5 days |
-| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`. 103 unit tests pass, 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
+| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`; since 2026-09-14 also the condition randomizer, the grid gate, `flags` and `agreement`, and (2026-09-16) the survey reply parser. Unit tests pass; the 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
 | Data | None |
 
 The surplus from tuning (about 17 days) should go to design, not to N: the

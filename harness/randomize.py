@@ -20,7 +20,7 @@ from harness.grid import check_conditions, load_grid, treated_cells
 from harness.log import now_iso, sha256_file
 
 CONTROL_MODE = "reinforced"       # the control always runs reinforced so its mechanics match the treated cells
-SLOT_FIELDS = ("slug", "name", "backstory", "reminder_self")
+SLOT_FIELDS = ("slug", "name", "backstory", "reminder_self")   # every role variant must fill all four
 
 
 def load_catalogue(path: str | Path) -> dict:
@@ -91,6 +91,7 @@ def opening_line(catalogue: dict, topic: str) -> str:
 
 
 def _slots(catalogue: dict, topic: str) -> dict:
+    """The slots shared by every prompt for one topic, treated and control: topic, topic_phrase, opening."""
     return {"topic": topic, "topic_phrase": catalogue["shared"]["topic_phrase"][topic],
             "opening": opening_line(catalogue, topic)}
 
@@ -197,8 +198,9 @@ def build_manifest(grid: dict, catalogue: dict, *, seed: int, n_per_cell: int | 
 
 def write_manifest(out: str | Path, rows: list[dict], assignment: dict, *, grid_path: str | Path,
                    catalogue_path: str | Path) -> Path:
-    """Write the manifest as JSONL and its companion <stem>-assignment.json (or <stem>.assignment.json when the
-    stem does not end in -dyads), with the grid, catalogue and output file hashes. Returns the sidecar path."""
+    """Write the manifest as JSONL and its assignment log beside it, with the grid, catalogue and output
+    file hashes; return the log's path. The log is <stem>-assignment.json, where <stem> is the output name
+    without its extension and any trailing "-dyads": pilot-dyads.jsonl -> pilot-assignment.json."""
     out = Path(out)
     with open(out, "w", encoding="utf-8") as f:
         for row in rows:

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Wait for the :11435 pass to exit, then run the calibrated depth pass
+# (bench-ollama-calib.sh). Appends to ~/llm-serving/chain.log. Provenance only.
 set -u
 L=/home/alex/llm-serving/chain.log
 # wait for the 11435 second pass (driven by chain2.sh) to finish

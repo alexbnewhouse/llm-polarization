@@ -1,3 +1,4 @@
+"""The llama-server client: response parsing, request bodies and error wrapping, with no server running."""
 import json
 import pytest
 from harness import client as C

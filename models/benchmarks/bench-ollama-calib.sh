@@ -4,6 +4,9 @@
 # The first two passes used ~4.2 chars/token, which under-shot: a 32768 target
 # produced 22040 actual tokens (ratio 0.673). Calibrated to 6.25 chars/token
 # and the script now iterates until the measured depth is within 5% of target.
+#
+# Expects ollama on :11434 with the TARGETS models. Empties and writes
+# ~/llm-serving/bench_ollama_calib.jsonl and bench_ollama_calib.log.
 
 set -u
 OUT=/home/alex/llm-serving/bench_ollama_calib.jsonl

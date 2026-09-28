@@ -1,7 +1,10 @@
 # Dyad harness
 
 `harness/` runs seeker/mentor dialogues against two llama-server endpoints, administers the mentor's
-pre/post survey batteries, and scores seeker adherence offline. Design: `docs/superpowers/specs/2026-09-08-dyad-harness-design.md`.
+pre/post survey batteries, and scores seeker adherence and mentor stance offline with a judge model.
+`harness.randomize` builds the dyad manifest a run reads from the frozen grid and the persona catalogue.
+Original design: `docs/superpowers/specs/2026-09-08-dyad-harness-design.md`; this README and
+`data/README.md` track the code since then.
 Reproducibility standard, and how to reproduce one dialogue from its rows: `docs/REPRODUCIBILITY.md`.
 
 **On reproducibility.** The same seed does not guarantee the same tokens: every generation is sent with
@@ -34,6 +37,22 @@ from free text and labels the row's `answer_method` accordingly. Its 50 hand-wri
 
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
+Every subcommand exits 1 with one `error:` line on stderr for a dead server, a changed model or template,
+or a malformed config or manifest; `check` exits 1 when any row FAILs.
+
+| Module | What it holds |
+|---|---|
+| `run.py` | The CLI: `check`, `run`, `survey`, `score`, `flags`, `agreement`; config loading, pre-flight checks, the worker pool, provenance capture. |
+| `randomize.py` | `python -m harness.randomize`: grid + persona catalogue -> dyad manifest and assignment log. |
+| `grid.py` | Loads `prompts/grid.json` and checks each manifest row's `condition` against it. |
+| `dialogue.py` | One dyad's turn loop, the per-message log row, and the KV-cache reuse audit. |
+| `transcript.py` | The canonical transcript and each agent's egocentric view of it. |
+| `survey.py` | Pre/post survey administration to the mentor, one branch per item. |
+| `parser.py` | Survey reply -> integer on the item's scale, with the method that found it. |
+| `scorer.py` | The judge: target selection per scope, the judge prompt, the flag rule, cross-judge agreement. |
+| `templates.py` | Reads the chat template out of the GGUF, renders it with jinja2, checks parity with the server. |
+| `client.py` | The llama-server HTTP client. No retries. |
+| `log.py` | Run paths, JSONL writer, manifest write-once, resume index, seed derivation, hashing. |
 
 ### Run a one-dyad pilot end to end
 
@@ -84,8 +103,9 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
   server without prompt caching, or a template that rewrites the prefix between turns, before the run.
 - During a run, a mid-dialogue turn whose `prompt_n` is both unexpected (`cache_warning`) and above
   `cache_reuse_limit` (config, default 1000; `null` disables) **fails the dyad** with `CacheReuseLost`.
-  The row is logged first, so the evidence is in `turns.jsonl`; the dyad is retried as a new attempt and
-  `run` exits 2. A systematic loss fails every dyad at its second turn, which is the point.
+  The row is logged first, so the evidence is in `turns.jsonl`; `run` exits 2, and the next `run` with the
+  same `--run-id` retries the dyad as a new attempt. A systematic loss fails every dyad at its second turn,
+  which is the point.
 
 ## What the config fields mean
 
@@ -103,16 +123,20 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 | `seeker`, `mentor` | `{url, gguf_path?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 
-`concurrency`, `data_dir` and `gguf_py_path` are operational: changing them and resuming the same
-`run_id` is allowed. What a resume actually compares — `RUN_AFFECTING_CONFIG` in `harness/log.py` — is
-exactly `seeker`, `mentor`, `judge`, `generation` (the whole block, so `generation.timeout` is compared
-too, even though it changes no prompt), `run_seed`, `batteries` and `now`; changing any of those means a
-new `run_id`.
+`concurrency`, `data_dir`, `gguf_py_path`, `cache_reuse_limit` and `grid` are operational: changing them
+and resuming the same `run_id` is allowed. What a resume actually compares — `RUN_AFFECTING_CONFIG` in
+`harness/log.py` — is exactly `seeker`, `mentor`, `judge`, `generation` (the whole block, so
+`generation.timeout` is compared too, even though it changes no prompt), `run_seed`, `batteries` and
+`now`; changing any of those means a new `run_id`. `batteries` is compared as a path, not by content: the
+file's sha256 is on every survey row, and `survey` (not `run`) refuses a file that no longer hashes to
+the manifest's. Separately from the config, a resume re-verifies each served model's and template's
+sha256 against `manifest.json`.
 
 ## Retries, attempts and which rows count
 
-A dyad that fails is restarted as a **new attempt**, and `attempt` is part of the derived seed — so
-attempt 2 is a fresh draw, not a re-run of attempt 1. The earlier attempt's rows are kept, never deleted.
+A dyad that fails is restarted by the next `run` with the same `--run-id` as a **new attempt**, and
+`attempt` is part of the derived seed — so attempt 2 is a fresh draw, not a re-run of attempt 1. A dyad
+left `started` (the process died mid-dyad) is restarted the same way. The earlier attempt's rows are kept, never deleted.
 **Analysis uses the highest attempt whose status is `complete`** (`status.jsonl`), and must filter the
 rest out. Because that rule conditions on failure and failures are not random, report the number of dyads
 with `attempt > 1`. See `docs/REPRODUCIBILITY.md` section 5.
@@ -129,8 +153,11 @@ server runs `--no-jinja --chat-template chatml` (plus `--cache-ram 0`). `check` 
 pass** against it. That parity check is the pre-pilot gate for the Olmo arm: if it fails, the arm's
 prompts are not what the harness thinks they are and the pilot does not start.
 
-Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha>.json`, `dyads.jsonl`, `status.jsonl`,
-`turns.jsonl`, `surveys.jsonl`, `scores.jsonl`. Every file and every field: `data/README.md`.
+## Output
+
+Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha12>.json`, `dyads.jsonl`, `status.jsonl`,
+`turns.jsonl`, `surveys.jsonl`, `scores.jsonl` and `flags.jsonl`. Every file and every field:
+`data/README.md`.
 
 ## Terms (fixed 2026-09-02)
 
@@ -158,8 +185,9 @@ Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha>.json`, `dyads.
    the exact template string and the model hash. Any system text on the mentor
    is treatment.
 4. **Per-turn log row**: dialogue id, turn index, agent (seeker or mentor),
-   model hash, persona mode, prompt token count, generation, and an empty
-   adherence column the scorer fills in later.
+   model hash, persona mode, prompt token count, generation, and an
+   `adherence` column that stays null: rows are never rewritten, so the
+   scorer writes its scores to `scores.jsonl` instead.
 
 ## Serving contract the harness talks to
 

@@ -88,8 +88,9 @@ class ManifestMismatch(Exception):
 
 
 # The config keys that decide what a run produces. Everything else in the config -- concurrency,
-# data_dir -- is operational: dropping concurrency after an OOM and resuming the same run_id must not
-# be refused, because the alternative is fragmenting one wave's data across two run ids.
+# data_dir, gguf_py_path, cache_reuse_limit, grid -- is operational: dropping concurrency after an OOM
+# and resuming the same run_id must not be refused, because the alternative is fragmenting one wave's
+# data across two run ids. `batteries` is compared as a path; its content hash is checked by `survey`.
 RUN_AFFECTING_CONFIG = ("seeker", "mentor", "judge", "generation", "run_seed", "batteries", "now")
 
 

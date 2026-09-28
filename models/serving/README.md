@@ -8,7 +8,7 @@ are the box's operational scripts as of 2026-09-08, copied from
 |---|---|---|---|
 | `serve-bulk.sh` | Qwen3-30B-A3B-Instruct-2507 Q4_K_M | 8090 | `-c` is computed as `(DEPTH + HEADROOM) * SLOTS`, so each slot gets the full 32k. ~13 GiB of q8_0 KV at the default on top of ~17 GiB of weights. Uses the older llama-b9592 build. |
 | `serve-4b.sh` | Qwen3-4B-Instruct-2507 Q4_K_M | 8091 | Same computed `-c`. Its KV is **larger** than the 30B MoE's (8 KV heads over 36 layers vs 4 over 48): ~76 KiB/token, ~20 GiB at the default. Older build. |
-| `serve-oss.sh` | gpt-oss:120b (ollama blob) | 8092 | No working Vulkan path for MXFP4; kept for reference only. Same computed `-c`, but f16 KV (no `-ctk`/`-ctv`). |
+| `serve-oss.sh` | gpt-oss:120b (ollama blob) | 8092 | No working Vulkan path for MXFP4; kept for reference only. Same computed `-c`, but 4 slots by default (not 8) and f16 KV (no `-ctk`/`-ctv`). |
 | `restore-servers.sh` | fim (Qwen 1.5B), qwen36moe, qwen3.8 | 8097 / 8098 / 8099 | Reconstructed from `ps` after the 2026-08-24 shutdown that freed memory for benchmarking. Flags marked "partially reconstructed" in the script are not verified. |
 
 ## `-c` is divided across slots
@@ -21,8 +21,11 @@ erroring. All three wrappers now compute it:
 
 ```bash
 SLOTS=${SLOTS:-8}; DEPTH=${DEPTH:-32768}; HEADROOM=${HEADROOM:-1024}
-CTX=$(( (DEPTH + HEADROOM) * SLOTS ))     # 270336 at the defaults
+CTX=$(( (DEPTH + HEADROOM) * SLOTS ))     # 270336 at the defaults (135168 for serve-oss.sh, 4 slots)
 ```
+
+Each wrapper runs `llama-server` in a restart loop from `~/llm-serving/llama-b9592` and appends its
+output to a log under `~/llm-serving/` (`llama-server.log`, `llama-4b.log`, `llama-oss.log`).
 
 `DEPTH` is the usable context per dialogue and `HEADROOM` covers the turn being
 generated plus the persona reminder, matching the operating point in

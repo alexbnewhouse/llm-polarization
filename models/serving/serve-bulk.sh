@@ -1,5 +1,7 @@
 #!/bin/bash
 # watchdog: relaunch llama-server if it ever dies (driver wedge insurance)
+# Serves Qwen3-30B-A3B-Instruct-2507 Q4_K_M on :8090 with the old llama-b9592 build;
+# logs to ~/llm-serving/llama-server.log.
 #
 # llama-server divides -c across parallel slots: each slot gets -c / -np. So -c
 # is computed here from the depth one dialogue needs, never hardcoded, because a

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Watchdog: keep llama-server running Qwen3-4B-Instruct-2507 Q4_K_M on :8091, restarting
+# it 10 s after any exit. Old llama-b9592 build; logs to ~/llm-serving/llama-4b.log.
+#
 # See serve-bulk.sh: -c is divided across slots, so it is computed from DEPTH,
 # never hardcoded. Override from the environment, e.g. DEPTH=16384 ./serve-4b.sh
 #

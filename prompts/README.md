@@ -1,8 +1,10 @@
 # prompts/
 
-Seeker persona templates and the compact per-turn reminder go here once
-written (Notion task: "Write the seeker persona prompt template"). Requirements
-from `docs/design/persona-stability.md`:
+The frozen factorial (`grid.json`) and the seeker persona catalogue
+(`personas/`). The catalogue **format** is fixed and tested
+(`personas/catalogue.example.json`, placeholder text); the real
+`personas/catalogue.json` is not written yet (Notion task: "Write the seeker
+persona prompt template"). Requirements from `docs/design/persona-stability.md`:
 
 - Rich narrative persona: backstory, values, two or three explicit stance
   anchors in the persona's own words, not a demographic list.
@@ -12,7 +14,9 @@ from `docs/design/persona-stability.md`:
   phrased as a note to self, appended after the history in reinforced mode.
 - Nothing is ever injected on the mentor side.
 
-Version every template; the harness logs the template hash per dialogue.
+Version every template: bump the catalogue's `version`. The randomizer's
+assignment log records that version and the catalogue's sha256, and every
+`dyads.jsonl` row carries the rendered persona and reminder in full.
 
 `grid.json` is the frozen factorial (`docs/decisions/factorial.md`,
 2026-09-11): the factor levels, N per cell, the control cell and extension E1.
@@ -51,6 +55,12 @@ per-dyad `seed` from one RNG seeded with `--seed`; the rows are shuffled so
 cells interleave across the server's slots. `<stem>-assignment.json` beside the
 manifest records the grid and catalogue hashes, the RNG seed, rows per cell,
 per variant and per mode, and the output hash: that file is the randomization
-paragraph of the design section. `--check` validates a catalogue against the
-grid and writes nothing. `check --manifest` and `run` refuse any row
-whose condition is not a cell of the grid.
+paragraph of the design section. `<stem>` is the output name without its
+extension and without a trailing `-dyads`, so `pilot-dyads.jsonl` gets
+`pilot-assignment.json`. `--check` validates a catalogue against the grid and
+writes nothing. `--grid` defaults to `prompts/grid.json`, relative to the
+working directory, so run from the repository root. `check --manifest` and
+`run` refuse any row whose condition is not a cell of the grid.
+
+When `--n-per-cell` is given, the control cells follow it unless
+`--n-control` is also given; with neither, both come from the grid (135).

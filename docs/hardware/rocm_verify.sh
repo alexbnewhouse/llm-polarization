@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # ROCm Verification Script for gfx1151 (Radeon 8060S / Strix Halo)
 # Checks: driver, runtime, GPU detection, compute capability, Ollama GPU offload
+#
+# Read-only: prints PASS/WARN/FAIL lines and a summary to stdout, writes no files.
 
 set -uo pipefail
 

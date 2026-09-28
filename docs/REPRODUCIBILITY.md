@@ -1,6 +1,8 @@
 # Reproducibility
 
-Standard of record, 2026-09-08. Describes the harness as of the fix wave on `feat/dyad-harness`.
+Standard of record, first written 2026-09-08 for the fix wave on `feat/dyad-harness`, and kept in step
+with the harness since (the KV-cache reuse assertion, the grid gate, the randomizer, the flag rule and
+the survey parser, all 2026-09-14 to 2026-09-16). The "Deferred" list at the end is the fix wave's.
 
 This is the standard every run of this study is held to, what each run records and where, how to
 reproduce one dialogue from its logged rows, what is genuinely not reproducible and why, and the
@@ -42,8 +44,8 @@ list before you archive it. If an item is false, the run is still usable — but
 
 Output goes to `data/<run_id>/`. `run_id` is chosen on the command line and never reused for a different
 configuration — the harness refuses to overwrite a manifest whose run-affecting config differs
-(`seeker`, `mentor`, `judge`, `generation`, `run_seed`, `batteries`, `now`). `concurrency` and `data_dir`
-are operational and may change on a resume.
+(`seeker`, `mentor`, `judge`, `generation`, `run_seed`, `batteries`, `now`). `concurrency`, `data_dir`,
+`gguf_py_path`, `cache_reuse_limit` and `grid` are operational and may change on a resume.
 
 The field-by-field data dictionary is `data/README.md`, derived from the code. In outline:
 
@@ -56,9 +58,10 @@ The field-by-field data dictionary is `data/README.md`, derived from the code. I
 | `surveys.jsonl` | item × dyad × phase | phase, `origin`, item id/battery/scale, instrument hash, mentor model and template hash, slot, seed, answer and raw text |
 | `scores.jsonl` | (turn, agent, metric) | judge hash, scoring commit, seed, judge prompt hash, score, rationale, raw text |
 | `status.jsonl` | status transition | `started` / `complete` / `failed` + reason. Resume and analysis both read it |
+| `flags.jsonl` | scored, complete dyad | the adherence flag and its inputs; derived from `scores.jsonl` and replaced on every `flags` run |
 
 `surveys.jsonl`'s `origin` is `run` for the pass the dialogue run itself makes and `readministered` for a
-later `harness survey` pass. A re-administration refuses (`error:`, exit 1) if the live `batteries` file's
+later `python -m harness.run survey` pass. A re-administration refuses (`error:`, exit 1) if the live `batteries` file's
 sha256 no longer matches `manifest.json` → `batteries.sha256`: a changed instrument is a different
 measurement, and mixing its rows under the same battery/item ids as the original pass would be silently
 wrong. Use a new `run_id` against the new instrument instead.
@@ -209,7 +212,9 @@ instead of 32,768 — and without it this study does not fit in the budget. The 
 for a given token depends on what was already in the slot's cache. llama.cpp does not promise identical
 output for an identical seed when the cache state differs. *How it is handled:* the harness computes what
 the prefill should have been and logs `expected_new`, `prompt_n` and `cache_warning` on every turn, so a
-lost or unexpected cache is visible as data. Report the `cache_warning` rate.
+lost or unexpected cache is visible as data. Report the `cache_warning` rate. A mid-dialogue turn that
+also prefills more than `cache_reuse_limit` tokens fails the dyad (`CacheReuseLost`), so a systematic
+loss stops a wave at the second turn of every dyad instead of being found in the rows afterwards.
 
 **2. Continuous batching across slots.** Eight dialogues share one `llama-server`. Which requests land in
 the same batch depends on timing, and that changes the order of floating-point reductions, which can
@@ -252,8 +257,10 @@ number of null scores; both behaviours are deliberate, and neither rewrites a ro
 **9. What is fully deterministic, and should be said so.** The seeds
 (`sha256(run_seed|dyad_seed|dyad_id|attempt|turn|agent)`), the prompt strings and therefore
 `prompt_sha256`, the survey item order, the choice of which turns get scored, the resume logic, and the
-assignment of conditions to dyads (which comes from the input manifest, not from the harness). None of
-these depend on timing, hardware or the model. A re-run reproduces all of them exactly, and section 4a
+assignment of conditions to dyads. That assignment comes from the input manifest; `harness.randomize`
+writes the manifest as a pure function of the grid, the catalogue, its arguments and `--seed`, and its
+`-assignment.json` log records the hashes of all three files. None of these depend on timing, hardware
+or the model. A re-run reproduces all of them exactly, and section 4a
 checks it without a GPU.
 
 ---
@@ -343,11 +350,7 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   round-trips per run, in exchange for the manifest recording `/props` as it stands at the moment the run
   actually starts.
 - **Test-level minors** left as they are: `test_cache_warning_true` asserts only the second seeker row,
-  the error-row test does not assert `prompt_n is None`, and one docstring says "if None" where the code
-  means "if falsy".
-- **The `Message` docstring says "turn message"** (`harness/transcript.py`) for what is actually one
-  agent's utterance within a turn — a turn is the seeker's line and the mentor's reply together. Left as
-  worded: it does not affect what the class holds or how it is used.
+  and the error-row test does not assert `prompt_n is None`.
 - **`import os, sys` on one line** in `harness/templates.py`. A style nit; both names are used nearby and
   splitting the import onto two lines changes nothing about the code.
 - **`_gguf_module` mutates `sys.path`** for the life of the process (`harness/templates.py`), once per
@@ -358,7 +361,7 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   GREEN-phase run is what a reviewer checks today, and it is pasted in full.
 - **The redundant `pass` in `ServerError`** (`harness/client.py`). Its docstring already makes the class
   body non-empty; the `pass` is a no-op left over from before the docstring was added.
-- **`run.py` is broad** (about 600 lines) but cohesive as planned: it is the one place that owns the
-  check/run/survey/score subcommands and the plumbing (`RunContext`, `_agents`, `_verify_identity`,
+- **`run.py` is broad** (about 750 lines) but cohesive as planned: it is the one place that owns the
+  check/run/survey/score/flags/agreement subcommands and the plumbing (`RunContext`, `_agents`, `_verify_identity`,
   provenance capture) they share. Splitting it was considered and rejected — the shared machinery would
   then cross a module boundary for no isolation gained.

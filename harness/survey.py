@@ -17,14 +17,15 @@ SURVEY_TEMPERATURE = 0.0
 
 
 class SurveyError(Exception):
-    """Exception raised when a survey item fails during administration, with cause and context."""
+    """A survey item's request failed; carries the dyad, phase and item for the status row."""
     def __init__(self, dyad_id: str, phase: str, item_id: str, cause: Exception):
         super().__init__(f"{dyad_id} {phase} {item_id}: {cause}")
         self.dyad_id, self.phase, self.item_id, self.cause = dyad_id, phase, item_id, cause
 
 
 def load_batteries(path: str | Path) -> list[dict]:
-    """Load and validate survey battery items from a JSON file, checking for required fields and uniqueness."""
+    """Load the survey items (a list, or an object with `items`) and check each has id, battery, text and
+    scale.min/max, with ids unique. File order is administration order."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     items = data["items"] if isinstance(data, dict) else data
     seen = set()
@@ -41,7 +42,7 @@ def load_batteries(path: str | Path) -> list[dict]:
 
 
 def answer_schema(item: dict) -> dict:
-    """Generate a JSON schema enforcing an integer answer within the item's scale range."""
+    """The JSON schema that constrains the reply to `{"answer": <int on the item's scale>}`."""
     return {"type": "object",
             "properties": {"answer": {"type": "integer", "minimum": item["scale"]["min"], "maximum": item["scale"]["max"]}},
             "required": ["answer"]}
@@ -54,7 +55,7 @@ def parse_answer(text: str, item: dict) -> Parsed:
 
 
 class SurveyRunner:
-    """Administers survey batteries to a mentor model, branching each item off the dialogue context and logging results."""
+    """Administers the survey items to the mentor, one prompt per item, and logs one row per item."""
     def __init__(self, run_id: str, run_seed: int, mentor: AgentHandle, surveys_log: JsonlWriter,
                  settings: GenSettings, clock=now_iso, batteries_sha256: str = ""):
         """Initialize with run metadata, mentor client, logging writer and the sha256 of the batteries file
@@ -65,8 +66,10 @@ class SurveyRunner:
 
     def administer(self, spec: DyadSpec, attempt: int, phase: str, transcript: Transcript | None,
                    items: list[dict], origin: str = "run") -> list[dict]:
-        """Administer survey items to the mentor, one per prompt, logging and returning answer rows; raise
-        SurveyError on server failure. `origin` is "run" for the pass the dialogue run itself makes and
+        """Administer every item for one phase and return the rows; raise SurveyError on a server failure,
+        after logging the failed row. Pre items get a fresh context; post items branch off the mentor's view
+        of the dialogue on the same slot, so the cached dialogue prefix is reused and each item costs about
+        its own prefill. `origin` is "run" for the pass the dialogue run itself makes and
         "readministered" for a later `harness survey` pass, whose rows otherwise share the same key."""
         if phase not in PHASES:
             raise ValueError(f"phase must be one of {PHASES}")

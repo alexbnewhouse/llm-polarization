@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Resolve the readable local model set to (label, path, timeout) lines."""
+"""Resolve the readable local model set to (label, path, timeout) lines.
+
+Reads ollama manifests under ROOT for the tags in WANT, plus the standalone GGUFs in STANDALONE, and
+prints one `label|path|timeout` line per readable model to stdout, smallest file first, for bench-ctx.sh
+to read. Sizes and anything missing or unreadable go to stderr as `#` comments."""
 import glob, json, os, sys
 
 ROOT = "/home/alex/.ollama/models"

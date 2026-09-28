@@ -167,8 +167,9 @@ Never cut Olmo; never cut the control.
 
 Four keys, always present. `ideology` is new as of this freeze. `role` is the
 persona variant slug. `test_grid.py` checks `harness/dyads.example.jsonl`
-against `prompts/grid.json`; the randomizer must produce rows that pass the
-same check.
+against `prompts/grid.json`; the randomizer (`harness/randomize.py`, built
+2026-09-14) runs the same check on every manifest it writes, and `check
+--manifest` and `run` run it again before a wave.
 
 ## What this decision changes elsewhere
 

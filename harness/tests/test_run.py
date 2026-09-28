@@ -1,3 +1,4 @@
+"""The CLI end to end against FakeClient servers: check, run, resume, survey, score, flags, agreement."""
 import json
 import os
 import subprocess
@@ -282,7 +283,7 @@ def test_model_sha256_cache_hit_is_keyed_by_path_size_and_mtime_ns(tmp_path):
 
 def _git_repo_with_one_tracked_harness_file(tmp_path):
     """A throwaway git repo, isolated from the operator's real git identity/signing config, with one
-    commit tracking harness/x.py -- the fixture _git_dirty's new scoping is tested against."""
+    commit tracking harness/x.py -- the fixture _git_dirty's path scoping is tested against."""
     repo = tmp_path / "repo"
     (repo / "harness").mkdir(parents=True)
     (repo / "harness" / "x.py").write_text("x = 1\n")

@@ -6,6 +6,13 @@ project's key human-subjects reference (`paper/references.bib`,
 key `dejong2024crosspartisan`). The UK wording has **not yet been adapted to the
 US context**; that is a W2/W3 task in the Notion plan.
 
+This page lists the categories. The items the harness actually administers are
+`batteries.json` beside it: 13 items with ids, battery and scale, currently
+placeholder wording (`"adapted": false`). The adaptation replaces the `text`
+of each item and bumps `version`; it keeps the ids and scales. Every run
+records the file's sha256 and item ids in `manifest.json`, and items are
+administered in file order, pre and post.
+
 ## Ideological polarization (5-point scale)
 
 - Gender and racial equality
@@ -33,8 +40,10 @@ Agreement statements, 5-point scale:
 - Militarization of immigration enforcement
 - Decarbonization of the economy
 
-## Logging requirements
+## Logging
 
-Store pre- and post-treatment responses per dialogue with run_id, dyad_id,
-condition, model hash, and the exact prompt template string. See the Notion
-task "Design the logging schema" and `harness/README.md`.
+Each answer is one row of `data/<run_id>/surveys.jsonl`, with the dyad,
+attempt, phase, item, instrument hash, mentor model and template hash, the
+prompt hash, the parsed answer and the raw reply. The condition is on the
+matching `dyads.jsonl` row and the template source in `manifest.json`. Field by
+field: `data/README.md`.

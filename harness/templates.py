@@ -16,7 +16,7 @@ class TemplateError(Exception):
 
 @dataclass(frozen=True)
 class ChatTemplate:
-    """Holds a chat template source and tokens; computes its SHA256 hash."""
+    """A chat template's jinja source, its BOS and EOS token strings, and the source's sha256."""
     source: str
     bos: str
     eos: str
@@ -28,6 +28,8 @@ class ChatTemplate:
         return cls(source, bos, eos, sha256_text(source))
 
 
+# The seeker's reinforced shape: system prompt, history, trailing reminder. `check` renders it whole to
+# test the trailing system message, and without the reminder for the system-first parity test.
 FIXTURE_MESSAGES = [
     {"role": "system", "content": "You are a fixture persona used only to check template rendering."},
     {"role": "user", "content": "Fixture user line one."},
@@ -42,6 +44,7 @@ FIXTURE_MESSAGES_USER_FIRST = [m for m in FIXTURE_MESSAGES if m["role"] != "syst
 
 
 def _gguf_module(gguf_py_path: str | None):
+    """Import llama.cpp's gguf-py from `gguf_py_path` (else $GGUF_PY_PATH), putting it first on sys.path."""
     path = gguf_py_path or os.environ.get("GGUF_PY_PATH")
     if path and path not in sys.path:
         sys.path.insert(0, path)
@@ -61,6 +64,7 @@ def _gguf_module(gguf_py_path: str | None):
 # string field there is one index and the part is raw bytes; for the BOS/EOS ids there is one index and
 # the part is a one-element integer array. Hence the [f.data[0]].
 def _field_str(reader, key: str) -> str | None:
+    """A string metadata field from the GGUF, or None when the key is absent."""
     f = reader.fields.get(key)
     if f is None:
         return None
@@ -68,6 +72,7 @@ def _field_str(reader, key: str) -> str | None:
 
 
 def _token_text(reader, id_key: str) -> str:
+    """The vocabulary string for the token id stored under `id_key` (BOS or EOS); "" when either is absent."""
     f = reader.fields.get(id_key)
     if f is None:
         return ""
@@ -79,7 +84,7 @@ def _token_text(reader, id_key: str) -> str:
 
 
 def read_template_from_gguf(path: str | Path, gguf_py_path: str | None = None) -> ChatTemplate:
-    """Read a GGUF file and extract its chat template and token strings."""
+    """Read the chat template and the BOS/EOS token strings out of a GGUF file's metadata."""
     path = Path(path)
     if not path.exists():
         raise TemplateError(f"GGUF not found: {path}")
@@ -94,6 +99,8 @@ def read_template_from_gguf(path: str | Path, gguf_py_path: str | None = None) -
 
 
 def _env(now: str) -> jinja2.Environment:
+    """A jinja2 environment that renders chat templates as llama.cpp does, with `strftime_now` pinned to
+    the date `now` (YYYY-MM-DD) so a template that prints the date renders the same prompt every day."""
     # These three settings are what make our rendering byte-identical to Hugging Face's and llama.cpp's.
     # Do not change them without re-running `check`'s parity test against every arm.
     env = jinja2.Environment(trim_blocks=True, lstrip_blocks=False, keep_trailing_newline=True)
@@ -109,7 +116,8 @@ def _env(now: str) -> jinja2.Environment:
 
 def render(tpl: ChatTemplate, messages: list[dict], *, add_generation_prompt: bool = True,
            now: str = "2026-09-08", enable_thinking: bool = False) -> str:
-    """Render a chat template with jinja2 using the given messages and options."""
+    """Render `messages` through the template. `now` pins strftime_now; `tools` is always None, which is
+    what keeps Olmo-3's template from emitting a tools block."""
     try:
         return _env(now).from_string(tpl.source).render(
             messages=messages, add_generation_prompt=add_generation_prompt,

@@ -1,4 +1,5 @@
-"""Offline adherence scorer: a judge model scores logged turns; results go to scores.jsonl."""
+"""Offline scoring with a judge model: seeker adherence and mentor stance per logged turn, written to
+scores.jsonl; plus the adherence flag rule (flags.jsonl) and cross-judge agreement, both computed from it."""
 from __future__ import annotations
 import json
 import re
@@ -35,6 +36,7 @@ def model_family(name: str | None) -> str | None:
         if re.search(pattern, base):
             return family
     return None
+# Fixed rather than configurable, and written into judge-*.json with the prompt text below.
 JUDGE_N_PREDICT = 160
 JUDGE_TEMPERATURE = 0.0
 
@@ -52,7 +54,7 @@ JUDGE_TASKS = {
 
 
 def score_schema() -> dict:
-    """Return the JSON schema the judge's response must satisfy: a 0-1 score and a rationale string, both required."""
+    """The JSON schema the judge's reply must satisfy: a 0-1 `score` and a `rationale`, both required."""
     return {"type": "object",
             "properties": {"score": {"type": "number", "minimum": 0, "maximum": 1}, "rationale": {"type": "string"}},
             "required": ["score", "rationale"]}
@@ -215,7 +217,7 @@ def parse_score(text: str) -> tuple[float | None, str]:
 
 
 class Scorer:
-    """Scores a finished run's logged turns with a third judge model and appends the results to scores.jsonl."""
+    """Scores a run's logged turns with a third model and appends the results to scores.jsonl."""
     def __init__(self, run_id: str, run_seed: int, judge: AgentHandle, scores_log: JsonlWriter,
                  settings: GenSettings, clock=now_iso, harness_commit: str = ""):
         """Wire up the run identity, judge agent, output log, generation settings, clock and the harness

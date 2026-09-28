@@ -1,5 +1,7 @@
 #!/bin/bash
 # Remaining work, run sequentially in ONE process - no pgrep-based chaining.
+# Replaces chain2.sh + chain3.sh: the :11435 pass, then the calibrated pass.
+# Appends to ~/llm-serving/chain.log. Provenance only.
 set -u
 L=/home/alex/llm-serving/chain.log
 echo "$(date -Is) FINISH-BENCH START" >> $L

@@ -7,7 +7,9 @@
 #   tg128 @ dN  = generation throughput with N tokens already in KV
 #
 # Model list comes from resolve_models.py (real paths, no hardcoded hashes).
-# Results append to bench_results.jsonl so a hang loses only the current model.
+# Runs in ~/llm-serving, where resolve_models.py must also be. bench_results.jsonl and
+# bench_run.log there are emptied at start, then appended to model by model, so a hang
+# loses only the current model. models.list / models.err hold the resolved model set.
 
 set -u
 cd /home/alex/llm-serving

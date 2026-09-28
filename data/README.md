@@ -20,8 +20,10 @@ data/<run_id>/
   turns.jsonl          one row per message (2 per turn)
   surveys.jsonl        one row per survey item, per dyad, per phase
   scores.jsonl         one row per (turn, agent, metric, judge), written by `score`
-  flags.jsonl          one row per complete dyad attempt, written (replaced) by `flags`
+  flags.jsonl          one row per scored, complete dyad, written (replaced) by `flags`
 ```
+
+`SHA256SUMS` and `archive.json` are added by hand when a run is archived (see the end of this page).
 
 ## `manifest.json`
 
@@ -43,8 +45,10 @@ that the harness never sets).
 The judge's provenance, written by `score`: the same fields as a role block above, plus `scope`,
 `subsample` (the dyad fraction, or null), `temperature`, `n_predict`, `judge_system` and `judge_tasks` (the judge prompt text verbatim),
 `harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of
-a run and never rewritten, while scoring happens later and often from a different commit. A second
-scoring pass with a different scope writes `judge-<sha12>-<scope>.json` beside it.
+a run and never rewritten, while scoring happens later and often from a different commit. A later pass
+with the same judge whose record differs in anything but `ts` (another scope, subsample or harness
+commit) writes `judge-<sha12>-<scope>.json` beside it; a further such pass with the same scope
+overwrites that second file.
 
 ## `dyads.jsonl` — one row per dyad attempt
 
@@ -78,7 +82,8 @@ cannot tell the two apart, which is why both are logged.
 ## `surveys.jsonl` — one row per item per dyad per phase
 
 `run_id`, `dyad_id`, `attempt`, `phase` (`pre` or `post`), `origin` (`run` for the pass the dialogue run
-makes, `readministered` for a later `harness survey` pass — the two share every other key field),
+makes, `readministered` for a later `python -m harness.run survey` pass — the two share every other key
+field),
 `item_id`, `battery`, `scale` `{min, max}`, `batteries_sha256` (which instrument file), `model_sha256`
 and `template_sha256` (which mentor answered), `id_slot`, `turn` (a sentinel: 0 for pre, `n_turns + 1`
 for post, so the two phases derive different seeds), `temperature`, `n_predict`, `prompt_sha256`,
@@ -110,7 +115,7 @@ cadence, for the two-judge subsample (`--subsample F` keeps a deterministic frac
 row with `error` (the judge server failed) is retried on the next `score` and leaves the failed row in
 place.
 
-## `flags.jsonl` — one row per complete dyad attempt, written by `flags`
+## `flags.jsonl` — one row per scored, complete dyad, written by `flags`
 
 `run_id`, `dyad_id`, `attempt`, `ideology`, `topic`, `openness`, `role`, `persona_mode` (copied from the
 dyad row so the rates can be broken down), `metric`, `threshold`, `run_length`, `rule` (always
@@ -119,7 +124,8 @@ completed the run, or null), `scored_turns`, `unscored_turns` (null scores), `tu
 `mean_score`, `final_turn`, `harness_commit`, `ts`.
 
 The file is derived from `scores.jsonl` and is **replaced** on every `flags` run, not appended to. Only
-the latest complete attempt of each dyad gets a row. Flagged dialogues are kept in the ITT sample; the
+the latest complete attempt of each dyad gets a row, and only when that attempt has at least one
+non-error score row for `metric` from the chosen judge; an unscored dyad has no row. Flagged dialogues are kept in the ITT sample; the
 flag is an instrument statistic and the trigger for the per-protocol sensitivity analysis
 (`docs/decisions/persona-stability.md` §4).
 

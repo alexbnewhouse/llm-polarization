@@ -1,3 +1,5 @@
+"""Chat-template fixtures: plain ChatML, and small templates that mimic Olmo-3, gpt-oss and a
+template that rejects a trailing system message."""
 import pytest
 
 CHATML = (

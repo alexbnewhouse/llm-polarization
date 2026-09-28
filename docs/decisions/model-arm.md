@@ -21,9 +21,9 @@ originally proposed arms.
 | Arm | Lab | Days per arm (20 turns) | Why it is in |
 |---|---|---|---|
 | qwen3.6:35b-a3b | Alibaba | 2.15 (measured at the operating point) | Fastest, best context retention |
-| gpt-oss:20b | OpenAI | ~2.6 (extrapolated) | Replaces the 120b, same alignment lineage. Needs ROCm, not Vulkan |
+| gpt-oss:20b | OpenAI | 3.0 (measured 2026-09-08; was ~2.6 extrapolated) | Replaces the 120b, same alignment lineage. Needs the HIP (ROCm) build, not Vulkan |
 | glm-4.7-flash | Zhipu | 8.6 (measured 2026-09-08) | Replaced gemma4. **Cut 2026-09-10** when 40 turns was chosen: four arms at 40 turns is ~39.5 days against a 21-day window, three is ~22.3 |
-| Olmo-3-7B-Instruct | Ai2 | see `models/RUN_APPROACH.md` (re-measured 2026-09-08) | **Only arm with public training data**. Carries the "varies by training dataset" claim |
+| Olmo-3-7B-Instruct | Ai2 | 6.0 (re-measured 2026-09-08, `models/RUN_APPROACH.md`) | **Only arm with public training data**. Carries the "varies by training dataset" claim |
 
 Days per arm assume 2,700 dialogues x 20 turns x 200 tokens x both dyad roles,
 i.e. 21.6M generated tokens per arm, and the parallel operating point described
