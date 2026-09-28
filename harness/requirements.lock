@@ -7,6 +7,35 @@
 #
 # gguf-py is not installed from PyPI: it comes from the llama.cpp checkout named by the config's
 # gguf_py_path, and its commit is recorded per run as environment.gguf_py_commit.
+#
+# Added 2026-09-28 (not from the box): gguf-py's own dependencies as declared in
+# gguf-py/pyproject.toml at llama.cpp 9d77fa172 (b10488): numpy, tqdm, pyyaml, requests. `import gguf`
+# needs numpy and pyyaml; tqdm and requests are imported lazily. pytest and the rest were resolved
+# with `uv pip compile --universal` for Python 3.9 and later. Environment markers keep the lock
+# installable on the 3.9 floor: numpy 2.4 needs 3.11 and pytest 9 needs 3.10, so older interpreters
+# get the last release that supports them. The box (3.11+) gets the unmarked or >= pins.
 jinja2==3.1.2
 markupsafe==2.1.5
-numpy==2.4.4
+numpy==2.4.4 ; python_full_version >= '3.11'
+numpy==2.0.2 ; python_full_version < '3.11'
+pyyaml==6.0.3
+tqdm==4.70.1
+colorama==0.4.6 ; sys_platform == 'win32'
+requests==2.34.2 ; python_full_version >= '3.10'
+requests==2.32.5 ; python_full_version < '3.10'
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.20
+urllib3==2.8.0 ; python_full_version >= '3.10'
+urllib3==2.6.3 ; python_full_version < '3.10'
+# tests only
+pytest==9.1.1 ; python_full_version >= '3.10'
+pytest==8.4.2 ; python_full_version < '3.10'
+iniconfig==2.3.0 ; python_full_version >= '3.10'
+iniconfig==2.1.0 ; python_full_version < '3.10'
+packaging==26.3
+pluggy==1.6.0
+pygments==2.21.0
+exceptiongroup==1.3.1 ; python_full_version < '3.11'
+tomli==2.4.1 ; python_full_version < '3.11'
+typing-extensions==4.16.0 ; python_full_version < '3.11'

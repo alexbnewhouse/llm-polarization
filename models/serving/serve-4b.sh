@@ -9,16 +9,27 @@
 # worth writing down: Qwen3-4B has 8 KV heads over 36 layers against the MoE's 4
 # over 48, so q8_0 costs ~76 KiB/token here versus ~51 there, about 20 GiB at the
 # 270336 default. Arithmetic, not measured. Small weights do not mean small KV.
+#
+# Paths, bind address and port come from the environment, as in serve-bulk.sh. Binds 127.0.0.1
+# by default (it used to bind 0.0.0.0); HOST=0.0.0.0 exposes it on the LAN deliberately.
+SERVING_DIR=${SERVING_DIR:-$HOME/llm-serving}
+LLAMA_BIN=${LLAMA_BIN:-$SERVING_DIR/llama-b9592}   # build directory holding llama-server
+GGUF_DIR=${GGUF_DIR:-$SERVING_DIR/gguf}
+MODEL=${MODEL:-$GGUF_DIR/Qwen3-4B-Instruct-2507-Q4_K_M.gguf}
+LOG_DIR=${LOG_DIR:-$SERVING_DIR}
+HOST=${HOST:-127.0.0.1}
+PORT=${PORT:-8091}
 SLOTS=${SLOTS:-8}
 DEPTH=${DEPTH:-32768}
 HEADROOM=${HEADROOM:-1024}
 CTX=$(( (DEPTH + HEADROOM) * SLOTS ))
 
-cd ~/llm-serving/llama-b9592
+cd "$LLAMA_BIN" || exit 1
 while true; do
-  LD_LIBRARY_PATH=. ./llama-server -m ../gguf/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  LD_LIBRARY_PATH=. ./llama-server -m "$MODEL" \
     --alias qwen3-4b-q4 -ngl 99 -fa on -np "$SLOTS" -c "$CTX" -ctk q8_0 -ctv q8_0 \
-    --cache-reuse 256 --host 0.0.0.0 --port 8091 >> ~/llm-serving/llama-4b.log 2>&1
-  echo "$(date -Is) 4b server exited rc=$? -- restart in 10s" >> ~/llm-serving/llama-4b.log
+    --cache-reuse 256 --host "$HOST" --port "$PORT" >> "$LOG_DIR/llama-4b.log" 2>&1
+  rc=$?   # capture first: the $(date) below resets $?, so the old line always logged rc=0
+  echo "$(date -Is) 4b server exited rc=$rc -- restart in 10s" >> "$LOG_DIR/llama-4b.log"
   sleep 10
 done

@@ -12,10 +12,13 @@
 # loses only the current model. models.list / models.err hold the resolved model set.
 
 set -u
-cd /home/alex/llm-serving
-LB=/home/alex/.local/llamacpp/llama-b10488/llama-bench
-OUT=/home/alex/llm-serving/bench_results.jsonl
-LOG=/home/alex/llm-serving/bench_run.log
+# Paths come from the environment; the defaults are the box's layout.
+SERVING_DIR=${SERVING_DIR:-/home/alex/llm-serving}   # working dir: resolve_models.py, results, logs
+LLAMA_BIN=${LLAMA_BIN:-/home/alex/.local/llamacpp/llama-b10488}   # build directory
+cd "$SERVING_DIR" || exit 1
+LB="$LLAMA_BIN/llama-bench"
+OUT="$SERVING_DIR/bench_results.jsonl"
+LOG="$SERVING_DIR/bench_run.log"
 
 python3 resolve_models.py > models.list 2>models.err
 : > "$OUT"; : > "$LOG"

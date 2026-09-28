@@ -2,7 +2,8 @@
 # Wait for the llama-bench sweep to exit, then run the ollama/ROCm sweep.
 # Runs the box copy ~/llm-serving/bench-ollama-ctx.sh; logs to ~/llm-serving/chain.log.
 set -u
-LOG=/home/alex/llm-serving/chain.log
+SERVING_DIR=${SERVING_DIR:-/home/alex/llm-serving}   # scripts and logs; the box's layout by default
+LOG="$SERVING_DIR/chain.log"
 : > "$LOG"
 echo "$(date -Is) waiting for bench-ctx.sh to finish..." >> "$LOG"
 
@@ -21,5 +22,5 @@ echo "$(date -Is) main sweep done after ${waited}s wait; settling 30s" >> "$LOG"
 sleep 30
 echo "$(date -Is) gtt before ollama sweep = $(awk '{printf "%.1fGiB",$1/1073741824}' /sys/class/drm/card1/device/mem_info_gtt_used)" >> "$LOG"
 echo "$(date -Is) starting ollama sweep" >> "$LOG"
-/home/alex/llm-serving/bench-ollama-ctx.sh >> "$LOG" 2>&1
+"$SERVING_DIR/bench-ollama-ctx.sh" >> "$LOG" 2>&1
 echo "$(date -Is) OLLAMA SWEEP COMPLETE" >> "$LOG"

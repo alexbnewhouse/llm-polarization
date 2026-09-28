@@ -11,8 +11,9 @@
 # (one row per model and depth) and bench_ollama.log.
 
 set -u
-OUT=/home/alex/llm-serving/bench_ollama.jsonl
-LOG=/home/alex/llm-serving/bench_ollama.log
+SERVING_DIR=${SERVING_DIR:-/home/alex/llm-serving}   # results and logs; the box's layout by default
+OUT="$SERVING_DIR/bench_ollama.jsonl"
+LOG="$SERVING_DIR/bench_ollama.log"
 : > "$OUT"; : > "$LOG"
 export OLLAMA_HOST=127.0.0.1:11434
 

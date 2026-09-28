@@ -9,8 +9,9 @@
 # ~/llm-serving/bench_ollama_calib.jsonl and bench_ollama_calib.log.
 
 set -u
-OUT=/home/alex/llm-serving/bench_ollama_calib.jsonl
-LOG=/home/alex/llm-serving/bench_ollama_calib.log
+SERVING_DIR=${SERVING_DIR:-/home/alex/llm-serving}   # results and logs; the box's layout by default
+OUT="$SERVING_DIR/bench_ollama_calib.jsonl"
+LOG="$SERVING_DIR/bench_ollama_calib.log"
 : > "$OUT"; : > "$LOG"
 
 # model:port pairs -- gemma4/gpt-oss:120b live on 11434

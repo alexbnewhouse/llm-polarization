@@ -1,0 +1,51 @@
+# Project metadata and tool configuration. The harness is run from a checkout, not installed:
+# `python -m harness.run ...` and `python -m pytest harness/tests` work from the repository root
+# without `pip install .`. The build section exists so that an install, if anyone does one, ships
+# the harness package only and does not trip over the other top-level directories.
+#
+# Exact versions: harness/requirements.lock. Citation metadata: CITATION.cff (keep `version` in step).
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-polarization"
+version = "0.1.0"
+description = "Dyad harness for LLM-to-LLM political dialogue: seeker/mentor dialogues, pre/post surveys, offline adherence scoring"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Alex Newhouse" }]
+keywords = ["large language models", "political polarization", "reproducibility", "llama.cpp"]
+# From harness/requirements.txt. numpy and pyyaml are for llama.cpp's gguf-py (read from the
+# checkout named by gguf_py_path), not for the harness's own code.
+dependencies = [
+    "jinja2>=3.1",
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/alexbnewhouse/llm-polarization"
+
+[tool.setuptools]
+packages = ["harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["harness/tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# E501 is ignored because the code needs it: on 2026-09-28, 171 lines under harness/ ran past 110
+# characters (about 70 past 120, mostly docstrings). Drop this once they are wrapped. The other
+# findings (E702 semicolons, I001 import order, a few F401) are real and left visible; CI runs
+# `ruff check` with continue-on-error until they are fixed.
+ignore = ["E501"]

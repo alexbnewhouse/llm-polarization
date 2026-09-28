@@ -6,6 +6,7 @@ abstract: >-
   pre/post survey batteries to the mentor, and scoring persona adherence offline, with
   hash-pinned models, chat templates, prompts and seeds on every logged row.
 authors:
+  # orcid: https://orcid.org/XXXX-XXXX-XXXX-XXXX  (fill in before release)
   - family-names: Newhouse
     given-names: Alex
 repository-code: "https://github.com/alexbnewhouse/llm-polarization"

@@ -4,8 +4,9 @@
 # Expects an ollama daemon on :11435. Appends rows to ~/llm-serving/bench_ollama.jsonl
 # (the first pass's file) and progress to bench_ollama.log beside it.
 set -u
-OUT=/home/alex/llm-serving/bench_ollama.jsonl     # append to the same file
-LOG=/home/alex/llm-serving/bench_ollama.log
+SERVING_DIR=${SERVING_DIR:-/home/alex/llm-serving}   # results and logs; the box's layout by default
+OUT="$SERVING_DIR/bench_ollama.jsonl"     # append to the same file
+LOG="$SERVING_DIR/bench_ollama.log"
 PORT=11435
 
 mkprompt () {

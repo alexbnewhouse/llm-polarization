@@ -31,3 +31,8 @@ env/
 # pytest caches
 harness/.pytest_cache/
 .pytest_cache/
+# lint and packaging output
+.ruff_cache/
+*.egg-info/
+build/
+dist/

@@ -11,29 +11,33 @@
 # Starts each server in the background with nohup; logs go to ~/llm-serving/llama-<name>.log.
 
 set -u
-LCPP=/home/alex/.local/llamacpp/llama-b10488/llama-server
-BLOB=/home/alex/.ollama/models/blobs
+# Paths and bind address come from the environment; the defaults are the box's layout.
+LLAMA_BIN=${LLAMA_BIN:-/home/alex/.local/llamacpp/llama-b10488}   # build directory
+LCPP="$LLAMA_BIN/llama-server"
+BLOB=${OLLAMA_BLOBS:-/home/alex/.ollama/models/blobs}
+LOG_DIR=${LOG_DIR:-/home/alex/llm-serving}
+HOST=${HOST:-127.0.0.1}
 
 start_fim () {   # CONFIRMED COMPLETE - this command line was not truncated
   echo "starting fim on :8097"
-  nohup "$LCPP" --fim-qwen-1.5b-default --host 127.0.0.1 --port 8097 \
-    --alias fim -ngl 999 -fa on >> /home/alex/llm-serving/llama-fim.log 2>&1 &
+  nohup "$LCPP" --fim-qwen-1.5b-default --host "$HOST" --port 8097 \
+    --alias fim -ngl 999 -fa on >> "$LOG_DIR/llama-fim.log" 2>&1 &
 }
 
 start_qwen36moe () {   # PARTIALLY RECONSTRUCTED - verify flags
   echo "starting qwen36moe (Qwen3.6-35B-A3B q4_K_M+MTP) on :8098"
   nohup "$LCPP" \
     -m "$BLOB/sha256-d372de8e934898a59e6ccfabc3368474711384d8f1fd4d22d87a3f0a45400cdc" \
-    --alias qwen36moe --host 127.0.0.1 --port 8098 \
-    -ngl 999 -fa on -c 65536 >> /home/alex/llm-serving/llama-qwen36moe.log 2>&1 &
+    --alias qwen36moe --host "$HOST" --port 8098 \
+    -ngl 999 -fa on -c 65536 >> "$LOG_DIR/llama-qwen36moe.log" 2>&1 &
 }
 
 start_qwen38 () {      # PARTIALLY RECONSTRUCTED - verify flags
   echo "starting qwen3.8 (Qwen3.8-27B q4_K_M) on :8099"
   nohup "$LCPP" \
     -m "$BLOB/sha256-f5f1dd8920d417aac2718b0bda3403da274301efdd6760b4f0f4b864ff2ad57d" \
-    --alias qwen3.8 --host 127.0.0.1 --port 8099 \
-    -ngl 999 -fa on -c 65536 >> /home/alex/llm-serving/llama-qwen38.log 2>&1 &
+    --alias qwen3.8 --host "$HOST" --port 8099 \
+    -ngl 999 -fa on -c 65536 >> "$LOG_DIR/llama-qwen38.log" 2>&1 &
 }
 
 case "${1:-all}" in
