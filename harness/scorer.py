@@ -16,26 +16,38 @@ METRICS = {"prompt_to_line": SEEKER, "line_to_line": SEEKER, "alignment": MENTOR
 SCOPES = ("pilot", "main", "stance")
 MAIN_CADENCE = 4
 
-# Model families, matched against the GGUF file name or the server alias, lower-cased. The judge may
-# never share the mentor's family (docs/decisions/persona-stability.md §3): the mentor's stance score is
-# the DV, and a same-family judge is both self-favouring and likely to share its political priors.
+# Model families, matched against the GGUF file name, then its directory, then the server alias,
+# lower-cased. The judge may never share the mentor's family (docs/decisions/persona-stability.md §3): the
+# mentor's stance score is the DV, and a same-family judge is both self-favouring and likely to share its
+# political priors. A model none of these match (an ollama blob, sha256-...) needs `family` in its config
+# block; `score` refuses an unknown judge or mentor family.
 MODEL_FAMILIES = (
-    ("gpt-oss", r"gpt[-_]?oss"), ("qwen", r"qwen"), ("olmo", r"olmo"), ("glm", r"\bglm|(^|[^a-z])glm"),
-    ("gemma", r"gemma"), ("llama", r"llama"), ("mistral", r"mistral|mixtral"), ("phi", r"(^|[^a-z])phi[-_ ]?\d"),
-    ("deepseek", r"deepseek"),
+    ("gpt-oss", r"gpt[-_]?oss"), ("qwen", r"qwen|qwq"), ("olmo", r"olmo"), ("glm", r"\bglm|(^|[^a-z])glm"),
+    ("gemma", r"gemma"), ("llama", r"llama"), ("mistral", r"mistral|mixtral|ministral|magistral"),
+    ("phi", r"(^|[^a-z])phi[-_ ]?\d"), ("deepseek", r"deepseek"),
 )
 
 
 def model_family(name: str | None) -> str | None:
-    """The family slug of a model, from its GGUF path or alias; None when no pattern matches. Unknown is
-    unknown: the caller must not treat None as 'different family'."""
+    """The family slug of a model, from its GGUF path (the file name, then the directory it is in) or its
+    alias; None when no pattern matches. Unknown is unknown: the caller must not treat None as 'different
+    family'."""
     if not name:
         return None
-    base = name.rsplit("/", 1)[-1].lower()
-    for family, pattern in MODEL_FAMILIES:
-        if re.search(pattern, base):
-            return family
+    parts = [p for p in str(name).replace("\\", "/").split("/") if p]
+    for part in reversed(parts[-2:]):
+        for family, pattern in MODEL_FAMILIES:
+            if re.search(pattern, part.lower()):
+                return family
     return None
+
+
+def declared_family(value: str | None) -> str | None:
+    """A `family` given in the config, as a slug: a known family's name maps to its slug ("Qwen3" -> qwen),
+    anything else is kept lower-cased. None when not given."""
+    if value is None or not str(value).strip():
+        return None
+    return model_family(str(value)) or str(value).strip().lower()
 # Fixed rather than configurable, and written into judge-*.json with the prompt text below.
 JUDGE_N_PREDICT = 160
 JUDGE_TEMPERATURE = 0.0
@@ -226,19 +238,33 @@ class Scorer:
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
         self.harness_commit = harness_commit
 
-    def score_run(self, paths: RunPaths, scope: str, manifest: dict, subsample: float | None = None) -> int:
-        """Score every not-yet-scored target for the run's complete dyads and return how many rows were
-        written. Refuses a judge that is the seeker or the mentor of this run, or of the mentor's model
-        family (persona-stability §3); an unknown family on either side does not block, since None is
-        'unknown', not 'different'. Rows are done per judge, so a second judge scores the same targets."""
+    def check_independence(self, manifest: dict, mentor_family: str | None = None) -> None:
+        """Raise ValueError for a judge that is the seeker or the mentor of this run, or of the mentor's
+        model family (persona-stability §3). An unknown family on either side refuses too, since None is
+        'unknown', not 'different': `mentor_family` (the score config's mentor.family) supplies the mentor's
+        when manifest.json has none."""
         for role in ("seeker", "mentor"):
             if manifest.get(role, {}).get("model_sha256") == self.judge.model_sha256:
                 raise ValueError(f"judge model is the same as the {role} model; pick a third model")
         mentor = manifest.get("mentor", {})
-        mentor_family = mentor.get("family") or model_family(mentor.get("model_path")) or model_family(mentor.get("alias"))
-        if mentor_family and self.judge.family and mentor_family == self.judge.family:
+        mentor_family = (mentor.get("family") or declared_family(mentor_family)
+                         or model_family(mentor.get("model_path")) or model_family(mentor.get("alias")))
+        if not mentor_family:
+            raise ValueError("the mentor's model family is unknown (manifest.json mentor.family is null); "
+                             "set mentor.family in the config, so a same-family judge can be refused")
+        if not self.judge.family:
+            raise ValueError("the judge's model family is unknown from its GGUF name, directory or alias; "
+                             "set judge.family in the config, so a same-family judge can be refused")
+        if mentor_family == self.judge.family:
             raise ValueError(f"judge is from the mentor's model family ({mentor_family}); the mentor's stance "
                              "score is the outcome and a same-family judge is not independent of it")
+
+    def score_run(self, paths: RunPaths, scope: str, manifest: dict, subsample: float | None = None,
+                  mentor_family: str | None = None) -> int:
+        """Score every not-yet-scored target for the run's complete dyads and return how many rows were
+        written, after check_independence. Rows are done per judge, so a second judge scores the same
+        targets."""
+        self.check_independence(manifest, mentor_family)
         complete = latest_complete_attempts(read_jsonl(paths.status))
         dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
         done = {(s["dyad_id"], s["attempt"], s["turn"], s["agent"], s["metric"])

@@ -21,7 +21,8 @@ REPO = Path(__file__).resolve().parents[2]
 def write_cfg(tmp_path, **over):
     cfg = {"data_dir": str(tmp_path / "data"), "gguf_py_path": None, "run_seed": 5, "now": "2026-09-08",
            "batteries": str(REPO / "instruments" / "batteries.json"), "grid": None,
-           "seeker": {"url": "http://s"}, "mentor": {"url": "http://m"}, "judge": {"url": "http://j"}}
+           "seeker": {"url": "http://s"}, "mentor": {"url": "http://m", "family": "qwen"},
+           "judge": {"url": "http://j", "family": "gemma"}}
     cfg.update(over)
     p = tmp_path / "config.json"; p.write_text(json.dumps(cfg)); return p
 
@@ -727,3 +728,35 @@ def test_check_refuses_concurrency_above_the_slot_count_and_busy_slots(tmp_path,
     assert R.main(["check", "--config", str(write_cfg(tmp_path))]) == 1
     assert "set `concurrency`" in capsys.readouterr().out
     assert R.main(["check", "--config", str(write_cfg(tmp_path, concurrency=2))]) == 0     # a warning only
+
+
+def test_score_refuses_an_unknown_family_unless_the_config_states_it(tmp_path, monkeypatch, capsys):
+    # Red-team H3: the fake servers' GGUFs (/m.gguf, /j.gguf) name no family, like an ollama blob.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path, mentor={"url": "http://m"})
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    mf = json.loads(log.run_paths(tmp_path / "data", "r1").manifest.read_text())
+    assert mf["mentor"]["family"] is None and mf["mentor"]["family_source"] is None
+    capsys.readouterr()
+    assert R.main(["score", "--config", str(cfg), "--run-id", "r1", "--scope", "main"]) == 1
+    assert "set mentor.family" in capsys.readouterr().err
+    def score(judge):
+        c = write_cfg(tmp_path, mentor={"url": "http://m", "family": "qwen"}, judge=judge)
+        return R.main(["score", "--config", str(c), "--run-id", "r1", "--scope", "main"])
+    assert score({"url": "http://j"}) == 1
+    assert "set judge.family" in capsys.readouterr().err
+    assert score({"url": "http://j", "family": "QwQ"}) == 1
+    assert "mentor's model family (qwen)" in capsys.readouterr().err
+    assert not list((tmp_path / "data" / "r1").glob("judge-*.json"))        # no record of a refused pass
+    assert score({"url": "http://j", "family": "gemma"}) == 0
+    judge = json.loads(next(log.run_paths(tmp_path / "data", "r1").root.glob("judge-*.json")).read_text())
+    assert judge["family"] == "gemma" and judge["family_source"] == "config"
+
+
+def test_with_slot_keeps_every_field_but_the_slot():
+    h = AgentHandle("judge", FakeClient(), ChatTemplate.from_source(CHATML), "J", 0, alias="a",
+                    family="gemma")
+    c = R._with_slot(h, 5)
+    assert c.slot == 5 and c.family == "gemma" and c.alias == "a" and h.slot == 0

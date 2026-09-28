@@ -39,8 +39,10 @@ refuses on: `harness/README.md`, "What the config fields mean"), `environment`
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
 
-`url`, `alias`, `model_path`, `model_sha256` (of the GGUF file), `family` (model family slug from the GGUF
-name or alias, or null when unrecognised; `score` refuses a judge from the mentor's family), `template_sha256`, `template_source`
+`url`, `alias`, `model_path`, `model_sha256` (of the GGUF file), `family` (model family slug from the
+config's `family`, else from the GGUF name, its directory or the alias, or null when unrecognised; `score`
+refuses a judge from the mentor's family, and an unknown one), `family_source` (`config`, `detected` or
+null), `template_sha256`, `template_source`
 (the chat template in full), `server_chat_template` (what the server reports at `/props`, or null),
 `build_info` (the llama.cpp build and commit), `model_ftype`, `total_slots`,
 `default_generation_settings` (the server's own sampler defaults — `top_k`, `min_p` and the penalties

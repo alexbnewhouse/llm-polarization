@@ -127,8 +127,9 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 | `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
 | `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
-| `seeker`, `mentor` | `{url, gguf_path?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |
+| `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. |
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
+| `family` (in `seeker`, `mentor`, `judge`) | The model family slug (`qwen`, `gpt-oss`, `olmo`, `glm`, `llama`, `gemma`, `mistral`, `deepseek`, `phi`), when the GGUF name, its directory and the server alias do not show it: an ollama blob served without `--alias` does not. `score` refuses when the judge's or the mentor's family is unknown, so set it for those; `check` warns. The mentor's may also be set in the `score` config when `manifest.json` has none. |
 
 `concurrency`, `data_dir`, `gguf_py_path`, `cache_reuse_limit` and `grid` are operational: changing them
 and resuming the same `run_id` is allowed. What a `run` resume compares with `manifest.json` —
@@ -242,8 +243,8 @@ server's `timings` on every call so a lost cache is visible immediately.
   exclusion is technical incompleteness: error rows, truncation, judge failure.
 - The judge is never the seeker or the mentor of that dialogue, and never the
   mentor's model family. `score` refuses both (`harness.scorer.model_family`
-  matches the GGUF name or alias; an unknown family does not block, so check
-  `manifest.json` → `mentor.family` by hand if it is null).
+  matches the GGUF name, its directory or the alias), and refuses an unknown
+  judge or mentor family unless the config states it as `family`.
 - Two judges on the stance metric: `score --scope stance --subsample F` with a
   second judge config scores the mentor's `alignment` on the same
   deterministic subsample of dyads (rows are done per judge), and

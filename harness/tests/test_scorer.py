@@ -72,13 +72,13 @@ def make_run(tmp_path):
     for turn in (1, 2):
         tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": SEEKER, "text": f"s{turn}", "finish_reason": "stop"})
         tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": MENTOR, "text": f"m{turn}", "finish_reason": "stop"})
-    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
     return p, manifest
 
 
 def make_scorer(tmp_path, judge_hash="J", replies=None):
     jc = FakeClient(replies or ['{"score": 0.75, "rationale": "ok"}'])
-    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), judge_hash, slot=0)
+    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), judge_hash, slot=0, family="gemma")
     p, manifest = make_run(tmp_path)
     sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T",
                 harness_commit="COMMIT")
@@ -135,9 +135,9 @@ def test_score_run_duplicate_row_uses_position_not_value_equality(tmp_path):
     tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
     tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 2, "agent": SEEKER, "text": "DUP", "finish_reason": "stop"})
     tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": 3, "agent": SEEKER, "text": "S3", "finish_reason": "stop"})
-    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
     jc = FakeClient(['{"score": 0.5, "rationale": "x"}'])
-    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0)
+    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
     sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
     sc.score_run(p, "pilot", manifest)
     # pilot order (seeker rows only here): S1(prompt_to_line, line_to_line), DUP#1@turn2(prompt_to_line,
@@ -158,9 +158,9 @@ def test_score_run_missing_dyads_row_errors_without_judge_call(tmp_path):
     for turn in (1, 2):
         tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": SEEKER, "text": f"s{turn}", "finish_reason": "stop"})
         tw.write({"run_id": "r1", "dyad_id": "d", "attempt": 1, "turn": turn, "agent": MENTOR, "text": f"m{turn}", "finish_reason": "stop"})
-    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M"}}
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
     jc = FakeClient(['{"score": 0.75, "rationale": "ok"}'])
-    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0)
+    judge = AgentHandle("judge", jc, ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
     sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
     n = sc.score_run(p, "pilot", manifest)
     assert n == 0 and len(jc.calls) == 0
@@ -186,6 +186,7 @@ def test_score_run_refuses_a_judge_from_the_mentors_family(tmp_path):
     # The mentor's stance score is the turn-level DV; a same-family judge is self-favouring and shares
     # its political priors. Not the seeker's family: that rule is "not the seeker of this dialogue".
     sc, _, p, manifest = make_scorer(tmp_path)
+    del manifest["mentor"]["family"]
     manifest["mentor"]["model_path"] = "/m/Olmo-3-7B-Instruct.gguf"
     sc.judge.family = "olmo"
     with pytest.raises(ValueError, match="family"):
@@ -194,12 +195,37 @@ def test_score_run_refuses_a_judge_from_the_mentors_family(tmp_path):
     assert sc.score_run(p, "pilot", manifest) > 0
 
 
-def test_score_run_judge_of_the_seekers_family_is_allowed_but_unknown_families_do_not_block(tmp_path):
+def test_score_run_judge_of_the_seekers_family_is_allowed_but_an_unknown_family_refuses(tmp_path):
+    # Red-team H3: a mentor served from an ollama blob (sha256-...) with no --alias has no detectable family,
+    # and a same-family judge used to be accepted in silence. Unknown now refuses unless the config says.
     sc, _, p, manifest = make_scorer(tmp_path)
     manifest["seeker"]["model_path"] = "/s/Qwen3-4B.gguf"
-    manifest["mentor"]["model_path"] = "/m/unknown-arch.gguf"
+    del manifest["mentor"]["family"]
+    manifest["mentor"]["model_path"] = "/home/alex/.ollama/models/blobs/sha256-d372de8e"
     sc.judge.family = "qwen"
-    assert sc.score_run(p, "pilot", manifest) > 0
+    with pytest.raises(ValueError, match="mentor.family"):
+        sc.score_run(p, "pilot", manifest)
+    with pytest.raises(ValueError, match="same-family|mentor's model family"):
+        sc.score_run(p, "pilot", manifest, mentor_family="Qwen3.6")        # the config states it
+    assert sc.score_run(p, "pilot", manifest, mentor_family="gpt-oss") > 0
+    sc.judge.family = None
+    with pytest.raises(ValueError, match="judge.family"):
+        sc.score_run(p, "pilot", manifest, mentor_family="gpt-oss")
+
+
+def test_model_family_covers_the_study_models_and_their_directories():
+    f = scorer.model_family
+    for name, family in (("QwQ-32B-Q4_K_M.gguf", "qwen"),
+                         ("/models/Qwen3.6-35B-A3B/model-Q4_K_M.gguf", "qwen"),
+                         ("gpt-oss-20b-mxfp4.gguf", "gpt-oss"), ("OLMo-2-1124-13B.gguf", "olmo"),
+                         ("GLM-4.7-Flash-Q4.gguf", "glm"), ("Llama-3.1-8B.gguf", "llama"),
+                         ("gemma-3-27b.gguf", "gemma"), ("Ministral-8B.gguf", "mistral"),
+                         ("DeepSeek-V3.gguf", "deepseek"), ("phi4-mini.gguf", "phi")):
+        assert f(name) == family, name
+    assert f("/home/alex/.ollama/models/blobs/sha256-d372de8e") is None
+    assert f("/home/alex/llama.cpp/models/blobs/sha256-d372de8e") is None     # only the nearest directory
+    assert scorer.declared_family("Qwen3") == "qwen" and scorer.declared_family(" Granite ") == "granite"
+    assert scorer.declared_family(None) is None and scorer.declared_family("") is None
 
 
 def test_a_second_judge_scores_the_same_targets_again(tmp_path):
@@ -207,7 +233,8 @@ def test_a_second_judge_scores_the_same_targets_again(tmp_path):
     # second judge does not find the first one's rows and skip everything.
     sc, jc, p, manifest = make_scorer(tmp_path, judge_hash="J1")
     n1 = sc.score_run(p, "pilot", manifest)
-    judge2 = AgentHandle("judge", FakeClient(['{"score": 0.5, "rationale": "x"}']), ChatTemplate.from_source(CHATML), "J2", slot=0)
+    judge2 = AgentHandle("judge", FakeClient(['{"score": 0.5, "rationale": "x"}']),
+                         ChatTemplate.from_source(CHATML), "J2", slot=0, family="gemma")
     sc2 = Scorer("r1", 99, judge2, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
     n2 = sc2.score_run(p, "pilot", manifest)
     assert n1 == n2 == 6

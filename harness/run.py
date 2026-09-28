@@ -5,7 +5,7 @@ dialogues, and report cross-judge agreement.
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
-import argparse, copy, json, os, platform, shutil, sys, threading
+import argparse, copy, dataclasses, json, os, platform, shutil, sys, threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +17,8 @@ from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSp
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
 from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
-                            Scorer, cross_judge_agreement, flag_dialogues, latest_complete_attempts, model_family)
+                            Scorer, cross_judge_agreement, declared_family, flag_dialogues,
+                            latest_complete_attempts, model_family)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
                                read_template_from_gguf, render)
@@ -90,10 +91,16 @@ def build_agent(name: str, entry: dict, slot: int, cfg: dict, client_factory=Non
         raise ValueError(f"{name}: no gguf_path in config and server reports no model_path")
     template = read_template_from_gguf(model_path, gguf_py_path=cfg.get("gguf_py_path"))
     sha = model_sha256_cached(model_path)
-    family = model_family(model_path) or model_family(props.get("model_alias"))
+    # The config's `family` wins; otherwise the GGUF name, its directory, then the alias. None is unknown.
+    family = declared_family(entry.get("family"))
+    source = "config" if family else None
+    if not family:
+        family = model_family(model_path) or model_family(props.get("model_alias"))
+        source = "detected" if family else None
     handle = AgentHandle(name, client, template, sha, slot, alias=props.get("model_alias", ""), family=family)
     manifest_entry = {"url": entry["url"], "alias": props.get("model_alias", ""), "model_path": model_path,
-                      "model_sha256": sha, "family": family, "template_sha256": template.sha256,
+                      "model_sha256": sha, "family": family, "family_source": source,
+                      "template_sha256": template.sha256,
                       # The template source, not only its hash: the template lives inside a 5-20 GB GGUF
                       # that git cannot hold, and a hash you cannot check anything against is not provenance.
                       "template_source": template.source,
@@ -293,8 +300,8 @@ class RunContext:
 
 def _with_slot(h: AgentHandle, slot: int) -> AgentHandle:
     """Return a copy of an AgentHandle pinned to a different server slot, for reuse across worker threads.
-    The copy does not carry `family`; only the judge's handle needs it, and the judge is never copied."""
-    return AgentHandle(h.name, h.client, h.template, h.model_sha256, slot, h.alias)
+    Every other field, `family` included, is carried over."""
+    return dataclasses.replace(h, slot=slot)
 
 
 def run_dyad(worker_slot: int, spec: DyadSpec, attempt: int, ctx: RunContext) -> str:
@@ -382,7 +389,11 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
             print(f"FAIL health {role} {cfg[role].get('url')}: {e}")
             ok_all = False
             continue
-        print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} slots={entry['total_slots']}")
+        print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} "
+              f"slots={entry['total_slots']} family={entry['family']}")
+        if role != SEEKER and not entry["family"]:
+            print(f"   warn family unknown from the GGUF name, its directory and the alias; set "
+                  f"{role}.family in the config, or `score` refuses")
         for name, ok, detail in check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns):
             ok_all = ok_all and ok is not False
             print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
@@ -670,9 +681,11 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
         return 1
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
+    scorer = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
+                    harness_commit=_git_commit())
+    scorer.check_independence(manifest, cfg[MENTOR].get("family"))     # before any record of the pass
     write_judge_manifest(paths, entry, scope, subsample)
-    n = Scorer(run_id, int(cfg["run_seed"]), judge, JsonlWriter(paths.scores), _settings(cfg),
-               harness_commit=_git_commit()).score_run(paths, scope, manifest, subsample=subsample)
+    n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
     print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "") + ")")
     return 0
 
