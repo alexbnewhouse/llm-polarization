@@ -79,7 +79,7 @@ about 2 to 7% once the persona variants differ at all.
 - **Cut 2 costs the slope more than it costs any single level contrast.** It removes the lean levels,
   which carry dose information.
 
-The pilot's icc_role estimate is therefore as important as its SD. With five dyads per cell it will be
+The pilot's icc_role estimate is therefore as important as its SD. With six dyads per cell it will be
 imprecise, so the registration quotes the table across the range above.
 
 The index averages seven items, and only one of them is on the dialogue's topic. A movement confined

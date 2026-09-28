@@ -48,4 +48,6 @@ political stance. No other family supports that contrast.
 
 ## Closing this decision
 
-Confirming the four arms above unblocked `FREEZE THE FACTORIAL`.
+Confirming the arm unblocked `FREEZE THE FACTORIAL`: four arms when this
+decision closed on 2026-09-08, three since the 2026-09-10 cut, and the frozen
+grid (`docs/decisions/factorial.md`, 2026-09-11) was written for three.

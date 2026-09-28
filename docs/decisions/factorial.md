@@ -146,6 +146,13 @@ Sep 18 pilot.
 per candidate seeker model. The 200 matches the Dialogues property on the
 pilot task, which was set before the freeze.
 
+**Addendum, 2026-09-28.** The pilot runs 6 dyads per cell, not 5. The
+catalogue has three role variants per ideology level and the randomizer splits
+a cell's rows evenly across them, so 5 is refused (gap audit F6). Six gives two
+per variant per delivery mode: 20 cells x 6 x 2 modes = 240, plus 2 control
+cells x 6 = 12, **252** per candidate seeker model. The command is in
+`harness/README.md`. Nothing else in this record changes.
+
 ## The Oct 19 cut list, re-sequenced
 
 The first item ("drop the third model arm") was spent on 2026-09-10. The

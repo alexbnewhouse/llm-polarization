@@ -43,14 +43,15 @@ One JSON file:
 
 ```bash
 python -m harness.randomize --catalogue prompts/personas/catalogue.json --out pilot-dyads.jsonl \
-    --seed 20260918 --n-per-cell 5 --modes reinforced,once --prefix p        # 210 rows: the pilot grid
+    --seed 20260918 --n-per-cell 6 --modes reinforced,once --prefix p        # 252 rows: the pilot grid
 python -m harness.randomize --catalogue prompts/personas/catalogue.json --out wave1-dyads.jsonl \
     --seed 20261005 --prefix w1                                            # 2,970 rows: grid defaults
 ```
 
 Each treated cell's `n_per_cell` rows are split evenly across the level's role
-variants (refused if they do not divide); the control cells are always
-`reinforced` and are not multiplied by `--modes`; every row gets a distinct
+variants (refused if they do not divide, which is why the pilot runs 6 per cell
+rather than the 5 the design first named: `docs/decisions/factorial.md`); the
+control cells are always `reinforced` and are not multiplied by `--modes`; every row gets a distinct
 per-dyad `seed` from one RNG seeded with `--seed`; the rows are shuffled so
 cells interleave across the server's slots. `<stem>-assignment.json` beside the
 manifest records the grid and catalogue hashes, the RNG seed, rows per cell,

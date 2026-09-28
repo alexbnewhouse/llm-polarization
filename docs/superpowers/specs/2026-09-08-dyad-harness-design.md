@@ -9,7 +9,11 @@ This is the design as approved, with addenda through the fix wave. The code has 
 is authoritative. Later changes not reflected below: the `flags` and `agreement` subcommands and the
 `stance` scope (2026-09-14), the same-family judge refusal, the hard `CacheReuseLost` failure (section 4
 said warnings never abort), the grid gate and `harness.randomize` (section 9 listed the randomizer as out
-of scope), the fourth `condition` key `ideology`, and the free-text survey parser (`answer_method`).
+of scope), the fourth `condition` key `ideology`, and the free-text survey parser (`answer_method`). And
+from the 2026-09-28 remediation (`docs/audit/2026-09-28-closure.md`): the `study` and `baseline`
+subcommands, a run lock, a resume that compares the instrument, the input dyads, the builds and the code,
+reasoning kept out of the transcript, every sampler sent on every request, parallel judge scoring,
+control dyads left out of adherence scoring, and Python 3.9 as the floor (section 2 says 3.11+).
 
 ## 1. Purpose
 

@@ -69,9 +69,11 @@ basis against 21 allocated; W6 and the W14 buffer absorb the difference. That
 basis assumes both roles run on the arm's model, which the fixed seeker
 invalidates; the record explains and the budget is recomputed after the pilot.
 
-Roughly 10,100 dialogue-equivalents in total: 8,910 wave dialogues, about 210
-pilot dialogues per candidate seeker model, and the 1,000-administration
-baseline. Roughly 16,750 words (a 13,000-word paper plus pre-analysis plan and
+Roughly 10,100 dialogue-equivalents in total: 8,910 wave dialogues, 252
+pilot dialogues per candidate seeker model (six per cell since 2026-09-28;
+`docs/decisions/factorial.md`), and the 1,000-administration baseline, which
+the pre-analysis plan defines as a no-dialogue run per arm
+(`docs/pap/pre-analysis-plan.md` section 10). Roughly 16,750 words (a 13,000-word paper plus pre-analysis plan and
 reproducibility appendix), written 2026-10-05 to 2026-11-30.
 
 The two projects (this and the prospectus due 2026-09-30) consume different
@@ -79,17 +81,19 @@ resources: the prospectus needs attention, the experiments need electricity.
 Weeks 1 through 6 are built so this project's demand on the researcher stays
 near zero while the machine does the expensive part.
 
-## Where things stand (2026-09-11)
+## Where things stand (2026-09-28)
 
 | Piece | State |
 |---|---|
 | Research question and framing | Written, funded, defended in the IHS application |
-| Survey instruments | de Jong (2024) identified, not yet adapted to the US context |
-| The factorial | **Frozen 2026-09-11** (`docs/decisions/factorial.md`, `prompts/grid.json`). 20 treated cells plus 2 control per arm, 135 per cell, 2,970 per arm. Role slugs are registered when the personas are written |
+| Survey instruments | Adapted to the US context, 1.0.0 (`instruments/batteries.json`, `instruments/survey-batteries.md`): the five de Jong items, one item per treatment topic, thermometers, norms, with item directions and index definitions. Not yet piloted on the mentors |
+| The factorial | **Frozen 2026-09-11** (`docs/decisions/factorial.md`, `prompts/grid.json`). 20 treated cells plus 2 control per arm, 135 per cell, 2,970 per arm. Role slugs registered in the persona catalogue 1.0.0 (`prompts/personas/catalogue.json`) |
 | Hardware | Online, tuned, benchmarked. 128 GiB GTT confirmed, operating point measured |
 | Model arm | Decided 2026-09-08 (`docs/decisions/model-arm.md`). **Three arms, not four**: choosing 40 turns cuts glm-4.7-flash |
-| Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40. **40 turns is the chosen row**; with the control the frozen grid is about 24.5 days |
-| Pipeline | Built. `harness/`: dialogue engine, surveys, offline adherence scorer, and a CLI with `check`, `run`, `survey`, `score`; since 2026-09-14 also the condition randomizer, the grid gate, `flags` and `agreement`, and (2026-09-16) the survey reply parser. Unit tests pass; the 2 live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server |
+| Compute budget | All four arms measured 2026-09-08: about 19.8 days at 20 turns, 39.5 at 40, 22.3 for three arms at 40; with the control the frozen grid is about 24.5 on that basis. Re-estimated 2026-09-28 with the seeker half, the 300-token cap and judge time: about 22 to 63 days, depending on the unchosen seeker (`docs/decisions/compute-budget.md`) |
+| Pipeline | Built. `harness/`: the randomizer and its subset descope, the grid gate, the study lock, dialogues with the reasoning kept out of the transcript, surveys and the no-dialogue baseline, parallel judge scoring, `flags` and `agreement`; subcommands `check`, `run`, `survey`, `baseline`, `score`, `flags`, `agreement`, `study`. `analysis/`: exclusions, outcomes, the pre-analysis plan's models, appendix rates, judge calibration, the reproduce-one-dialogue check. Unit tests pass in CI; the live tests skip without a server. Pre-pilot gate: `harness check` against the real Olmo server, not yet run |
+| Pre-analysis plan | Written 2026-09-28 (`docs/pap/`), with power and MDE tables; not yet registered (target 2026-10-02) |
+| Pilot | Not run. The seeker and the judge are still to be chosen from it |
 | Data | None |
 
 The surplus from tuning (about 17 days) should go to design, not to N: the

@@ -60,7 +60,7 @@ arm.
 | Seeker | one model for every arm, from a family outside all three arms, chosen by pilot adherence and throughput **[pilot]** |
 | Sampling | dialogue: temperature 0.7, top_p 0.95, n_predict 300. Survey and judge: temperature 0. `run_seed` and `now` fixed for the study |
 | Assignment | one wave manifest from `harness.randomize` (grid x catalogue x seed), shared by all three arms (section 11) |
-| Survey | `instruments/batteries.json` at its registered, adapted version **[W2]**: pre with an empty context, post appended as a user turn after the 40-turn dialogue |
+| Survey | `instruments/batteries.json` at its registered, adapted version (1.0.0, 15 items, 2026-09-28): pre with an empty context, post appended as a user turn after the 40-turn dialogue |
 
 Arm is not randomized per dyad. Every arm runs the same manifest, with the same seeds, persona texts and
 seeker, on the same machine. Arm contrasts are therefore comparisons of models under an identical
@@ -321,10 +321,11 @@ that administers the pre battery K times at the dialogue sampling settings (temp
 - the scale for "how large is a movement" (baseline SD);
 - a check that the greedy pre is the mode of that distribution.
 
-The cost is 13 short completions per administration, about 39,000 calls for three arms. That is minutes
-to an hour of compute, and nothing against 8,910 dialogues. It needs a code path, because `run` always
-runs a dialogue. It is a new `run_id` per arm with the same `run_seed`, `now`, instrument and mentor
-build as that arm's wave.
+The cost is 15 short completions per administration (the 1.0.0 instrument), about 45,000 calls for three
+arms. That is minutes to an hour of compute, and nothing against 8,910 dialogues. The code path is
+`python -m harness.run baseline --k 1000` (`harness/README.md`). It is a new `run_id` per arm with the
+same `run_seed`, `now`, instrument and mentor build as that arm's wave; the study lock refuses another
+`run_seed`, `now` or instrument.
 
 **Recommendation: A plus C.**
 - Keep the in-run pre greedy and context-free, which leaves the instrument as piloted.
@@ -364,9 +365,12 @@ arm would then not be the same dyads as an arm already run.
   The confirmatory models use the subset common to all arms; an arm's full data is a sensitivity.
 - **All arms share** `run_seed`, `now`, the parent manifest sha256, the instrument sha256, the seeker
   model sha256, the generation settings and the judge (model sha256 and judge prompt sha256).
-  - The harness checks judge family per run only.
-  - Until the W6 study lock exists, the cross-arm match is checked by hand and recorded in the appendix
-    (`REPRODUCIBILITY.md` §6).
+  - The study lock (`study.json`; `harness/README.md`, "The study lock") makes `check`, `run`,
+    `baseline` and `score` refuse another `run_seed`, `now`, manifest (or a subset not cut from it),
+    instrument, grid or judge model.
+  - The seeker model sha256, the generation settings and the judge prompt sha256 are not in the lock.
+    They are checked by hand across the arms' `manifest.json` and `judge-*.json` files and recorded in
+    the appendix (`REPRODUCIBILITY.md` §6).
 - E1 is an extension that adds new rows, not a cut, so its own `harness.randomize` manifest is allowed.
 
 ## 12. The judge rule
@@ -388,8 +392,9 @@ arm would then not be the same dyads as an arm already run.
   reported as exploratory. The survey outcomes do not depend on the judge. H3 is re-fit on the
   subsample with each judge.
 - **The judge is not blind to condition.** `alignment` needs the persona, which is a declared
-  limitation (F10). It scores the mentor's final answer only, never a reasoning channel (red-team H1,
-  fixed by W0).
+  limitation (F10). It scores the mentor's line with the reasoning taken out: `<think>` blocks go to
+  the row's `reasoning` field, and a reply with harmony channel markup fails the dyad instead of reaching
+  the judge (red-team H1, W0).
 
 ## 13. What the appendix reports
 
