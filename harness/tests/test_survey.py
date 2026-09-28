@@ -18,18 +18,42 @@ def items():
     return survey.load_batteries(REPO / "instruments" / "batteries.json")
 
 
-def test_batteries_file_loads_13_unique_items():
+def test_batteries_file_loads_15_unique_items():
     it = items()
-    assert len(it) == 13 and len({i["id"] for i in it}) == 13
+    assert len(it) == 15 and len({i["id"] for i in it}) == 15
     assert {i["battery"] for i in it} == {"ideological", "thermometer", "agreement"}
 
 
 def test_batteries_file_declares_a_version_and_whether_it_is_adapted():
-    # The wording is a placeholder until the US-adaptation task lands; a run that cannot say which
-    # wording it administered cannot be interpreted afterwards.
+    # A run that cannot say which wording it administered cannot be interpreted afterwards.
     data = json.loads((REPO / "instruments" / "batteries.json").read_text(encoding="utf-8"))
     assert isinstance(data["version"], str) and data["version"]
-    assert data["adapted"] is False
+    assert data["adapted"] is True
+
+
+def test_batteries_indices_match_the_items():
+    # Gap audit F2: every ideological item says which pole a high answer means, and the indices the
+    # analysis builds name real items, reversing exactly the left-keyed ideological ones.
+    data = json.loads((REPO / "instruments" / "batteries.json").read_text(encoding="utf-8"))
+    by_id = {i["id"]: i for i in data["items"]}
+    ideo = [i["id"] for i in data["items"] if i["battery"] == "ideological"]
+    assert all(by_id[i]["direction"] in ("left", "right") for i in ideo)
+    assert all("direction" not in i for i in data["items"] if i["battery"] != "ideological")
+    idx = data["indices"]
+    assert idx["ideological"]["items"] == ideo and len(ideo) == 7
+    assert set(idx["ideological"]["reverse"]) == {i for i in ideo if by_id[i]["direction"] == "left"}
+    assert idx["norms"]["items"] == [i["id"] for i in data["items"] if i["battery"] == "agreement"]
+    assert idx["norms"]["reverse"] == []
+    assert set(idx["therm_gap"]["plus"]) == {i for i in by_id if i.startswith("therm_rep_")}
+    assert set(idx["therm_gap"]["minus"]) == {i for i in by_id if i.startswith("therm_dem_")}
+    assert idx["affective_abs"]["of"] == "therm_gap"
+    order = list(by_id)
+    assert order.index("ideo_decarbonization") < order.index("therm_dem_voters")
+    assert order.index("ideo_gun_control") < order.index("ideo_enforcement_militarization")
+    for it in data["items"]:
+        lo, hi = it["scale"]["min"], it["scale"]["max"]
+        assert f"from {lo} (" in it["text"] and f"to {hi} (" in it["text"]
+        assert it["text"].endswith("Answer with a single number.")
 
 
 def test_load_batteries_rejects_bad_item(tmp_path):

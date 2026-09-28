@@ -181,7 +181,7 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert mf["harness_commit"] and isinstance(mf["harness_dirty"], bool)
     assert mf["input_manifest"]["path"] == str(man) and mf["input_manifest"]["sha256"] == log.sha256_file(man)
     batteries = mf["batteries"]
-    assert batteries["n_items"] == 13 and len(batteries["item_ids"]) == 13
+    assert batteries["n_items"] == 15 and len(batteries["item_ids"]) == 15
     assert batteries["sha256"] == log.sha256_file(REPO / "instruments" / "batteries.json")
     assert all(s["batteries_sha256"] == batteries["sha256"] for s in log.read_jsonl(paths.surveys))
     env = mf["environment"]
@@ -202,10 +202,10 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert len(scores) == 3 * 1 * 2 and all(s["score"] == 0.5 for s in scores)      # main: seeker, last turn (2), 2 metrics
     assert R.main(["survey", "--config", str(cfg), "--run-id", "r1", "--phase", "post"]) == 0
     post = [s for s in log.read_jsonl(paths.surveys) if s["phase"] == "post"]
-    assert len(post) == 3 * 13 * 2
+    assert len(post) == 3 * 15 * 2
     # The re-administered rows share the in-run rows' key; `origin` is what tells them apart.
     assert sorted({s["origin"] for s in post}) == ["readministered", "run"]
-    assert len([s for s in post if s["origin"] == "readministered"]) == 3 * 13
+    assert len([s for s in post if s["origin"] == "readministered"]) == 3 * 15
     judge_files = sorted(pth.name for pth in paths.root.glob("judge-*.json"))
     assert judge_files == ["judge-" + "HASH-j.gguf"[:12] + ".json"]
     judge = json.loads((paths.root / judge_files[0]).read_text())
