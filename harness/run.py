@@ -272,6 +272,41 @@ def _cache_reuse_probe(handle: AgentHandle, now: str, enable_thinking: bool = Fa
             f"(first call {c1.prompt_n}) on slot {handle.slot}" + ("" if ok else " -- the slot did not reuse its KV cache"))
 
 
+def _reinforced_cache_probe(handle: AgentHandle, now: str, enable_thinking: bool = False
+                            ) -> tuple[str, bool | None, str]:
+    """The reinforced seeker's pattern (parallelism L4): system + history + trailing reminder, then the same
+    with one more exchange and the reminder moved after it. The second prompt diverges from the cached one
+    where the reminder was, not at its end, so reuse depends on the server keeping a checkpoint there (a
+    sliding-window or recurrent model). The second prefill must be at most the new exchange, the reminder
+    and the margin; otherwise every reinforced dyad fails at turn 2 with CacheReuseLost."""
+    system = {"role": "system", "content": "You are the probe persona. " + CACHE_PROBE_PADDING}
+    reminder = {"role": "system", "content": "Reminder: you are the probe persona. Stay in it."}
+    history = [system, {"role": "assistant", "content": "Opening line of the probe."},
+               {"role": "user", "content": "The partner's reply to the opening line."}]
+    try:
+        p1 = render(handle.template, history + [reminder], now=now, enable_thinking=enable_thinking)
+        c1 = handle.client.complete(p1, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0,
+                                    cache_prompt=True)
+        exchange = [{"role": "assistant", "content": c1.text or "ready"},
+                    {"role": "user", "content": "The partner again. " + CACHE_PROBE_PADDING}]
+        p2 = render(handle.template, history + exchange + [reminder], now=now,
+                    enable_thinking=enable_thinking)
+        expected = expected_new_tokens(handle.client, p2, p1)
+        c2 = handle.client.complete(p2, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0,
+                                    cache_prompt=True)
+    except (ServerError, TemplateError) as e:
+        return ("cache_reuse_reinforced", False, f"probe failed: {e}")
+    if c2.prompt_n is None:
+        return ("cache_reuse_reinforced", False, "the server reports no timings.prompt_n, so KV cache reuse "
+                "cannot be checked")
+    ok = c2.prompt_n <= expected + CACHE_PROBE_MARGIN
+    return ("cache_reuse_reinforced", ok, f"with the reminder moved after a new exchange, the second call "
+            f"prefilled {c2.prompt_n} tokens, expected about {expected} (the exchange and the reminder; "
+            f"first call {c1.prompt_n}) on slot {handle.slot}"
+            + ("" if ok else " -- the slot re-prefilled from before the reminder: reinforced dyads would "
+               "fail at turn 2"))
+
+
 def _parity_row(name: str, handle: AgentHandle, messages: list[dict], now: str,
                 enable_thinking: bool) -> tuple[str, bool | None, str]:
     """One template parity row. A pass that needed the server's date or dropping our leading BOS says so."""
@@ -359,6 +394,9 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
       prefill only the new tokens. Catches a server without prompt caching, or a template that rewrites the
       prefix between turns, before a wave spends a day finding out (models/RUN_APPROACH.md: the largest
       lever, and it fails silently).
+    - `cache_reuse_reinforced` (seeker only): the reinforced seeker's pattern, a trailing reminder moved
+      after a new exchange; the second prefill must be about the exchange and the reminder
+      (_reinforced_cache_probe).
     - `trailing_system` (seeker only): the template renders the reminder as a trailing system message,
       after the last history message, with the persona kept (_trailing_system_row)."""
     now = cfg.get("now", "2026-09-08")
@@ -390,8 +428,12 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
     results.append(slot_row)
     if slot_row[1] is False and "busy" in slot_row[2]:
         results.append(("cache_reuse", False, "not probed: the server's slots are in use"))
+        if handle.name == SEEKER:
+            results.append(("cache_reuse_reinforced", False, "not probed: the server's slots are in use"))
     else:
         results.append(_cache_reuse_probe(handle, now, thinking))
+        if handle.name == SEEKER:
+            results.append(_reinforced_cache_probe(handle, now, thinking))
     if handle.name == SEEKER:
         results.append(_trailing_system_row(handle, now, thinking))
     return results

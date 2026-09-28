@@ -502,7 +502,7 @@ def test_check_agent_probes_kv_cache_reuse_on_the_slot():
     results = dict((n, (ok, d)) for n, ok, d in R.check_agent(handle, cfg))
     ok, detail = results["cache_reuse"]
     assert ok is True, detail
-    probes = fc.calls[-2:]
+    probes = fc.calls[-4:-2]          # the last two are the seeker's reinforced probe
     assert all(c["id_slot"] == 3 and c["cache_prompt"] is True and c["n_predict"] == 1 for c in probes)
     assert probes[1]["prompt"].startswith(probes[0]["prompt"].rsplit("<|im_start|>assistant", 1)[0])
 
@@ -1450,3 +1450,37 @@ def test_served_model_warns_when_the_server_reports_neither_path_nor_hash():
     fc.slots = lambda: [{"id": 0, "model": "/srv/x.gguf"}]
     got = R.served_model(fc, {}, "/models/x.gguf", "abc")
     assert got["ok"] is True and got["source"] == "/slots" and got["compared"] == ["basename"]
+
+
+def test_check_probes_the_reinforced_seekers_cache_pattern():
+    # Parallelism L4: a server that reuses its cache only on a strict extension passes cache_reuse but
+    # re-prefills the reinforced seeker's turn 2, whose prompt diverges where the reminder was.
+    tpl = ChatTemplate.from_source(CHATML)
+    fc = FakeClient(["ok"])
+    handle = AgentHandle(SEEKER, fc, tpl, "h", slot=2)
+    cfg = R._merge(R.DEFAULT_CONFIG, {})
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(handle, cfg)}
+    ok, detail = rows["cache_reuse_reinforced"]
+    assert ok is True, detail
+    first, second = fc.calls[-2:]
+    reminder = "<|im_start|>system\nReminder: you are the probe persona."
+    assert first["id_slot"] == second["id_slot"] == 2
+    assert second["prompt"].startswith(first["prompt"].rsplit(reminder, 1)[0])
+    assert second["prompt"].rindex(reminder) > second["prompt"].rindex("The partner again.")
+    assert "cache_reuse_reinforced" not in {n for n, _, _ in R.check_agent(
+        AgentHandle(MENTOR, FakeClient(["ok"]), tpl, "h", slot=0), cfg)}
+
+    fc = FakeClient(["ok"])
+    last = {}
+    def extension_only(prompt, **kw):
+        c = FakeClient.complete(fc, prompt, **kw)
+        prev = last.get(kw["id_slot"])
+        if prev is not None and not prompt.startswith(prev):
+            c.prompt_n = len(prompt.split())     # no checkpoint before the divergence: all of it again
+        last[kw["id_slot"]] = prompt
+        return c
+    fc.complete = extension_only
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(SEEKER, fc, tpl, "h", slot=0), cfg)}
+    assert rows["cache_reuse"][0] is True
+    ok, detail = rows["cache_reuse_reinforced"]
+    assert ok is False and "re-prefilled from before the reminder" in detail
