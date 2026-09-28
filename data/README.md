@@ -55,7 +55,8 @@ resume, `previous` being the code before it), `resume_compares` (what a resume c
 and refuses on: `harness/README.md`, "What the config fields mean"), `check` (`{seeker: [...], mentor:
 [...]}`, each `{name, ok, detail}`: the pre-flight rows as the run's first start saw them, including a
 parity passed on the server's date or without a leading BOS), `environment`
-`{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
+`{python, platform, jinja2, numpy, pyyaml, harness_version, gguf_py_path, gguf_py_commit, gpu}` (numpy and
+pyyaml are what gguf-py imports to read the templates; null when not installed), and one block each for
 `seeker` and `mentor`:
 
 `url`, `alias`, `model_path`, `model_sha256` (of the GGUF file), `family` (model family slug from the
@@ -67,7 +68,10 @@ null), `template_sha256`, `template_source`
 `sampler_defaults` (`default_generation_settings.params`: the server's own sampler defaults, which the
 harness overrides on every request with the config's `generation` values, recorded so a restart with other
 flags is seen; a resume refuses a change), `n_ctx` (the per-slot context; compared on resume too),
-`default_generation_settings` (all of `/props` `default_generation_settings`, as it was).
+`default_generation_settings` (all of `/props` `default_generation_settings`, as it was), `served_model`
+`{configured_path, served_path, served_sha256, source, compared, ok, detail}` (the config's `gguf_path`
+against the model the server reports at `/props` or `/slots`; `compared` lists `basename`, `same_file`
+and `sha256` as they applied, empty without a `gguf_path`; `run` refuses when `ok` is false).
 
 ## `input-dyads.jsonl`
 
@@ -85,15 +89,15 @@ sha256, assignment}`, `filter` `{per_variant, control, ideology, topic}`, `rows`
 
 ## `judge-<sha12>.json`
 
-The judge's provenance, written by `score`: the same fields as a role block above, plus `scope`,
-`subsample` (the dyad fraction, or null), `temperature`, `n_predict`, `samplers` (every other sampler
-the judge requests were sent with), `judge_system` and `judge_tasks` (the judge prompt text verbatim),
-`harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of
-a run and never rewritten, while scoring happens later and often from a different commit. A later pass
-with the same judge whose record differs in anything but `ts` (another scope, subsample or harness
-commit) writes `judge-<sha12>-<scope>.json` beside it, and a further differing pass with the same scope
-writes `judge-<sha12>-<scope>-2.json`, `-3.json` and so on: a record is never overwritten. `score` prints
-the name of the record it used.
+The judge's provenance, written by `score`: the same fields as a role block above, plus `scope`, `subsample`
+(the dyad fraction, or null), `temperature`, `top_p`, `n_predict`, `samplers` (every other sampler the judge
+requests were sent with), `judge_system` and `judge_tasks` (the judge prompt text verbatim),
+`harness_commit` and `ts`. It is a separate file because `manifest.json` is written once at the start of a
+run and never rewritten, while scoring happens later and often from a different commit. A later pass with
+the same judge whose record differs in anything but `ts` (another scope, subsample or harness commit) writes
+`judge-<sha12>-<scope>.json` beside it, and a further differing pass with the same scope writes
+`judge-<sha12>-<scope>-2.json`, `-3.json` and so on: a record is never overwritten. `score` prints the name
+of the record it used.
 
 ## `dyads.jsonl` — one row per dyad attempt
 
@@ -117,7 +121,9 @@ unmatched `</think>`; null when there was none), `timings`
 (the server's own per-request numbers), `adherence` (always null; the scorer writes the equivalent into
 `scores.jsonl`), `ts`. On a failure there is also `error`, and the numeric fields are null. When the
 server reported no timings there is also `timings_missing: true`, and `prompt_n`, `predicted_n` and
-`cache_warning` are null: unknown, not zero. A reply
+`cache_warning` are null: unknown, not zero. A reply that is empty or whitespace once reasoning is
+split off has `empty_reply: true`; it is passed to the partner and does not fail the dyad, since
+refusal-like silence is a finding (`analysis.rates` counts it). A reply
 that carries gpt-oss harmony channel markup (`<|channel|>`, `<|start|>assistant`, `<|message|>`), or opens
 a `<think>` block it never closes, is logged with `error` (`HarmonyMarkup: ...` or `UnterminatedThink: ...`)
 and its raw `text`, and the dyad fails: the partner never sees it.
@@ -176,7 +182,8 @@ prompt.
 seeker; `alignment` for the mentor), `scope` (`pilot`, `main` or `stance`: the pass that scored it; absent
 on rows from before it was recorded), `subsample` (that pass's `--subsample`, or null), `judge_sha256`,
 `id_slot`, `harness_commit` (the commit that did the
-scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or null), `rationale`,
+scoring), `seed`, `temperature` and `top_p` (the judge's, 0 and 0.95; absent on older rows),
+`judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or null), `rationale`,
 `raw_text`, `ts`. On a failure there is also `error`.
 
 The seeker of a control dyad (`ideology: "none"`) has no persona to adhere to, so the adherence metrics

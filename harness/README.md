@@ -46,8 +46,9 @@ the schema was not honoured (a truncated reply, a server without grammar support
 from free text and labels the row's `answer_method` accordingly. It drops reasoning first (a `<think>`
 block, the text before an unmatched `</think>`, a harmony analysis channel), prefers a JSON object in the
 text and then the number after the last "answer" / "my answer" / "final" marker, and ignores a parenthesis
-that restates both ends of the scale. Its 50 hand-written cases, and the red-team's four adversarial ones,
-are `harness/tests/parser_cases.jsonl`.
+that restates both ends of the scale. A correction after a labelled number ("no," or "no:", "actually",
+"wait", "correction", then a number) overrides it: "Say 3; well, no, 4." is 4. Its 50 hand-written cases,
+and the red-team's six adversarial ones, are `harness/tests/parser_cases.jsonl`.
 
 The unconstrained check (the spec's "unconstrained run on a sample"; gap audit F12) asks the same items
 without the schema, so the salvage path's answers can be set against the constrained ones:
@@ -81,7 +82,8 @@ what is missing, and refuses other settings, another mentor, instrument or harne
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
 A second Ctrl-C says how many dyads are still in flight; a third abandons them, marking each attempt
-`failed` with reason `abandoned`, and exits 130 at once.
+`failed` with reason `abandoned`, and exits 130 at once. Its summary line counts the empty replies of the
+attempts it ran (`empty_reply` in `turns.jsonl`): logged and passed on, not failed (red-team L8).
 A `*.jsonl` whose last line a crash cut off stops `run`, `survey`, `baseline` and `score` with the file
 and line named; add `--repair-torn-line` to back the file up and drop that one line, then carry on.
 `survey` and `score` exit 2 when any item or judge call failed in that pass; re-run them to fill in what
@@ -163,6 +165,11 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 - `check` sends two one-token probes to each role's slot, the second extending the first, and **FAILs
   `cache_reuse`** when the second prefills more than the new tokens plus a 64-token margin. Catches a
   server without prompt caching, or a template that rewrites the prefix between turns, before the run.
+  On the seeker a second probe mirrors a reinforced turn: system, history and the trailing reminder, then
+  the same with one more exchange and the reminder moved after it. It **FAILs `cache_reuse_reinforced`**
+  when the second prefills more than the exchange, the reminder and the margin: a server that reuses its
+  cache only on a strict extension (a sliding-window or recurrent model without a checkpoint where the
+  reminder was) would fail every reinforced dyad at turn 2 (parallelism L4).
 - During a run, a mid-dialogue turn whose `prompt_n` is both unexpected (`cache_warning`) and above
   `cache_reuse_limit` (config, default 1000; `null` disables) **fails the dyad** with `CacheReuseLost`.
   The row is logged first, so the evidence is in `turns.jsonl`; `run` exits 2, and the next `run` with the
@@ -194,12 +201,12 @@ shows which it is.
 | `concurrency` | How many dialogues run at once, and how many judge slots `score` uses at once. `null` means "as many as the smaller server has slots" (for `score`, the judge's). More than a server's slots is refused: llama.cpp wraps an out-of-range slot id, so two dialogues would share a slot. |
 | `cache_reuse_limit` | Tokens. A mid-dialogue turn that prefills more than this when the cache should have held fails the dyad. Default 1000; must exceed `2 * n_predict` plus the reminder. `null` disables. Operational: not compared on resume. |
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
-| `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |
+| `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. An item with no text, a non-integer scale bound, `scale.min >= scale.max` or a duplicate id is refused when the file loads (red-team L6). |
 | `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
-| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`; `survey --temperature` and `--n-predict` override the survey's for a pass, and `baseline` samples at this block's `temperature` and `top_p`. Also every other llama.cpp sampler, at llama.cpp's defaults unless set here: `top_k` 40, `min_p` 0.05, `typical_p` 1, `top_n_sigma` -1, `repeat_penalty` 1, `repeat_last_n` 64, `presence_penalty` 0, `frequency_penalty` 0, `dry_multiplier` 0, `xtc_probability` 0, `mirostat` 0 (`SAMPLER_DEFAULTS` in `harness/client.py`). They go out on every dialogue, survey and judge request, so what a server was started with cannot change a generation, and they are compared on resume with the rest of `generation`. |
+| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own settings (temperature 0, top_p 0.95; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`; `survey --temperature` and `--n-predict` override the survey's for a pass, and `baseline` samples at this block's `temperature` and `top_p`. Also every other llama.cpp sampler, at llama.cpp's defaults unless set here: `top_k` 40, `min_p` 0.05, `typical_p` 1, `top_n_sigma` -1, `repeat_penalty` 1, `repeat_last_n` 64, `presence_penalty` 0, `frequency_penalty` 0, `dry_multiplier` 0, `xtc_probability` 0, `mirostat` 0 (`SAMPLER_DEFAULTS` in `harness/client.py`). They go out on every dialogue, survey and judge request, so what a server was started with cannot change a generation, and they are compared on resume with the rest of `generation`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
 | `study` | Path to the study lock, `study.json` (below), or `null` (the default) for none. Operational: not compared on resume, because what it holds is compared directly. |
-| `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. Two URLs count as one server when they resolve to the same address, port and path (every loopback name is one address; a trailing slash is ignored), or when the servers report the same model file, model hash, build, slot count and per-slot context. |
+| `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. Two URLs count as one server when they resolve to the same address, port and path (every loopback name is one address; a trailing slash is ignored), or when the servers report the same model file, model hash, build, slot count and per-slot context. `check` and `run` compare `gguf_path` with the model the server reports loading at `/props` (or `/slots`): the basename, and the sha256 when the server reports a hash or its path is another file readable here. A mismatch FAILs the `served_model` row, so `run` refuses; a server that reports neither is a warning. `manifest.json` records what was compared (red-team M3). |
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 | `family` (in `seeker`, `mentor`, `judge`) | The model family slug (`qwen`, `gpt-oss`, `olmo`, `glm`, `llama`, `gemma`, `mistral`, `deepseek`, `phi`), when the GGUF name, its directory and the server alias do not show it: an ollama blob served without `--alias` does not. `score` refuses when the judge's or the mentor's family is unknown, so set it for those; `check` warns. The mentor's may also be set in the `score` config when `manifest.json` has none. |
 
