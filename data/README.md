@@ -1,8 +1,9 @@
 # data/
 
 Experiment output lives here on the box that produced it. The row files are **git-ignored** (see
-`.gitignore`) because they are large and belong on the NAS; `manifest.json` and `judge-*.json` are
-**not** ignored, because a clone of this repository alone must be able to say what was run.
+`.gitignore`) because they are large and belong on the NAS; `manifest.json`, `judge-*.json`,
+`assignment.json`, `SHA256SUMS` and `archive.json` are **not** ignored, because a clone of this
+repository alone must be able to say what was run and where its rows are.
 
 One directory per run: `data/<run_id>/`. A `run_id` is chosen on the command line
 (`pilot-2026-09-18`, `baseline`, `wave1` ...; letters, digits, `.`, `_` and `-`, starting with a letter or
@@ -16,6 +17,7 @@ serve, and how to reproduce one dialogue from them, is `docs/REPRODUCIBILITY.md`
 data/<run_id>/
   manifest.json        written once when the run starts; never rewritten
   input-dyads.jsonl    the input dyad manifest, copied verbatim when the run starts; never rewritten
+  assignment.json      the randomizer's assignment log for that manifest, copied beside it (if it has one)
   judge-<sha12>.json   written by `score`, one per judge model (and scoring pass)
   dyads.jsonl          one row per dyad attempt: the treatment
   status.jsonl         the run's ledger; resume and analysis both read it
@@ -38,9 +40,10 @@ it holds that process's pid and is harmless when left behind.
 `run_id`, `started_at`, `harness_commit`, `harness_dirty` (were tracked files under `harness/` or
 `instruments/` modified? null when git could not say, which is not the same as clean),
 `harness_diff_sha256` (sha256 of that uncommitted diff, or null when clean), `config` (the whole
-config as merged onto the defaults), `input_manifest` `{path, sha256}`, `batteries`
-`{path, sha256, n_items, item_ids}`, `resume_compares` (what a resume compares with this file and
-refuses on: `harness/README.md`, "What the config fields mean"), `environment`
+config as merged onto the defaults), `input_manifest` `{path, sha256, assignment}` (`assignment` is
+`{path, sha256}` of the randomizer's `<stem>-assignment.json` beside the input manifest, or null),
+`batteries` `{path, sha256, n_items, item_ids}`, `resume_compares` (what a resume compares with this file
+and refuses on: `harness/README.md`, "What the config fields mean"), `environment`
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
 

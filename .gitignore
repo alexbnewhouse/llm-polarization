@@ -13,6 +13,11 @@ data/**
 !data/*/
 !data/*/manifest.json
 !data/*/judge-*.json
+# the archive record (docs/REPRODUCIBILITY.md section 3), which says where the row files went, and the
+# randomizer's assignment log that `run` copies beside the manifest
+!data/*/archive.json
+!data/*/SHA256SUMS
+!data/*/assignment.json
 # huge llama-server logs
 llama-*.log
 *.nohup.log

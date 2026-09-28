@@ -973,3 +973,33 @@ def test_the_cache_probe_fails_when_the_server_reports_no_timings():
     handle = AgentHandle(SEEKER, fc, ChatTemplate.from_source(CHATML), "h", 0)
     rows = dict((n, (ok, d)) for n, ok, d in R.check_agent(handle, R._merge(R.DEFAULT_CONFIG, {})))
     assert rows["cache_reuse"][0] is False and "no timings" in rows["cache_reuse"][1]
+
+
+def test_run_copies_the_assignment_log_beside_the_manifest(tmp_path, monkeypatch):
+    # Gap audit F14: the randomization record lived wherever --out pointed and never reached the archive.
+    _fake_servers(tmp_path, monkeypatch)
+    man = tmp_path / "pilot-dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    sidecar = tmp_path / "pilot-assignment.json"; sidecar.write_text('{"rng_seed": 1}')
+    cfg = write_cfg(tmp_path)
+    run = lambda m, rid: R.main(["run", "--config", str(cfg), "--manifest", str(m), "--run-id", rid])
+    assert run(man, "r1") == 0
+    paths = log.run_paths(tmp_path / "data", "r1")
+    assert paths.assignment.read_text() == '{"rng_seed": 1}'
+    rec = json.loads(paths.manifest.read_text())["input_manifest"]["assignment"]
+    assert rec == {"path": str(sidecar), "sha256": log.sha256_file(sidecar)}
+    other = tmp_path / "hand.jsonl"; other.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    assert run(other, "r2") == 0
+    paths = log.run_paths(tmp_path / "data", "r2")
+    assert not paths.assignment.exists()
+    assert json.loads(paths.manifest.read_text())["input_manifest"]["assignment"] is None
+
+
+def test_gitignore_keeps_the_archive_record_and_ignores_the_row_files():
+    # Gap audit F14: archive.json and SHA256SUMS say where the row files went; they must reach git.
+    kept = ["manifest.json", "judge-abcdef123456.json", "archive.json", "SHA256SUMS", "assignment.json"]
+    ignored = ["turns.jsonl", "input-dyads.jsonl", "status.jsonl", ".lock"]
+    def is_ignored(name):
+        return subprocess.run(["git", "check-ignore", "-q", f"data/wave1/{name}"], cwd=REPO).returncode == 0
+    assert [n for n in kept if is_ignored(n)] == []
+    assert [n for n in ignored if not is_ignored(n)] == []

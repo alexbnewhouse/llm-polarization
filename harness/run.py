@@ -14,6 +14,7 @@ import jinja2
 from harness import __version__, log
 from harness.client import LlamaClient, ServerError
 from harness.grid import check_conditions, load_grid
+from harness.randomize import assignment_log_path
 from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
@@ -603,7 +604,7 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     dirty = _git_dirty()
     manifest = {"run_id": run_id, "started_at": now_iso(), "harness_commit": commit,
                 "harness_dirty": dirty, "harness_diff_sha256": _git_diff_sha256() if dirty else None,
-                "config": cfg, "input_manifest": _file_provenance(manifest_path),
+                "config": cfg, "input_manifest": _input_provenance(manifest_path),
                 "batteries": _batteries_provenance(cfg), "resume_compares": RESUME_COMPARES,
                 "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
     if dirty:
@@ -620,8 +621,11 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
             raise ManifestMismatch(f"{paths.manifest}: not resuming, changed since this run started: "
                                    + "; ".join(changes) + ". Use a new run_id")
     else:
-        # The input manifest as the run started with it, so a resume can compare dyad rows field by field.
+        # The input manifest as the run started with it, so a resume can compare dyad rows field by field,
+        # and the randomizer's assignment log beside it, which is small and goes into git with the manifest.
         shutil.copyfile(manifest_path, paths.input_dyads)
+        if manifest["input_manifest"]["assignment"]:
+            shutil.copyfile(assignment_log_path(manifest_path), paths.assignment)
     log.write_manifest(paths, manifest)
     # concurrency: null in the config means "one dialogue per slot, limited by the smaller server". check
     # has already refused a concurrency above either server's slot count, or null with no count known.
@@ -955,6 +959,14 @@ def _file_provenance(path: str | Path) -> dict:
     """{path, sha256} for an input file, so 'the dyads we meant to run' is separable from what started."""
     p = Path(path)
     return {"path": str(p), "sha256": log.sha256_file(p) if p.exists() else ""}
+
+
+def _input_provenance(manifest_path: str | Path) -> dict:
+    """{path, sha256} of the input dyad manifest, and the same for the assignment log `harness.randomize`
+    wrote beside it (null when there is none: a hand-written manifest)."""
+    log_path = assignment_log_path(manifest_path)
+    return {**_file_provenance(manifest_path),
+            "assignment": _file_provenance(log_path) if log_path.exists() else None}
 
 
 def _batteries_provenance(cfg: dict) -> dict:

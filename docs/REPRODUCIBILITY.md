@@ -90,10 +90,12 @@ results (`models/benchmarks/`), the bibliography, `LICENSE` and `CITATION.cff`. 
 are the artefact of record. `.gitignore` keeps model weights (`*.gguf`, `*.safetensors`, `*.bin`) and the
 bulk experiment output out.
 
-**Tier 2 — in git, and now automatically.** `data/<run_id>/manifest.json` and
-`data/<run_id>/judge-*.json` are un-ignored: they are a few kilobytes each and they are the entire
+**Tier 2 — in git, and now automatically.** `data/<run_id>/manifest.json`, `data/<run_id>/judge-*.json`,
+`data/<run_id>/assignment.json` (the randomizer's assignment log, which `run` copies beside the manifest
+when the input manifest has one), and the archive record `data/<run_id>/SHA256SUMS` and
+`data/<run_id>/archive.json` are un-ignored: they are a few kilobytes each and they are the entire
 provenance record for a wave. Commit them when the run finishes. A reader who has only the repository
-can then say exactly what was run.
+can then say exactly what was run, and where its row files are.
 
 **Tier 3 — NAS or Dropbox, never git.** The row files themselves — `input-dyads.jsonl`, `dyads.jsonl`,
 `turns.jsonl`, `surveys.jsonl`, `scores.jsonl`, `status.jsonl` — and the GGUF files for every model in the
@@ -115,8 +117,9 @@ The archival step, in order:
     "sha256sums_sha256": "$(sha256sum data/<run_id>/SHA256SUMS | cut -d' ' -f1)"}
    JSON
    ```
-5. `git add -f data/<run_id>/manifest.json data/<run_id>/judge-*.json` and commit. (They are un-ignored,
-   so plain `git add` works; `-f` is harmless insurance.)
+5. `git add -f data/<run_id>/manifest.json data/<run_id>/judge-*.json data/<run_id>/assignment.json
+   data/<run_id>/SHA256SUMS data/<run_id>/archive.json` and commit. (They are un-ignored, so plain
+   `git add` works; `-f` is harmless insurance. `assignment.json` is absent for a hand-written manifest.)
 6. Archive the GGUF for every model named in the manifest, once, alongside the first run that used it,
    filed under its SHA-256. A run is not reproducible without the weights, and the weights are the one
    thing that will quietly disappear from the internet.

@@ -201,6 +201,16 @@ def build_manifest(grid: dict, catalogue: dict, *, seed: int, n_per_cell: int | 
     return rows, assignment
 
 
+def assignment_log_path(out: str | Path) -> Path:
+    """Where the assignment log of the manifest `out` lives: <stem>-assignment.json beside it, where <stem>
+    is the name without its extension and any trailing "-dyads" (pilot-dyads.jsonl ->
+    pilot-assignment.json)."""
+    out = Path(out)
+    stem = out.name[: -len(out.suffix)] if out.suffix else out.name
+    stem = stem[: -len("-dyads")] if stem.endswith("-dyads") else stem
+    return out.with_name(f"{stem}-assignment.json")
+
+
 def write_manifest(out: str | Path, rows: list[dict], assignment: dict, *, grid_path: str | Path,
                    catalogue_path: str | Path) -> Path:
     """Write the manifest as JSONL and its assignment log beside it, with the grid, catalogue and output
@@ -210,9 +220,7 @@ def write_manifest(out: str | Path, rows: list[dict], assignment: dict, *, grid_
     with open(out, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    stem = out.name[: -len(out.suffix)] if out.suffix else out.name
-    stem = stem[: -len("-dyads")] if stem.endswith("-dyads") else stem
-    sidecar = out.with_name(f"{stem}-assignment.json")
+    sidecar = assignment_log_path(out)
     a = dict(assignment)
     a["grid"] = {**a.get("grid", {}), "path": str(grid_path), "sha256": sha256_file(Path(grid_path))}
     a["catalogue"] = {**a.get("catalogue", {}), "path": str(catalogue_path), "sha256": sha256_file(Path(catalogue_path))}
