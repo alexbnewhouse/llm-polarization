@@ -1346,3 +1346,45 @@ def test_agreement_with_fewer_than_two_judges_says_so_and_exits_0(tmp_path, monk
     out = capsys.readouterr().out
     assert "1 judge(s)" in out and "J1 n=2 mean=0.400" in out and "fewer than two judges" in out
     assert " vs " not in out
+
+
+def test_allow_code_change_records_an_override_instead_of_refusing(tmp_path, monkeypatch, capsys):
+    # The default still refuses a resume from other harness code; --allow-code-change records the new
+    # commit in manifest.json resume_overrides and goes on, and each later 'started' row says which code.
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    run = lambda *extra, c=cfg: R.main(["run", "--config", str(c), "--manifest", str(man), "--run-id", "r1",
+                                        *extra])
+    real_run_dyad, real_commit = R.run_dyad, R._git_commit()
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "failed")
+    assert run() == 2
+    paths = log.run_paths(tmp_path / "data", "r1")
+    started = json.loads(paths.manifest.read_text())
+    monkeypatch.setattr(R, "_git_commit", lambda: "f" * 40)
+    capsys.readouterr()
+    assert run() == 1
+    assert "--allow-code-change records a code change" in capsys.readouterr().err
+    monkeypatch.setattr(R, "run_dyad", real_run_dyad)
+    assert run("--allow-code-change") == 0
+    assert "resume_overrides" in capsys.readouterr().out
+    mf = json.loads(paths.manifest.read_text())
+    (o,) = mf["resume_overrides"]
+    assert o["harness_commit"] == "f" * 40 and o["previous"]["harness_commit"] == real_commit
+    assert o["override"] == "--allow-code-change" and "harness_commit is now ffffffffffff" in o["changes"][0]
+    assert {k: v for k, v in mf.items() if k != "resume_overrides"} == started     # nothing else rewritten
+    assert {s["harness_commit"] for s in log.read_jsonl(paths.status) if s["status"] == "started"} == {"f" * 40}
+    # the override's code is now the run's: resuming on it needs no flag, going back does
+    assert run() == 0
+    monkeypatch.setattr(R, "_git_commit", lambda: real_commit)
+    assert run() == 1
+    # the flag never covers anything but the code, nor a git state that cannot be read
+    monkeypatch.setattr(R, "_git_commit", lambda: "e" * 40)
+    assert run("--allow-code-change", c=write_cfg(tmp_path, run_seed=6)) == 1
+    assert "config.run_seed differs" in capsys.readouterr().err
+    monkeypatch.setattr(R, "_git_dirty", lambda: None)
+    assert run("--allow-code-change", c=write_cfg(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "cannot be confirmed unchanged" in err and "config" not in err
+    assert len(json.loads(paths.manifest.read_text())["resume_overrides"]) == 1

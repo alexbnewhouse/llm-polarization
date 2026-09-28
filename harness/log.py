@@ -221,6 +221,20 @@ def write_manifest(paths: RunPaths, manifest: dict) -> None:
     paths.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def append_resume_override(paths: RunPaths, override: dict) -> None:
+    """Add one record to manifest.json's `resume_overrides`, the one rewrite manifest.json ever gets: a
+    resume the operator allowed despite a change (`run --allow-code-change`). Written to a temporary file
+    and renamed over the old one, under the run's lock, so a crash leaves the old or the new file whole."""
+    manifest = json.loads(paths.manifest.read_text(encoding="utf-8"))
+    manifest.setdefault("resume_overrides", []).append(override)
+    tmp = paths.manifest.with_name(paths.manifest.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(manifest, indent=2, ensure_ascii=False))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, paths.manifest)
+
+
 class RunLocked(Exception):
     """Another harness process holds this run's lock file."""
 

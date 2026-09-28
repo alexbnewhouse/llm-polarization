@@ -389,3 +389,29 @@ def test_control_dyads_are_not_adherence_scored(tmp_path):
     assert sc.score_run(p, "pilot", manifest) > 0 and sc.control_excluded == 1
     control = [r for r in log.read_jsonl(p.scores) if r["dyad_id"] == "c"]
     assert control and all(r["metric"] == "alignment" for r in control)                # the mentor still is
+
+
+def test_control_mentor_alignment_is_scored_only_in_pilot_scope(tmp_path):
+    # The control's `alignment` has no zero point (docs/pap/pre-analysis-plan.md 3.6): main and stance leave
+    # it out and count it; pilot, the calibration scope, still scores it.
+    p = log.run_paths(tmp_path, "r1")
+    st, tw, dw = log.JsonlWriter(p.status), log.JsonlWriter(p.turns), log.JsonlWriter(p.dyads)
+    for d, ideology in (("t", "lean_left"), ("c", "none")):
+        dw.write({"dyad_id": d, "attempt": 1, "condition": {"topic": "t", "ideology": ideology},
+                  "persona_text": "P", "persona_reminder": "", "persona_mode": "once", "seed": 1, "n_turns": 4})
+        st.write({"dyad_id": d, "attempt": 1, "status": "complete"})
+        for turn in range(1, 5):
+            for agent in (SEEKER, MENTOR):
+                tw.write({"dyad_id": d, "attempt": 1, "turn": turn, "agent": agent, "text": f"{d}{turn}",
+                          "finish_reason": "stop"})
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
+    judge = AgentHandle("judge", FakeClient(['{"score": 0.5, "rationale": "x"}']),
+                        ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
+    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
+    assert scorer.CONTROL_ALIGNMENT_UNSCORED == ("main", "stance")
+    assert sc.score_run(p, "stance", manifest) == 1 and sc.control_alignment_excluded == 1
+    assert {(r["dyad_id"], r["metric"]) for r in log.read_jsonl(p.scores)} == {("t", "alignment")}
+    assert sc.score_run(p, "main", manifest) == 2 and sc.control_alignment_excluded == 0
+    assert sc.score_run(p, "pilot", manifest) == 4 * 3 + 4 and sc.control_alignment_excluded == 0
+    pilot = [r for r in log.read_jsonl(p.scores) if r["scope"] == "pilot" and r["dyad_id"] == "c"]
+    assert len(pilot) == 4 and {r["metric"] for r in pilot} == {"alignment"}

@@ -19,7 +19,7 @@ verify exactly what every model was asked, and to detect a lost cache, but not t
 pip install -r harness/requirements.txt            # jinja2 + numpy; gguf-py comes from the llama.cpp checkout
 cp harness/config.example.json config.json         # edit urls, gguf_py_path, run_seed
 python -m harness.randomize --catalogue prompts/personas/catalogue.json --out pilot-dyads.jsonl \
-    --seed 20260918 --n-per-cell 5 --modes reinforced,once --prefix p       # grid -> manifest + assignment log
+    --seed 20260918 --n-per-cell 6 --modes reinforced,once --prefix p       # grid -> manifest + assignment log
 python -m harness.run check  --config config.json --manifest pilot-dyads.jsonl
 python -m harness.run run    --config config.json --manifest pilot-dyads.jsonl --run-id pilot-2026-09-18
 python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
@@ -34,6 +34,11 @@ python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_UR
 HARNESS_TEMPLATE_GGUFS=qwen3=<gguf>,gpt-oss=<gguf>,olmo=<gguf> GGUF_PY_PATH=<llama.cpp>/gguf-py \
     python -m pytest harness/tests/test_real_templates.py   # the arms' real templates, on the box
 ```
+
+The pilot uses `--n-per-cell 6`, not the 5 the design first named: the catalogue has three role variants
+per ideology level, and a cell's rows must split evenly across them, so `n_per_cell` is a multiple of 3
+(gap audit F6). Six gives two dyads per variant per delivery mode: 20 treated cells x 6 x 2 modes plus 2
+control cells x 6, 252 dialogues.
 
 Survey replies are schema-constrained to `{"answer": <int>}`; `harness/parser.py` parses them and, when
 the schema was not honoured (a truncated reply, a server without grammar support), salvages the number
@@ -209,6 +214,15 @@ and resuming the same `run_id` is allowed. What a `run` resume compares with `ma
 
 Any difference refuses with one `error:` line naming everything that changed; use a new `run_id`.
 
+The one exception is the harness code, on request. `run --allow-code-change` resumes when the commit or
+the uncommitted diff is the only change: it appends `{ts, override, changes, previous, harness_commit,
+harness_dirty, harness_diff_sha256}` to `manifest.json`'s `resume_overrides` (the only rewrite that file
+ever gets) and goes on, and later resumes compare against that code. Every `started` row in
+`status.jsonl` carries the commit that ran it, so the rows each code produced can be told apart. A git
+state that cannot be read is still refused. Whether a code change mid-wave is acceptable is the PI's call
+(`docs/pap/pre-analysis-plan.md` section 14: a fix that changes what a model is sent, or how a row is
+scored, is a deviation and needs a new `run_id`); the default refuses.
+
 ## The study lock and the descope rule (2026-09-28)
 
 The three arms are separate runs, so nothing in one run's manifest ties it to the others. `study.json`
@@ -348,7 +362,7 @@ server's `timings` on every call so a lost cache is visible immediately.
 - Flag dialogues where seeker adherence falls under threshold for three
   consecutive **scored** seeker turns (`harness.scorer.flag_dialogues`;
   `harness.run flags`, which writes `flags.jsonl` and prints the flagged rate
-  by ideology level and by delivery mode). Scored turns, not dialogue turns:
+  by ideology level and by delivery mode; `--scope`, default `main`). Scored turns, not dialogue turns:
   `main` scope scores the seeker every fourth turn, so the run is over turns
   4, 8, 12. A null score is an unscored turn and neither extends nor breaks
   the run. `--threshold` has no default; it is the calibrated number. Control

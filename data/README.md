@@ -15,7 +15,7 @@ serve, and how to reproduce one dialogue from them, is `docs/REPRODUCIBILITY.md`
 
 ```
 data/<run_id>/
-  manifest.json        written once when the run starts; never rewritten
+  manifest.json        written once when the run starts; only `run --allow-code-change` appends to it
   input-dyads.jsonl    the input dyad manifest, copied verbatim when the run starts; never rewritten
   assignment.json      the randomizer's assignment log for that manifest, copied beside it (if it has one)
   judge-<sha12>.json   written by `score`, one per judge model (and scoring pass)
@@ -47,7 +47,9 @@ manifest, or null; `parent_sha256` is the full wave manifest's sha256 when the i
 written by `harness.randomize --subset-of`, else null), `batteries` `{path, sha256, n_items, item_ids}`,
 `grid` `{path, sha256}` of `prompts/grid.json` (null when the config's `grid` is null), `study`
 `{path, sha256}` of the study lock the run was checked against (null without one; `harness/README.md`,
-"The study lock"), `resume_compares` (what a resume compares with this file
+"The study lock"), `resume_overrides` (absent until `run --allow-code-change` resumes from other harness
+code: one `{ts, override, changes, previous, harness_commit, harness_dirty, harness_diff_sha256}` per such
+resume, `previous` being the code before it), `resume_compares` (what a resume compares with this file
 and refuses on: `harness/README.md`, "What the config fields mean"), `check` (`{seeker: [...], mentor:
 [...]}`, each `{name, ok, detail}`: the pre-flight rows as the run's first start saw them, including a
 parity passed on the server's date or without a leading BOS), `environment`
@@ -176,7 +178,10 @@ scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or nu
 
 The seeker of a control dyad (`ideology: "none"`) has no persona to adhere to, so the adherence metrics
 (`prompt_to_line`, `line_to_line`) are never scored for it (`docs/decisions/factorial.md`); `score` prints
-how many control dyads it left out. Its mentor's `alignment` is scored as for any dyad. Scope `pilot`
+how many control dyads it left out. Its mentor's `alignment` is not scored in `main` or `stance` scope
+either: it asks how far the mentor agrees with the persona's position, and the bare control holds none,
+so it has no zero point (`docs/pap/pre-analysis-plan.md` 3.6; `CONTROL_ALIGNMENT_UNSCORED` in
+`harness/scorer.py`, a default the PI may revisit). `pilot` scope still scores it. Scope `pilot`
 scores every turn for both agents; scope `main` scores the seeker only, on turns 4, 8, 12, ... plus the
 dyad's final turn; scope `stance` scores the mentor's `alignment` on that same cadence, for the two-judge
 subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on the run's `run_seed` from
@@ -209,7 +214,8 @@ flag is an instrument statistic and the trigger for the per-protocol sensitivity
 ## `status.jsonl` — the run's ledger
 
 `run_id`, `dyad_id`, `attempt`, `status` (`started`, `complete` or `failed`), `reason` on a failure
-(`abandoned` when a third Ctrl-C stopped the dyad mid-dialogue),
+(`abandoned` when a third Ctrl-C stopped the dyad mid-dialogue), `harness_commit` on a `started` row (the
+code that ran the attempt; absent on rows from before it was recorded),
 `ts`. `run` reads this to resume: within one attempt a later row wins, except that nothing after a
 `complete` undoes it. **Analysis uses the highest attempt whose status is `complete`**; rows
 from earlier attempts stay in the files and must be filtered out.

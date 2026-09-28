@@ -388,6 +388,7 @@ class RunContext:
     logs: dict
     clock: object = now_iso
     batteries_sha256: str = ""
+    harness_commit: str = ""        # stamped on each 'started' row: after --allow-code-change it says which code
 
 
 def _with_slot(h: AgentHandle, slot: int) -> AgentHandle:
@@ -404,7 +405,8 @@ def run_dyad(worker_slot: int, spec: DyadSpec, attempt: int, ctx: RunContext) ->
     ctx.logs["dyads"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "condition": spec.condition,
                              "persona_text": spec.persona_text, "persona_reminder": spec.persona_reminder,
                              "persona_mode": spec.persona_mode, "seed": spec.seed, "n_turns": spec.n_turns, "ts": ctx.clock()})
-    ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "started", "ts": ctx.clock()})
+    ctx.logs["status"].write({"run_id": ctx.run_id, "dyad_id": spec.dyad_id, "attempt": attempt, "status": "started",
+                              "harness_commit": ctx.harness_commit, "ts": ctx.clock()})
     dialogue = DialogueRunner(ctx.run_id, ctx.run_seed, seeker, mentor, ctx.settings, ctx.logs["turns"], clock=ctx.clock)
     surveys = SurveyRunner(ctx.run_id, ctx.run_seed, mentor, ctx.logs["surveys"], ctx.settings, clock=ctx.clock,
                            batteries_sha256=ctx.batteries_sha256)
@@ -630,11 +632,38 @@ def _few(names: list[str], n: int = 5) -> str:
     return ", ".join(names[:n]) + (f" and {len(names) - n} more" if len(names) > n else "")
 
 
-def resume_changes(existing: dict, live: dict, rows: list[dict], paths: RunPaths) -> list[str]:
+CODE_KEYS = ("harness_commit", "harness_dirty", "harness_diff_sha256")
+
+
+def _effective_code(existing: dict) -> dict:
+    """The code the run's rows now come from: the last `resume_overrides` record's, else manifest.json's."""
+    last = (existing.get("resume_overrides") or [existing])[-1]
+    return {k: last.get(k) for k in CODE_KEYS}
+
+
+def code_changes(existing: dict, live: dict) -> list[str]:
+    """How the harness code differs from the code the run's rows come from (_effective_code), one line
+    each. A git state that cannot be read is listed too; `--allow-code-change` never overrides that."""
+    was, changes = _effective_code(existing), []
+    if was["harness_commit"] != live["harness_commit"]:
+        changes.append(f"harness_commit is now {_short('harness_commit', live['harness_commit'])}, "
+                       f"manifest.json records {_short('harness_commit', was['harness_commit'])}")
+    if was["harness_dirty"] is None or live["harness_dirty"] is None:
+        changes.append("git cannot say whether harness/ and instruments/ have uncommitted changes, so the "
+                       "code cannot be confirmed unchanged")
+    elif (was["harness_dirty"], was["harness_diff_sha256"]) != \
+            (live["harness_dirty"], live["harness_diff_sha256"]):
+        changes.append("the uncommitted changes under harness/ and instruments/ differ from the ones this "
+                       "run started with")
+    return changes
+
+
+def resume_changes(existing: dict, live: dict, rows: list[dict], paths: RunPaths,
+                   include_code: bool = True) -> list[str]:
     """What a resume would change about the run manifest.json describes, one line each; empty when it is
     the same run. `live` is the manifest this invocation would write, `rows` the input dyad manifest. The
     list of what is compared is RESUME_COMPARES. A dyad dropped from the input manifest is allowed (a
-    descope is a subset); a changed or added one is not."""
+    descope is a subset); a changed or added one is not. include_code=False leaves out code_changes."""
     was_cfg, now_cfg = log.run_affecting(existing.get("config")), log.run_affecting(live["config"])
     changes = [f"config.{k} differs" for k in log.RUN_AFFECTING_CONFIG if was_cfg[k] != now_cfg[k]]
     was_b, now_b = (existing.get("batteries") or {}).get("sha256"), live["batteries"]["sha256"]
@@ -642,17 +671,8 @@ def resume_changes(existing: dict, live: dict, rows: list[dict], paths: RunPaths
         changes.append(f"{live['batteries']['path']} now hashes to {_short('sha256', now_b)}, manifest.json "
                        f"records {_short('sha256', was_b)}")
     changes += _identity_changes(existing, live, (SEEKER, MENTOR))
-    if existing.get("harness_commit") != live["harness_commit"]:
-        was_c, now_c = existing.get("harness_commit"), live["harness_commit"]
-        changes.append(f"harness_commit is now {_short('harness_commit', now_c)}, manifest.json records "
-                       f"{_short('harness_commit', was_c)}")
-    if existing.get("harness_dirty") is None or live["harness_dirty"] is None:
-        changes.append("git cannot say whether harness/ and instruments/ have uncommitted changes, so the "
-                       "code cannot be confirmed unchanged")
-    elif (existing.get("harness_dirty"), existing.get("harness_diff_sha256")) != \
-            (live["harness_dirty"], live["harness_diff_sha256"]):
-        changes.append("the uncommitted changes under harness/ and instruments/ differ from the ones this "
-                       "run started with")
+    if include_code:
+        changes += code_changes(existing, live)
     # The input copy is what the run started with. A run started before the copy existed falls back to
     # dyads.jsonl, which holds only the dyads that have started, so an added dyad cannot be told there.
     copied = paths.input_dyads.exists()
@@ -686,12 +706,16 @@ def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
     return t
 
 
-def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
+def cmd_run(cfg: dict, manifest_path: str, run_id: str, allow_code_change: bool = False) -> int:
     """Run the `run` subcommand: check the servers, write/verify the run manifest, plan the outstanding
     (dyad, attempt) work, and execute it across a thread pool with one slot per worker. Returns 0 when
     every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it, 1 when it refused to start.
     Pre-flight checks only seeker and mentor -- a dialogue run never talks to the judge, so a down judge
-    server must not block one; `check` and `score` are what verify the judge."""
+    server must not block one; `check` and `score` are what verify the judge.
+
+    A resume from other harness code is refused unless `allow_code_change`: then, when the code is the only
+    change and git can say what it is, the new commit, dirtiness and diff are appended to
+    manifest.json's `resume_overrides` and the run goes on; every later 'started' row carries its commit."""
     if _same_server(cfg[SEEKER]["url"], cfg[MENTOR]["url"]):
         print(f"error: seeker.url {cfg[SEEKER]['url']} and mentor.url {cfg[MENTOR]['url']} are the same "
               "server; both agents pin the same slot, so they would evict each other's KV cache every turn. "
@@ -736,10 +760,21 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
         # Resuming: the config matching is not enough. Everything in RESUME_COMPARES -- the instrument's
         # content, the input dyad rows, the served models, templates and builds, the harness code -- must be
         # what this run started with, or its rows would mix two of something under one manifest.
-        changes = resume_changes(_load_manifest(paths), manifest, rows, paths)
-        if changes:
+        existing = _load_manifest(paths)
+        changes = resume_changes(existing, manifest, rows, paths, include_code=False)
+        code = code_changes(existing, manifest)
+        unreadable = manifest["harness_dirty"] is None or _effective_code(existing)["harness_dirty"] is None
+        if changes or (code and (not allow_code_change or unreadable)):
+            hint = (" (--allow-code-change records a code change and goes on)"
+                    if code and not changes and not unreadable else "")
             raise ManifestMismatch(f"{paths.manifest}: not resuming, changed since this run started: "
-                                   + "; ".join(changes) + ". Use a new run_id")
+                                   + "; ".join(changes + code) + f". Use a new run_id{hint}")
+        if code:
+            log.append_resume_override(paths, {
+                "ts": now_iso(), "override": "--allow-code-change", "changes": code,
+                "previous": _effective_code(existing), **{k: manifest[k] for k in CODE_KEYS}})
+            print(f"WARN resuming from other harness code (--allow-code-change): {'; '.join(code)}; recorded "
+                  "in manifest.json resume_overrides")
     else:
         # The input manifest as the run started with it, so a resume can compare dyad rows field by field,
         # and the randomizer's assignment log beside it, which is small and goes into git with the manifest.
@@ -759,7 +794,7 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     logs = {k: JsonlWriter(getattr(paths, k)) for k in ("dyads", "status", "turns", "surveys")}
     ctx = RunContext(run_id, int(cfg["run_seed"]), seeker, mentor, _settings(cfg),
                      load_batteries(cfg["batteries"]), logs,
-                     batteries_sha256=manifest["batteries"]["sha256"])
+                     batteries_sha256=manifest["batteries"]["sha256"], harness_commit=commit)
     # One worker thread per server slot. `free` holds the slot numbers not currently in use; the pool has
     # exactly `concurrency` threads, so `free` can never run empty. A dyad keeps its slot for its whole
     # life, which is what keeps the slot's KV cache warm across turns. Each (spec, attempt) pair is
@@ -1109,6 +1144,9 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
     notes = [f"judge record {record.name}"]
     if scorer.control_excluded:
         notes.append(f"{scorer.control_excluded} control dyads not adherence-scored")
+    if scorer.control_alignment_excluded:
+        notes.append(f"{scorer.control_alignment_excluded} control dyads' mentor alignment not scored in "
+                     f"{scope} scope (no position to agree with)")
     if scorer.errors:
         notes.append(f"{scorer.errors} judge calls failed, re-run score to retry them")
     print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "")
@@ -1369,6 +1407,9 @@ def main(argv: list[str] | None = None) -> int:
                            help="back up and fix a *.jsonl whose last line a crash cut off, then go on")
     parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
     parsers["run"].add_argument("--manifest", required=True)
+    parsers["run"].add_argument("--allow-code-change", action="store_true",
+                                help="resume from other harness code, recording it in manifest.json "
+                                     "resume_overrides (the default refuses)")
     parsers["study"].add_argument("--manifest", required=True, help="the wave manifest every arm runs")
     parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
     parsers["survey"].add_argument("--sample", type=int, default=None,
@@ -1419,7 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(msg)
             log.check_tails(paths.root, own)
             if a.cmd == "run":
-                return cmd_run(cfg, a.manifest, a.run_id)
+                return cmd_run(cfg, a.manifest, a.run_id, a.allow_code_change)
             if a.cmd == "survey":
                 return cmd_survey(cfg, a.run_id, a.phase, schema=not a.no_schema, sample=a.sample,
                                   temperature=a.temperature, n_predict=a.n_predict)

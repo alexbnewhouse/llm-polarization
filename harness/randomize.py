@@ -133,7 +133,7 @@ def build_manifest(grid: dict, catalogue: dict, *, seed: int, n_per_cell: int | 
                    n_turns: int | None = None, prefix: str = "w") -> tuple[list[dict], dict]:
     """Expand the grid against the catalogue into manifest rows and the assignment summary. Defaults come
     from the grid: n_per_cell (135), the control's n_per_cell, persona_mode (reinforced) and n_turns (40).
-    The pilot passes n_per_cell=5 and modes=('reinforced', 'once'); the control cells are always
+    The pilot passes n_per_cell=6 and modes=('reinforced', 'once'); the control cells are always
     reinforced and are not multiplied by the delivery modes. One RNG seeded with `seed` draws every
     per-dyad seed and the final shuffle, so the same arguments give the same file."""
     validate_catalogue(catalogue, grid)

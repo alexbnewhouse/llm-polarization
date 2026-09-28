@@ -140,6 +140,13 @@ ADHERENCE_METRICS = tuple(m for m, a in METRICS.items() if a == SEEKER)
 CONTROL_IDEOLOGY = "none"
 
 
+# The control mentor's `alignment` has no zero point: it asks how far the mentor agrees with "the position
+# the PERSONA holds", and the bare control holds none (docs/pap/pre-analysis-plan.md 3.6). So `main` and
+# `stance` do not score it; `pilot` still does, for calibration. A decision the PI may revisit (the plan
+# reports any control rows that are scored separately, as raw alignment): add a scope here to score it.
+CONTROL_ALIGNMENT_UNSCORED = ("main", "stance")
+
+
 def is_control(dyad_row: dict | None) -> bool:
     """True for a dyads.jsonl (or manifest) row of the bare control."""
     return ((dyad_row or {}).get("condition") or {}).get("ideology") == CONTROL_IDEOLOGY
@@ -255,6 +262,7 @@ class Scorer:
         self.harness_commit = harness_commit
         self.errors = 0          # error rows written by the last score_run
         self.control_excluded = 0    # control dyads the last score_run left out of adherence scoring
+        self.control_alignment_excluded = 0    # control dyads whose mentor alignment it left out
         self.concurrency = max(1, int(concurrency))
 
     def check_independence(self, manifest: dict, mentor_family: str | None = None) -> None:
@@ -309,11 +317,16 @@ class Scorer:
         positions: dict[tuple, dict[int, int]] = {
             k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
         selected = select_targets(turns, scope, subsample=subsample, run_seed=self.run_seed)
-        control = {(r["dyad_id"], r.get("attempt", 1)) for r, m in selected
-                   if m in ADHERENCE_METRICS and is_control(dyads.get((r["dyad_id"], r.get("attempt", 1))))}
-        self.control_excluded = len(control)
+        key2 = lambda r: (r["dyad_id"], r.get("attempt", 1))   # noqa: E731
+        # Control dyads: never adherence (no persona to adhere to), and no mentor alignment outside pilot
+        # (no position to agree with: CONTROL_ALIGNMENT_UNSCORED).
+        unscored = set(ADHERENCE_METRICS) | ({"alignment"} if scope in CONTROL_ALIGNMENT_UNSCORED else set())
+        dropped = [(key2(r), m) for r, m in selected if m in unscored and is_control(dyads.get(key2(r)))]
+        self.control_excluded = len({k for k, m in dropped if m in ADHERENCE_METRICS})
+        self.control_alignment_excluded = len({k for k, m in dropped if m == "alignment"})
+        drop = set(dropped)
         targets = [(row, metric) for row, metric in selected
-                   if not (metric in ADHERENCE_METRICS and (row["dyad_id"], row.get("attempt", 1)) in control)
+                   if (key2(row), metric) not in drop
                    and (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric) not in done]
         # A stable sort: value-identical duplicate rows keep their file order.
         targets.sort(key=lambda t: (str(t[0]["dyad_id"]), t[0].get("attempt", 1), t[1], t[0]["turn"]))
