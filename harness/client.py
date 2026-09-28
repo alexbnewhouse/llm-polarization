@@ -103,9 +103,23 @@ class LlamaClient:
         server was started with --no-slots."""
         return self._get("/slots")
 
-    def apply_template(self, messages: list[dict]) -> str:
-        """The server's own rendering of `messages` (/apply-template), which the parity check compares to."""
-        return self._post("/apply-template", {"messages": messages})["prompt"]
+    def apply_template(self, messages: list[dict], chat_template_kwargs: dict | None = None) -> str:
+        """The server's own rendering of `messages` (/apply-template), which the parity check compares to.
+        `chat_template_kwargs` (enable_thinking) is sent when given, as a chat request would carry it."""
+        body = {"messages": messages}
+        if chat_template_kwargs is not None:
+            body["chat_template_kwargs"] = chat_template_kwargs
+        return self._post("/apply-template", body)["prompt"]
+
+    def adds_bos(self) -> bool | None:
+        """Whether the server's tokenizer adds a BOS token to a prompt (it tokenizes a /completion prompt
+        with add_special): one more token with add_special than without. None when it cannot say."""
+        try:
+            n = [len(self._post("/tokenize", {"content": "a", "add_special": s}).get("tokens", []))
+                 for s in (True, False)]
+        except ServerError:
+            return None
+        return n[0] > n[1]
 
     def tokenize(self, text: str) -> int:
         """How many tokens `text` is. Returns the count, not the token ids."""

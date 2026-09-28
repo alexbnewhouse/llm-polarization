@@ -54,7 +54,7 @@ def test_fixture_messages_end_with_trailing_system():
 class _Srv:
     def __init__(self, source):
         self.tpl = ChatTemplate.from_source(source)
-    def apply_template(self, messages):
+    def apply_template(self, messages, chat_template_kwargs=None):
         return render(self.tpl, messages)
 
 
@@ -88,3 +88,60 @@ def test_missing_gguf_dependency_becomes_a_template_error(tmp_path, monkeypatch)
     with pytest.raises(TemplateError) as ei:
         templates._gguf_module(str(tmp_path))
     assert "numpy_is_not_installed_here" in str(ei.value) and str(tmp_path) in str(ei.value)
+
+
+class _Server:
+    """A fake /apply-template that renders `source` its own way: on `day`, honouring chat_template_kwargs
+    or not, and dropping a leading BOS or not, as llama-server may."""
+    def __init__(self, source, bos="", day="2026-09-08", kwargs=True, strip_bos=False):
+        self.tpl, self.day = ChatTemplate.from_source(source, bos=bos), day
+        self.kwargs, self.strip_bos, self.seen = kwargs, strip_bos, []
+
+    def apply_template(self, messages, chat_template_kwargs=None):
+        self.seen.append(chat_template_kwargs)
+        kw = chat_template_kwargs if self.kwargs and chat_template_kwargs else {}
+        out = render(self.tpl, messages, now=self.day, **kw)
+        return out[len(self.tpl.bos):] if self.strip_bos and out.startswith(self.tpl.bos) else out
+
+
+def test_a_dated_template_is_compared_on_the_servers_date_and_only_the_date_may_differ(dated):
+    # Red-team H4: llama-server prints its wall-clock date and takes no override, so a pinned `now` failed
+    # parity on every other day. The comparison renders ours with the server's date; the prompts keep `now`.
+    import datetime
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    tpl = ChatTemplate.from_source(dated)
+    ok, ours, theirs, notes = templates.parity_detail(tpl, _Server(dated, day=today), MSGS, now="2000-01-01")
+    assert ok and notes == [f"date_adjusted {today}"] and "2000-01-01" in ours and today in theirs
+    other = dated.replace("Knowledge cutoff: 2024-06", "Knowledge cutoff: 2025-01")
+    ok, _, _, notes = templates.parity_detail(tpl, _Server(other, day=today), MSGS, now="2000-01-01")
+    assert not ok and notes == []
+    assert templates.date_only_diff("date 2026-09-08 end", "date 2026-10-18 end")
+    assert not templates.date_only_diff("a 2026-09-08, then more text b", "a 2026-09-28, then more text c")
+    assert not templates.date_only_diff("x" * 40, "y" * 40)
+
+
+def test_a_leading_bos_the_server_drops_is_ignored_and_said(chatml):
+    # Red-team L5: llama.cpp strips the leading BOS from the rendered chat prompt when the vocab adds one.
+    source = "{{ bos_token }}" + chatml
+    tpl = ChatTemplate.from_source(source, bos="<s>")
+    ok, ours, theirs, notes = templates.parity_detail(tpl, _Server(source, bos="<s>", strip_bos=True), MSGS,
+                                                      now="2026-09-08")
+    assert ok and notes == ["bos_stripped"] and ours == "<s>" + theirs
+    assert templates.parity_detail(tpl, _Server(source, bos="<s>"), MSGS, now="2026-09-08")[3] == []
+    trimmed = _Server(source, bos="<s>")
+    trimmed.apply_template = lambda m, chat_template_kwargs=None: render(trimmed.tpl, m)[4:]
+    assert not templates.parity_detail(tpl, trimmed, MSGS, now="2026-09-08")[0]
+
+
+def test_both_sides_render_with_the_configs_enable_thinking(chatml):
+    # Red-team L4: parity rendered ours with enable_thinking False and sent the server nothing, so with a
+    # hybrid-thinking template the gate checked another rendering than the run uses.
+    source = chatml + ("{%- if add_generation_prompt and not enable_thinking %}"
+                       "{{- '<think>\\n\\n</think>\\n\\n' }}{%- endif %}")
+    tpl = ChatTemplate.from_source(source)
+    srv = _Server(source)
+    ok, ours, _, _ = templates.parity_detail(tpl, srv, MSGS, now="2026-09-08", enable_thinking=True)
+    assert ok and srv.seen[-1] == {"enable_thinking": True} and not ours.endswith("</think>\n\n")
+    deaf = _Server(source, kwargs=False)                     # a server that ignores the kwarg
+    assert not templates.parity_detail(tpl, deaf, MSGS, now="2026-09-08", enable_thinking=True)[0]
+    assert templates.parity_detail(tpl, deaf, MSGS, now="2026-09-08", enable_thinking=False)[0]

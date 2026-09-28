@@ -27,8 +27,13 @@ class FakeClient:
     def slots(self):
         return [{"id": i, "is_processing": False} for i in range(self.props().get("total_slots") or 0)]
 
-    def apply_template(self, messages):
-        return render(self.tpl, messages)
+    def apply_template(self, messages, chat_template_kwargs=None):
+        self.template_kwargs = chat_template_kwargs
+        return render(self.tpl, messages, **({"enable_thinking": chat_template_kwargs["enable_thinking"]}
+                                               if chat_template_kwargs else {}))
+
+    def adds_bos(self):
+        return False
 
     def tokenize(self, text):
         return len(text.split())

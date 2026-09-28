@@ -25,7 +25,7 @@ from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASK
                             latest_complete_attempts, model_family)
 from harness.survey import (SURVEY_N_PREDICT, SURVEY_TEMPERATURE, SurveyError, SurveyRunner,
                             load_batteries)
-from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
+from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_detail,
                                read_template_from_gguf, render)
 from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript, message_order
 
@@ -185,17 +185,18 @@ CACHE_PROBE_MARGIN = 64
 CACHE_PROBE_PADDING = " ".join(["This line is filler so the probe prompt is long enough to measure."] * 40)
 
 
-def _cache_reuse_probe(handle: AgentHandle, now: str) -> tuple[str, bool | None, str]:
+def _cache_reuse_probe(handle: AgentHandle, now: str, enable_thinking: bool = False
+                       ) -> tuple[str, bool | None, str]:
     """Send two one-token completions to the agent's slot, the second one a strict extension of the first
     (its reply appended, plus one more user line). If the slot's KV cache holds, the second call prefills
     about the new tokens only; a server that re-prefills the whole prompt fails this row."""
     first = [{"role": "user", "content": CACHE_PROBE_PADDING + "\nReply with the single word: ready."}]
     try:
-        p1 = render(handle.template, first, now=now)
+        p1 = render(handle.template, first, now=now, enable_thinking=enable_thinking)
         c1 = handle.client.complete(p1, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0, cache_prompt=True)
         second = first + [{"role": "assistant", "content": c1.text or "ready"},
                           {"role": "user", "content": "Reply with the single word: again."}]
-        p2 = render(handle.template, second, now=now)
+        p2 = render(handle.template, second, now=now, enable_thinking=enable_thinking)
         expected = expected_new_tokens(handle.client, p2, p1)
         c2 = handle.client.complete(p2, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0, cache_prompt=True)
     except (ServerError, TemplateError) as e:
@@ -208,6 +209,72 @@ def _cache_reuse_probe(handle: AgentHandle, now: str) -> tuple[str, bool | None,
             f"(first call {c1.prompt_n}) on slot {handle.slot}" + ("" if ok else " -- the slot did not reuse its KV cache"))
 
 
+def _parity_row(name: str, handle: AgentHandle, messages: list[dict], now: str,
+                enable_thinking: bool) -> tuple[str, bool | None, str]:
+    """One template parity row. A pass that needed the server's date or dropping our leading BOS says so."""
+    try:
+        ok, ours, theirs, notes = parity_detail(handle.template, handle.client, messages, now=now,
+                                                enable_thinking=enable_thinking)
+    except TemplateError as e:
+        return (name, False, str(e))
+    said = []
+    for n in notes:
+        if n == "bos_stripped":
+            said.append(f"compared without our leading BOS {handle.template.bos!r}, which the server's render "
+                        "drops")
+        elif n.startswith("date_adjusted "):
+            said.append(f"date-adjusted: ours rendered with the server's date {n.split()[1]} for this check "
+                        f"only; the prompts use now={now}, and the two renders differ only in the date")
+        else:
+            said.append(n)
+    if not ok:
+        said.append(f"ours={ours[-120:]!r} theirs={theirs[-120:]!r}")
+    return (name, ok, "; ".join(said))
+
+
+def _trailing_system_row(handle: AgentHandle, now: str, enable_thinking: bool) -> tuple[str, bool | None, str]:
+    """The seeker's reinforced shape rendered whole: the template must accept a trailing system message,
+    keep the persona, and put the reminder after the last history message. Not raising is not enough: a
+    template that drops later system messages, or hoists them to the front, labels a dyad reinforced
+    without reinforcing it (red-team M6)."""
+    persona, last, reminder = (FIXTURE_MESSAGES[0]["content"], FIXTURE_MESSAGES[-2]["content"],
+                               FIXTURE_MESSAGES[-1]["content"])
+    try:
+        prompt = render(handle.template, FIXTURE_MESSAGES, now=now, enable_thinking=enable_thinking)
+    except TemplateError as e:
+        return ("trailing_system", False, str(e))
+    if persona not in prompt:
+        return ("trailing_system", False, "the rendered prompt does not contain the system prompt")
+    if reminder not in prompt:
+        return ("trailing_system", False, "the template drops the trailing system message: a reinforced "
+                "seeker would never see its reminder")
+    if prompt.rindex(reminder) < prompt.rindex(last):
+        return ("trailing_system", False, "the template renders the trailing system message before the last "
+                "history message: the reminder would not be last")
+    return ("trailing_system", True, "the reminder is rendered after the last history message")
+
+
+def _bos_row(handle: AgentHandle, now: str, enable_thinking: bool) -> tuple[str, bool | None, str]:
+    """Does /completion see two BOS tokens? Our rendered prompt starts with the template's BOS when the
+    template prints bos_token, and the server adds another when its vocabulary says so (red-team L5). The
+    prompts are sent as rendered either way; this row says whether that doubles the BOS."""
+    bos = handle.template.bos
+    try:
+        prompt = render(handle.template, FIXTURE_MESSAGES_USER_FIRST, now=now, enable_thinking=enable_thinking)
+    except TemplateError as e:
+        return ("bos", False, str(e))
+    if not bos or not prompt.startswith(bos):
+        return ("bos", True, "the rendered prompt does not start with a BOS token")
+    adds = getattr(handle.client, "adds_bos", lambda: None)()
+    if adds is None:
+        return ("bos", None, f"the rendered prompt starts with BOS {bos!r}; the server's tokenizer could not "
+                "be asked whether it adds another")
+    if adds:
+        return ("bos", None, f"the rendered prompt starts with BOS {bos!r} and the server adds one when it "
+                "tokenizes a completion prompt: the model sees two. Prompts are sent as rendered")
+    return ("bos", True, f"the rendered prompt starts with BOS {bos!r} and the server adds none")
+
+
 def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) -> list[tuple[str, bool | None, str]]:
     """This agent's pre-flight, as (name, ok, detail) rows. `ok` is True, False (blocks a run) or None
     (a warning worth printing that does not block one):
@@ -215,7 +282,10 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
     - `health`: the server answers.
     - `template_parity` / `template_parity_user_first`: our jinja2 rendering is byte-identical to the
       server's own, checked twice -- once with a leading system message and once with none at all, which
-      is the mentor's only shape and exactly where a template's default system block would appear.
+      is the mentor's only shape and exactly where a template's default system block would appear. Both
+      render with the config's enable_thinking; a dated template is compared on the server's date, and a
+      leading BOS the server drops is ignored, each said in the row (templates.parity_detail).
+    - `bos`: whether /completion would see two BOS tokens (_bos_row). A warning, not a failure.
     - `server_chat_template`: whether the template the server reports at /props is the one we read out of
       the GGUF. A warning rather than a failure: the Olmo arm is deliberately served
       `--no-jinja --chat-template chatml`, and the parity rows above are the gate that matters.
@@ -226,18 +296,16 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
       prefill only the new tokens. Catches a server without prompt caching, or a template that rewrites the
       prefix between turns, before a wave spends a day finding out (models/RUN_APPROACH.md: the largest
       lever, and it fails silently).
-    - `trailing_system` (seeker only): does the template accept the persona reminder as a trailing
-      system message?"""
+    - `trailing_system` (seeker only): the template renders the reminder as a trailing system message,
+      after the last history message, with the persona kept (_trailing_system_row)."""
     now = cfg.get("now", "2026-09-08")
+    thinking = bool((cfg.get("generation") or {}).get("enable_thinking", False))
     results: list[tuple[str, bool | None, str]] = [
         ("health", handle.client.health(), handle.client.url if hasattr(handle.client, "url") else "")]
     for name, messages in (("template_parity", FIXTURE_MESSAGES[:-1]),
                            ("template_parity_user_first", FIXTURE_MESSAGES_USER_FIRST)):
-        try:
-            ok, ours, theirs = parity_check(handle.template, handle.client, messages, now=now)
-            results.append((name, ok, "" if ok else f"ours={ours[-120:]!r} theirs={theirs[-120:]!r}"))
-        except TemplateError as e:
-            results.append((name, False, str(e)))
+        results.append(_parity_row(name, handle, messages, now, thinking))
+    results.append(_bos_row(handle, now, thinking))
     try:
         props = handle.client.props()
     except ServerError as e:
@@ -260,13 +328,9 @@ def check_agent(handle: AgentHandle, cfg: dict, max_n_turns: int | None = None) 
     if slot_row[1] is False and "busy" in slot_row[2]:
         results.append(("cache_reuse", False, "not probed: the server's slots are in use"))
     else:
-        results.append(_cache_reuse_probe(handle, now))
+        results.append(_cache_reuse_probe(handle, now, thinking))
     if handle.name == SEEKER:
-        try:
-            render(handle.template, FIXTURE_MESSAGES, now=now)
-            results.append(("trailing_system", True, ""))
-        except TemplateError as e:
-            results.append(("trailing_system", False, str(e)))
+        results.append(_trailing_system_row(handle, now, thinking))
     return results
 
 
@@ -426,7 +490,8 @@ def _grid_gate(cfg: dict, rows: list[dict]) -> tuple[str, bool | None, str]:
     return ("grid", True, f"{len(rows)} rows use only cells of {grid_path}")
 
 
-def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...] | None = None) -> int:
+def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...] | None = None,
+              record: dict | None = None) -> int:
     """Build every requested agent and print each one's check_agent rows. `roles` defaults to seeker,
     mentor, and the judge when `judge.url` is set: its output is grammar-forced, so a mis-rendered judge
     prompt still yields well-formed but meaningless scores, which is worth catching here too. `run` passes
@@ -435,7 +500,8 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
     iff nothing FAILed; `warn` rows are printed and do not block. A role whose server is unreachable prints
     a FAIL health line instead of letting build_agent's ServerError traceback out, since a down server is
     exactly the failure `check` exists to report. With --manifest, also checks that the manifest's longest
-    dialogue fits in a slot's context."""
+    dialogue fits in a slot's context. `record`, when given, receives each role's rows, which `run` writes
+    into manifest.json as `check`: a parity passed on the server's date or without a BOS says so there."""
     ok_all = True
     max_n_turns = None
     if manifest_path:
@@ -465,7 +531,10 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
         if role != SEEKER and not entry["family"]:
             print(f"   warn family unknown from the GGUF name, its directory and the alias; set "
                   f"{role}.family in the config, or `score` refuses")
-        for name, ok, detail in check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns):
+        rows = check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns)
+        if record is not None:
+            record[role] = [{"name": n, "ok": ok, "detail": d} for n, ok, d in rows]
+        for name, ok, detail in rows:
             ok_all = ok_all and ok is not False
             print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
     name, ok, detail = _study_row(cfg, manifest_path, entries.get("judge"))
@@ -628,7 +697,8 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
               "server; both agents pin the same slot, so they would evict each other's KV cache every turn. "
               "Serve them separately.", file=sys.stderr)
         return 1
-    if cmd_check(cfg, manifest_path, roles=(SEEKER, MENTOR)) != 0:
+    checked: dict = {}
+    if cmd_check(cfg, manifest_path, roles=(SEEKER, MENTOR), record=checked) != 0:
         print("check failed; not running", file=sys.stderr)
         return 1
     # check built its own handles and threw them away; build fresh ones so the manifest records /props as
@@ -654,7 +724,9 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
                 "grid": _file_provenance(cfg["grid"]) if cfg.get("grid") else None,
                 "study": _file_provenance(cfg["study"]) if cfg.get("study") else None,
                 "resume_compares": RESUME_COMPARES,
-                "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
+                "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry,
+                # The pre-flight rows as this run's first start saw them (a resume does not rewrite them).
+                "check": checked}
     if dirty:
         print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
     elif dirty is None:

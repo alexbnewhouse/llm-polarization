@@ -263,6 +263,24 @@ server runs `--no-jinja --chat-template chatml` (plus `--cache-ram 0`). `check` 
 pass** against it. That parity check is the pre-pilot gate for the Olmo arm: if it fails, the arm's
 prompts are not what the harness thinks they are and the pilot does not start.
 
+What the parity rows allow, and say when they use it (2026-09-28):
+
+- Both sides render with the config's `generation.enable_thinking`, sent to `/apply-template` as
+  `chat_template_kwargs`, so the gate checks the rendering the run uses (red-team L4).
+- A template that prints the date (gpt-oss: `strftime_now`) gets the server's wall-clock date, which
+  cannot be overridden. Our side is rendered with that date for the comparison only, and must equal the
+  render on the pinned `now` but for the date; the row says `date-adjusted`, and the prompts keep `now`
+  (red-team H4).
+- llama.cpp drops a leading BOS from the rendered chat prompt when the vocabulary adds one itself, so a
+  template that prints `bos_token` matches without it; the row says so (red-team L5). The `bos` row then
+  says whether `/completion`, which tokenizes with the vocabulary's own BOS, would see two: a warning, since
+  the prompts are sent as rendered.
+- `trailing_system` (seeker) renders the reinforced shape and FAILs unless the persona is in the prompt
+  and the reminder comes after the last history message: a template that drops a later system message, or
+  hoists it to the front, would label a dyad reinforced without reinforcing it (red-team M6).
+
+`run` writes the rows it checked into `manifest.json` as `check`.
+
 ## Output
 
 Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha12>.json`, `dyads.jsonl`, `status.jsonl`,

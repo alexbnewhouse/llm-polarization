@@ -48,7 +48,9 @@ written by `harness.randomize --subset-of`, else null), `batteries` `{path, sha2
 `grid` `{path, sha256}` of `prompts/grid.json` (null when the config's `grid` is null), `study`
 `{path, sha256}` of the study lock the run was checked against (null without one; `harness/README.md`,
 "The study lock"), `resume_compares` (what a resume compares with this file
-and refuses on: `harness/README.md`, "What the config fields mean"), `environment`
+and refuses on: `harness/README.md`, "What the config fields mean"), `check` (`{seeker: [...], mentor:
+[...]}`, each `{name, ok, detail}`: the pre-flight rows as the run's first start saw them, including a
+parity passed on the server's date or without a leading BOS), `environment`
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
 

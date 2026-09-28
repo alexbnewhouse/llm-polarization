@@ -2,6 +2,7 @@
 and prove parity with the server's own rendering before a run."""
 from __future__ import annotations
 import datetime as _dt
+import difflib
 import os, sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,8 +127,78 @@ def render(tpl: ChatTemplate, messages: list[dict], *, add_generation_prompt: bo
         raise TemplateError(f"template render failed: {e}") from e
 
 
-def parity_check(tpl: ChatTemplate, client, messages: list[dict], *, now: str) -> tuple[bool, str, str]:
-    """Compare our template rendering to the server's; returns (ok, ours, theirs)."""
-    ours = render(tpl, messages, now=now)
-    theirs = client.apply_template(messages)
-    return ours == theirs, ours, theirs
+def parity_check(tpl: ChatTemplate, client, messages: list[dict], *, now: str,
+                 enable_thinking: bool = False) -> tuple[bool, str, str]:
+    """Compare our template rendering to the server's; returns (ok, ours, theirs). parity_detail says why."""
+    ok, ours, theirs, _ = parity_detail(tpl, client, messages, now=now, enable_thinking=enable_thinking)
+    return ok, ours, theirs
+
+
+# The most characters one date print may change between two dates ("September 8" -> "October 18").
+DATE_DIFF_MAX = 16
+
+
+def date_only_diff(a: str, b: str, max_segments: int = 1) -> bool:
+    """True when a and b differ only in at most `max_segments` short spans (DATE_DIFF_MAX characters each):
+    what rendering one template on two dates may change, and nothing else. Differences a few characters
+    apart are one span: 2026-09-08 against 2026-10-18 is several small edits inside one date."""
+    spans: list[list[int]] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if spans and i1 - spans[-1][1] <= 4 and j1 - spans[-1][3] <= 4:
+            spans[-1][1], spans[-1][3] = i2, j2
+        else:
+            spans.append([i1, i2, j1, j2])
+    return len(spans) <= max_segments and all(max(i2 - i1, j2 - j1) <= DATE_DIFF_MAX
+                                              for i1, i2, j1, j2 in spans)
+
+
+def _server_dates() -> list[str]:
+    """The dates a server on this box may print today: local and UTC, and the days either side of local
+    for a check run across midnight."""
+    local = _dt.datetime.now()
+    day = _dt.timedelta(days=1)
+    days = [local, _dt.datetime.now(_dt.timezone.utc), local - day, local + day]
+    return list(dict.fromkeys(d.strftime("%Y-%m-%d") for d in days))
+
+
+def _same(ours: str, theirs: str, bos: str) -> tuple[bool, bool]:
+    """(equal, equal only once our leading BOS is dropped). llama.cpp's chat formatting strips a leading BOS
+    from the rendered prompt when the vocabulary adds one itself (common/chat.cpp), so /apply-template
+    lacks the bos_token the template printed."""
+    if ours == theirs:
+        return True, False
+    if bos and ours.startswith(bos) and not theirs.startswith(bos) and ours[len(bos):] == theirs:
+        return True, True
+    return False, False
+
+
+def parity_detail(tpl: ChatTemplate, client, messages: list[dict], *, now: str,
+                  enable_thinking: bool = False) -> tuple[bool, str, str, list[str]]:
+    """Compare our rendering with the server's /apply-template, as `check` does: (ok, ours, theirs, notes).
+    Both sides render with `enable_thinking` (sent as chat_template_kwargs; red-team L4). Two differences
+    are allowed and noted:
+
+    - `bos_stripped`: the server's render is ours without its leading BOS (red-team L5);
+    - `date_adjusted <day>`: a template that prints the date (strftime_now) renders the server's wall-clock
+      date there, which cannot be overridden, so ours is rendered with that date for this comparison only,
+      and must equal the pinned render but for the date (red-team H4). The prompts keep `now`."""
+    theirs = client.apply_template(messages, chat_template_kwargs={"enable_thinking": enable_thinking})
+    ours = render(tpl, messages, now=now, enable_thinking=enable_thinking)
+    ok, bos = _same(ours, theirs, tpl.bos)
+    notes = ["bos_stripped"] if bos else []
+    if ok or "strftime_now" not in tpl.source:
+        return ok, ours, theirs, notes
+    for day in _server_dates():
+        if day == now:
+            continue
+        alt = render(tpl, messages, now=day, enable_thinking=enable_thinking)
+        ok, bos = _same(alt, theirs, tpl.bos)
+        if not ok:
+            continue
+        if not date_only_diff(ours, alt, max_segments=tpl.source.count("strftime_now")):
+            return False, ours, theirs, [f"matches only when rendered on {day}, and that render differs from "
+                                         f"the one on {now} beyond the date"]
+        return True, ours, theirs, (["bos_stripped"] if bos else []) + [f"date_adjusted {day}"]
+    return False, ours, theirs, []

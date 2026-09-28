@@ -74,7 +74,7 @@ def test_check_agent_reports_parity_and_trailing_system(tmp_path):
 class DefaultSystemInjectingClient(FakeClient):
     """A server whose formatter inserts a default system block when the caller supplies none. This is the
     mentor's only message shape, and the system-first fixture cannot see the divergence."""
-    def apply_template(self, messages):
+    def apply_template(self, messages, chat_template_kwargs=None):
         if not any(m["role"] == "system" for m in messages):
             messages = [{"role": "system", "content": "You are a helpful assistant."}] + list(messages)
         return T_render(self.tpl, messages)
@@ -1178,3 +1178,84 @@ def test_score_rows_carry_their_scope_and_flags_reads_one_scope(tmp_path, monkey
     assert flags("--scope", "pilot") == 0
     f = log.read_jsonl(paths.flags)[0]
     assert (f["scope"], f["scored_turns"], f["first_flag_turn"]) == ("pilot", 8, 2)
+
+
+# The seeker shapes a template can get wrong without raising (red-team M6).
+DROPS_LATER_SYSTEM = (
+    "{%- for message in messages %}{%- if message['role'] != 'system' or loop.first %}"
+    "{{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}"
+    "{%- endif %}{%- endfor %}{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}")
+HOISTS_SYSTEM = (
+    "{%- for message in messages if message['role'] == 'system' %}{{- message['content'] + '\\n' }}{%- endfor %}"
+    "{%- for message in messages if message['role'] != 'system' %}"
+    "{{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{%- endfor %}"
+    "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}")
+
+
+def _served(source, bos=""):
+    """A FakeClient whose /apply-template renders `source`, so parity holds and only the row under test fails."""
+    c = FakeClient()
+    c.tpl = ChatTemplate.from_source(source, bos=bos)
+    return c, ChatTemplate.from_source(source, bos=bos)
+
+
+def test_trailing_system_needs_the_reminder_rendered_after_the_history():
+    for source, why in ((DROPS_LATER_SYSTEM, "drops the trailing system message"),
+                        (HOISTS_SYSTEM, "before the last history message")):
+        client, tpl = _served(source)
+        rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(SEEKER, client, tpl, "h", 0), {})}
+        assert rows["template_parity"][0] is True
+        assert rows["trailing_system"][0] is False and why in rows["trailing_system"][1]
+    client, tpl = _served(CHATML)
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(SEEKER, client, tpl, "h", 0), {})}
+    assert rows["trailing_system"] == (True, "the reminder is rendered after the last history message")
+
+
+def test_check_says_when_completion_would_see_two_bos_tokens():
+    # Red-team L5: a template that prints bos_token, sent to /completion, which adds the vocab's BOS again.
+    client, tpl = _served("{{ bos_token }}" + CHATML, bos="<s>")
+    client.adds_bos = lambda: True
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(MENTOR, client, tpl, "h", 0), {})}
+    assert rows["bos"][0] is None and "the model sees two" in rows["bos"][1]
+    client.adds_bos = lambda: False
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(MENTOR, client, tpl, "h", 0), {})}
+    assert rows["bos"][0] is True
+    client, tpl = _served(CHATML)
+    rows = {n: (ok, d) for n, ok, d in R.check_agent(AgentHandle(MENTOR, client, tpl, "h", 0), {})}
+    assert rows["bos"] == (True, "the rendered prompt does not start with a BOS token")
+
+
+def test_run_records_the_check_rows_and_a_dated_template_passes_on_the_servers_date(tmp_path, monkeypatch):
+    # Red-team H4 and L4, end to end: a gpt-oss-like template prints the date, the server prints today's, and
+    # the parity check passes date-adjusted, with the config's enable_thinking sent to /apply-template; the
+    # manifest records how the rows passed.
+    import datetime
+    from harness.tests.conftest import DATED
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    clients = _fake_servers(tmp_path, monkeypatch)
+    monkeypatch.setattr(R, "read_template_from_gguf",
+                        lambda path, gguf_py_path=None: ChatTemplate.from_source(DATED if "m" in path else CHATML))
+    factory = R.LlamaClient
+    def dated_mentor(url, timeout=None):
+        c = factory(url, timeout)
+        if url == "http://m":
+            c.tpl = ChatTemplate.from_source(DATED)
+            c.apply_template = lambda messages, chat_template_kwargs=None: (
+                clients.setdefault("kwargs", []).append(chat_template_kwargs)
+                or T_render(c.tpl, messages, now=today, **(chat_template_kwargs or {})))
+        return c
+    monkeypatch.setattr(R, "LlamaClient", dated_mentor)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    cfg = write_cfg(tmp_path, now="2026-09-08", generation={"enable_thinking": True})
+    assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1"]) == 0
+    checked = json.loads(log.run_paths(tmp_path / "data", "r1").manifest.read_text())["check"]
+    parity = {r["name"]: r for r in checked["mentor"]}["template_parity_user_first"]
+    assert parity["ok"] is True and f"date-adjusted: ours rendered with the server's date {today}" in parity["detail"]
+    assert {r["name"] for r in checked["seeker"]} >= {"template_parity", "trailing_system", "bos", "cache_reuse"}
+    assert clients["kwargs"] and all(k == {"enable_thinking": True} for k in clients["kwargs"])
+    # the prompts themselves keep the pinned date
+    turns = log.read_jsonl(log.run_paths(tmp_path / "data", "r1").turns)
+    assert turns
+    prompts = [c["prompt"] for c in clients["http://m"].calls if c["n_predict"] == 300]
+    assert prompts and all("Current date: 2026-09-08" in p for p in prompts)
