@@ -365,3 +365,27 @@ def test_score_run_orders_targets_by_dyad_metric_turn_and_uses_one_slot_per_work
     drop_slot = lambda r: {k: v for k, v in r.items() if k != "id_slot"}
     assert all(drop_slot(r) == drop_slot(serial[(r["dyad_id"], r["turn"], r["metric"])]) for r in rows)
     assert sc.score_run(p2, "pilot", manifest) == 0                     # resume logic unchanged
+
+
+def test_control_dyads_are_not_adherence_scored(tmp_path):
+    # Gap audit F10, docs/decisions/factorial.md: a bare control seeker has no persona to adhere to.
+    p = log.run_paths(tmp_path, "r1")
+    st, tw, dw = log.JsonlWriter(p.status), log.JsonlWriter(p.turns), log.JsonlWriter(p.dyads)
+    for d, ideology in (("t", "lean_left"), ("c", "none")):
+        dw.write({"dyad_id": d, "attempt": 1, "condition": {"topic": "t", "ideology": ideology},
+                  "persona_text": "P", "persona_reminder": "", "persona_mode": "once", "seed": 1,
+                  "n_turns": 4})
+        st.write({"dyad_id": d, "attempt": 1, "status": "complete"})
+        for turn in range(1, 5):
+            for agent in (SEEKER, MENTOR):
+                tw.write({"dyad_id": d, "attempt": 1, "turn": turn, "agent": agent, "text": f"{d}{turn}",
+                          "finish_reason": "stop"})
+    manifest = {"seeker": {"model_sha256": "S"}, "mentor": {"model_sha256": "M", "family": "qwen"}}
+    judge = AgentHandle("judge", FakeClient(['{"score": 0.5, "rationale": "x"}']),
+                        ChatTemplate.from_source(CHATML), "J", slot=0, family="gemma")
+    sc = Scorer("r1", 99, judge, log.JsonlWriter(p.scores), GenSettings(), clock=lambda: "T")
+    assert sc.score_run(p, "main", manifest) == 2 and sc.control_excluded == 1       # turn 4, two metrics
+    assert {r["dyad_id"] for r in log.read_jsonl(p.scores)} == {"t"}
+    assert sc.score_run(p, "pilot", manifest) > 0 and sc.control_excluded == 1
+    control = [r for r in log.read_jsonl(p.scores) if r["dyad_id"] == "c"]
+    assert control and all(r["metric"] == "alignment" for r in control)                # the mentor still is

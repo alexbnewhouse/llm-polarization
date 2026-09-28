@@ -18,7 +18,7 @@ from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSp
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
 from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
-                            Scorer, cross_judge_agreement, declared_family, flag_dialogues,
+                            Scorer, cross_judge_agreement, declared_family, flag_dialogues, is_control,
                             latest_complete_attempts, model_family)
 from harness.survey import SurveyError, SurveyRunner, load_batteries
 from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
@@ -775,10 +775,13 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
     scorer.check_independence(manifest, cfg[MENTOR].get("family"))     # before any record of the pass
     record = write_judge_manifest(paths, entry, scope, subsample)
     n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
+    notes = [f"judge record {record.name}"]
+    if scorer.control_excluded:
+        notes.append(f"{scorer.control_excluded} control dyads not adherence-scored")
+    if scorer.errors:
+        notes.append(f"{scorer.errors} judge calls failed, re-run score to retry them")
     print(f"scored {n} new rows ({scope}" + (f", subsample {subsample}" if subsample else "")
-          + f", concurrency {concurrency}); "
-          f"judge record {record.name}" + (f"; {scorer.errors} judge calls failed, re-run score to retry them"
-                                           if scorer.errors else ""))
+          + f", concurrency {concurrency}); " + "; ".join(notes))
     return 2 if scorer.errors else 0
 
 
@@ -786,7 +789,8 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
     """Run the `flags` subcommand: apply the consecutive-scored-turns flag rule to scores.jsonl, write one
     row per dyad attempt to flags.jsonl (replaced, not appended: flags are derived from scores, not a
     ledger), and print the flagged rate by ideology level and by delivery mode -- the two breakdowns the
-    pre-analysis plan reports. Only the latest complete attempt of each dyad is flagged."""
+    pre-analysis plan reports. Only the latest complete attempt of each dyad is flagged, and never a control
+    dyad: it has no persona to adhere to (docs/decisions/factorial.md)."""
     paths = run_paths(cfg["data_dir"], run_id, create=False)
     _require_run_dir(paths)
     scores = read_jsonl(paths.scores)
@@ -803,10 +807,14 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
     w = JsonlWriter(paths.flags)
     ts = now_iso()
     rows = []
+    control = 0
     for (dyad_id, attempt), f in sorted(flags.items()):
         if complete.get(dyad_id) != attempt:
             continue
         d = dyads.get((dyad_id, attempt), {})
+        if is_control(d):
+            control += 1
+            continue
         cond = d.get("condition") or {}
         row = {"run_id": run_id, "dyad_id": dyad_id, "attempt": attempt, "ideology": cond.get("ideology"),
                "topic": cond.get("topic"), "openness": cond.get("openness"), "role": cond.get("role"),
@@ -816,7 +824,8 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
         w.write(row)
         rows.append(row)
     print(f"flags {run_id}: {sum(r['flagged'] for r in rows)}/{len(rows)} dyads flagged "
-          f"({metric} < {threshold} on {run_length} {FLAG_RULE}; judge {str(judge_hash)[:12]})")
+          f"({metric} < {threshold} on {run_length} {FLAG_RULE}; judge {str(judge_hash)[:12]})"
+          + (f"; {control} control dyads with adherence scores not flagged" if control else ""))
     for key in ("ideology", "persona_mode"):
         groups: dict = {}
         for r in rows:

@@ -559,14 +559,16 @@ def test_flags_command_writes_flags_and_reports_rates_by_ideology_and_mode(tmp_p
     out = capsys.readouterr().out
     flags = log.read_jsonl(paths.flags)
     by = {r["dyad_id"]: r for r in flags}
-    assert by["d0"]["flagged"] is True and by["d1"]["flagged"] is False
+    # d1 is the bare control: no persona to adhere to, so it is never flagged (gap audit F10)
+    assert by["d0"]["flagged"] is True and "d1" not in by
+    assert "1 control dyads with adherence scores not flagged" in out
     assert by["d0"]["ideology"] == "strong_left" and by["d0"]["persona_mode"] == "reinforced"
     assert by["d0"]["threshold"] == 0.5 and by["d0"]["run_length"] == 2 and by["d0"]["metric"] == "prompt_to_line"
     assert by["d0"]["rule"] == "consecutive scored seeker turns"
     assert "strong_left" in out and "reinforced" in out and "1/1" in out
     # re-running replaces the file rather than appending to it: flags are derived, not a ledger
     assert R.main(["flags", "--config", str(cfg), "--run-id", "r1", "--threshold", "0.5", "--run-length", "2"]) == 0
-    assert len(log.read_jsonl(paths.flags)) == 2
+    assert len(log.read_jsonl(paths.flags)) == 1
 
 
 def test_agreement_command_reports_cross_judge_agreement(tmp_path, monkeypatch, capsys):

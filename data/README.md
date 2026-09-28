@@ -137,6 +137,9 @@ seeker; `alignment` for the mentor), `judge_sha256`, `id_slot`, `harness_commit`
 scoring), `seed`, `judge_prompt_sha256`, `prompt_chars`, `score` (0.0-1.0, or null), `rationale`,
 `raw_text`, `ts`. On a failure there is also `error`.
 
+The seeker of a control dyad (`ideology: "none"`) has no persona to adhere to, so the adherence metrics
+(`prompt_to_line`, `line_to_line`) are never scored for it (`docs/decisions/factorial.md`); `score` prints
+how many control dyads it left out. Its mentor's `alignment` is scored as for any dyad.
 Scope `pilot` scores every turn for both agents; scope `main` scores the seeker only, on turns
 4, 8, 12, ... plus the dyad's final turn; scope `stance` scores the mentor's `alignment` on that same
 cadence, for the two-judge subsample (`--subsample F` keeps a deterministic fraction of dyads, keyed on
@@ -157,8 +160,9 @@ completed the run, or null), `scored_turns`, `unscored_turns` (null scores), `tu
 `mean_score`, `final_turn`, `harness_commit`, `ts`.
 
 The file is derived from `scores.jsonl` and is **replaced** on every `flags` run, not appended to. Only
-the latest complete attempt of each dyad gets a row, and only when that attempt has at least one
-non-error score row for `metric` from the chosen judge; an unscored dyad has no row. Flagged dialogues are kept in the ITT sample; the
+the latest complete attempt of each dyad gets a row, never a control dyad (`flags` prints how many it
+left out), and only when that attempt has at least one non-error score row for `metric` from the chosen
+judge; an unscored dyad has no row. Flagged dialogues are kept in the ITT sample; the
 flag is an instrument statistic and the trigger for the per-protocol sensitivity analysis
 (`docs/decisions/persona-stability.md` §4).
 

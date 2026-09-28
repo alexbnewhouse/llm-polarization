@@ -135,6 +135,14 @@ def select_targets(turn_rows: list[dict], scope: str, subsample: float | None = 
 
 
 ADHERENCE_METRICS = tuple(m for m, a in METRICS.items() if a == SEEKER)
+# The bare control's ideology level (prompts/grid.json control.ideology). A control seeker has no persona
+# to adhere to, so adherence scoring and the flag rule do not apply to it (docs/decisions/factorial.md).
+CONTROL_IDEOLOGY = "none"
+
+
+def is_control(dyad_row: dict | None) -> bool:
+    """True for a dyads.jsonl (or manifest) row of the bare control."""
+    return ((dyad_row or {}).get("condition") or {}).get("ideology") == CONTROL_IDEOLOGY
 FLAG_RULE = "consecutive scored seeker turns"
 
 
@@ -242,6 +250,7 @@ class Scorer:
         self.scores_log, self.settings, self.clock = scores_log, settings, clock
         self.harness_commit = harness_commit
         self.errors = 0          # error rows written by the last score_run
+        self.control_excluded = 0    # control dyads the last score_run left out of adherence scoring
         self.concurrency = max(1, int(concurrency))
 
     def check_independence(self, manifest: dict, mentor_family: str | None = None) -> None:
@@ -289,9 +298,13 @@ class Scorer:
         # See tests/test_scorer.py::test_score_run_duplicate_row_uses_position_not_value_equality.
         positions: dict[tuple, dict[int, int]] = {
             k: {id(r): i for i, r in enumerate(v)} for k, v in histories.items()}
-        targets = [(row, metric) for row, metric in select_targets(turns, scope, subsample=subsample,
-                                                                   run_seed=self.run_seed)
-                   if (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric) not in done]
+        selected = select_targets(turns, scope, subsample=subsample, run_seed=self.run_seed)
+        control = {(r["dyad_id"], r.get("attempt", 1)) for r, m in selected
+                   if m in ADHERENCE_METRICS and is_control(dyads.get((r["dyad_id"], r.get("attempt", 1))))}
+        self.control_excluded = len(control)
+        targets = [(row, metric) for row, metric in selected
+                   if not (metric in ADHERENCE_METRICS and (row["dyad_id"], row.get("attempt", 1)) in control)
+                   and (row["dyad_id"], row.get("attempt", 1), row["turn"], row["agent"], metric) not in done]
         # A stable sort: value-identical duplicate rows keep their file order.
         targets.sort(key=lambda t: (str(t[0]["dyad_id"]), t[0].get("attempt", 1), t[1], t[0]["turn"]))
         groups: dict[tuple, list] = {}

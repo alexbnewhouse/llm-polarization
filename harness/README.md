@@ -249,7 +249,9 @@ server's `timings` on every call so a lost cache is visible immediately.
   by ideology level and by delivery mode). Scored turns, not dialogue turns:
   `main` scope scores the seeker every fourth turn, so the run is over turns
   4, 8, 12. A null score is an unscored turn and neither extends nor breaks
-  the run. `--threshold` has no default; it is the calibrated number.
+  the run. `--threshold` has no default; it is the calibrated number. Control
+  dyads (`ideology: "none"`) are neither adherence-scored nor flagged: there is
+  no persona to adhere to (`docs/decisions/factorial.md`).
 - **Flagged dialogues are kept, not excluded.** ITT over all completed dialogues
   is the primary estimand, adherence enters as a continuous moderator, and
   per-protocol is a labelled sensitivity analysis. The only pre-registered
