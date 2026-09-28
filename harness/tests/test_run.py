@@ -815,13 +815,13 @@ def test_survey_checks_config_exits_2_on_failure_and_never_duplicates_rows(tmp_p
     assert survey() == 2                                         # one dyad's second item failed
     assert "1 failed" in capsys.readouterr().out
     ok = [s for s in readmin() if not s.get("error")]
-    assert len(ok) == 1 + 13
+    assert len(ok) == 1 + 15
     monkeypatch.setattr(R, "LlamaClient", factory)
-    assert survey() == 0                                         # fills in the failed dyad's 12 items only
+    assert survey() == 0                                         # fills in the failed dyad's 14 items only
     ok = [s for s in readmin() if not s.get("error")]
-    assert len(ok) == 2 * 13 and len({(s["dyad_id"], s["item_id"]) for s in ok}) == 2 * 13
+    assert len(ok) == 2 * 15 and len({(s["dyad_id"], s["item_id"]) for s in ok}) == 2 * 15
     assert survey() == 0 and "2 already re-administered" in capsys.readouterr().out
-    assert len([s for s in readmin() if not s.get("error")]) == 2 * 13
+    assert len([s for s in readmin() if not s.get("error")]) == 2 * 15
 
 
 def test_score_exits_2_on_judge_failures_and_subsamples_on_the_manifests_run_seed(tmp_path, monkeypatch,
@@ -901,3 +901,23 @@ def test_setup_errors_exit_1_with_one_line_not_a_traceback(tmp_path, monkeypatch
     paths.manifest.write_text(json.dumps(mf))
     assert R.main(["survey", "--config", str(write_cfg(tmp_path)), "--run-id", "r1"]) == 1
     assert "error: missing key 'batteries'" in capsys.readouterr().err
+
+
+def test_a_torn_status_line_is_diagnosed_and_repaired_on_request(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(2)))
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "failed")
+    run = lambda *extra: R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", "r1", *extra])
+    assert run() == 2
+    paths = log.run_paths(tmp_path / "data", "r1")
+    paths.status.write_text('{"run_id": "r1", "dyad_id": "d0", "attempt": 1, "status": "fai')
+    capsys.readouterr()
+    for cmd in (["run", "--manifest", str(man)], ["survey"], ["score"]):
+        assert R.main([cmd[0], "--config", str(cfg), "--run-id", "r1", *cmd[1:]]) == 1
+        err = capsys.readouterr().err
+        assert "status.jsonl line 1" in err and "--repair-torn-line" in err and err.count("\n") == 1
+    assert run("--repair-torn-line") == 2
+    assert "dropped a cut-off last line" in capsys.readouterr().out
+    assert len(list(paths.root.glob("status.jsonl.torn-*"))) == 1
