@@ -27,6 +27,9 @@ python -m harness.run flags  --config config.json --run-id pilot-2026-09-18 --th
 python -m harness.run score  --config config-judge2.json --run-id wave1 --scope stance --subsample 0.1
 python -m harness.run agreement --config config.json --run-id wave1          # cross-judge, on the subsample
 python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --phase post   # re-administer
+python -m harness.run study  --config config.json --manifest w1-dyads.jsonl   # the study lock, once
+python -m harness.randomize --subset-of w1-dyads.jsonl --per-variant 30 --control 90 \
+    --out w1-n90-dyads.jsonl                                                  # descope: a subset, no redraw
 python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_URL=... adds the live test
 ```
 
@@ -56,7 +59,8 @@ The cache probe is not sent to a busy slot.
 | Module | What it holds |
 |---|---|
 | `run.py` | The CLI: `check`, `run`, `survey`, `score`, `flags`, `agreement`; config loading, pre-flight checks, the worker pool, provenance capture. |
-| `randomize.py` | `python -m harness.randomize`: grid + persona catalogue -> dyad manifest and assignment log. |
+| `randomize.py` | `python -m harness.randomize`: grid + persona catalogue -> dyad manifest and assignment log; `--subset-of` descopes one. |
+| `study.py` | The study lock: `study.json`, which every arm's `run`, `baseline` and `score` must match. |
 | `grid.py` | Loads `prompts/grid.json` and checks each manifest row's `condition` against it. |
 | `dialogue.py` | One dyad's turn loop, the per-message log row, and the KV-cache reuse audit. |
 | `transcript.py` | The canonical transcript and each agent's egocentric view of it. |
@@ -142,6 +146,7 @@ pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `Un
 | `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
 | `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
+| `study` | Path to the study lock, `study.json` (below), or `null` (the default) for none. Operational: not compared on resume, because what it holds is compared directly. |
 | `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. Two URLs count as one server when they resolve to the same address, port and path (every loopback name is one address; a trailing slash is ignored), or when the servers report the same model file, model hash, build, slot count and per-slot context. |
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 | `family` (in `seeker`, `mentor`, `judge`) | The model family slug (`qwen`, `gpt-oss`, `olmo`, `glm`, `llama`, `gemma`, `mistral`, `deepseek`, `phi`), when the GGUF name, its directory and the server alias do not show it: an ollama blob served without `--alias` does not. `score` refuses when the judge's or the mentor's family is unknown, so set it for those; `check` warns. The mentor's may also be set in the `score` config when `manifest.json` has none. |
@@ -164,6 +169,44 @@ and resuming the same `run_id` is allowed. What a `run` resume compares with `ma
   cannot be read refuses.
 
 Any difference refuses with one `error:` line naming everything that changed; use a new `run_id`.
+
+## The study lock and the descope rule (2026-09-28)
+
+The three arms are separate runs, so nothing in one run's manifest ties it to the others. `study.json`
+does (gap audit F9; `docs/pap/pre-analysis-plan.md` sections 11 and 12). Set `study` in every arm's config
+to the same path (commit it, for example `docs/pap/study.json`; `data/` is ignored) and write it once,
+before wave 1:
+
+```bash
+python -m harness.run study --config config.json --manifest w1-dyads.jsonl
+```
+
+It records `run_seed`, `now`, the wave manifest's path and sha256, the batteries' and the grid's, and the
+judge's model sha256, path and family (the judge server must be up, and its family known). A second
+`study` compares instead of writing. From then on:
+
+- `check` prints a `study` row: FAIL on any difference, `warn` when `study` is null;
+- `run` refuses (through `check`) a config or manifest that differs, and records `study` `{path, sha256}`
+  in `manifest.json`;
+- `score` refuses a judge that is not the study's, and a run whose `manifest.json` records another
+  `run_seed`, `now`, manifest or instrument, before it writes a judge record;
+- `baseline` refuses another `run_seed`, `now` or instrument.
+
+A cut under the pre-analysis plan's descope rule is a subset of the wave manifest by `dyad_id`, never a
+new randomization:
+
+```bash
+python -m harness.randomize --subset-of w1-dyads.jsonl --per-variant 30 --control 90 \
+    --out w1-n90-dyads.jsonl
+```
+
+It keeps a treated row when its within-variant index (the last three digits of the `dyad_id`) is at most
+`--per-variant` and a control row when it is at most `--control`; `--ideology` and `--topic` (comma lists)
+make cuts 2 and 3, and never cut the control by level. Lines are copied byte for byte, in order, and
+`w1-n90-assignment.json` records the parent's path and sha256, its assignment log's, the filter and the
+counts. The study lock accepts such a subset as the study's manifest; `manifest.json` records
+`input_manifest.parent_sha256`. A resume of an arm already started on the full manifest accepts the
+subset, since a dropped dyad is not a change.
 
 ## Retries, attempts and which rows count
 

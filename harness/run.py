@@ -1,7 +1,7 @@
 """CLI: check servers, run a dialogue manifest, re-administer surveys, score a run, flag low-adherence
-dialogues, and report cross-judge agreement.
+dialogues, report cross-judge agreement, and lock the study's shared settings.
 
-    python -m harness.run {check,run,survey,score,flags,agreement} --config config.json ...
+    python -m harness.run {check,run,survey,score,flags,agreement,study} --config config.json ...
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
@@ -11,13 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 from dataclasses import dataclass
 from pathlib import Path
 import jinja2
-from harness import __version__, log
+from harness import __version__, log, study
 from harness.client import LlamaClient, ServerError
 from harness.grid import check_conditions, load_grid
 from harness.randomize import assignment_log_path
 from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSpec, GenSettings,
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
+from harness.study import StudyMismatch
 from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
                             Scorer, cross_judge_agreement, declared_family, flag_dialogues, is_control,
                             latest_complete_attempts, model_family)
@@ -40,6 +41,9 @@ DEFAULT_CONFIG = {
     "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600, "enable_thinking": False},
     "seeker": {"url": None, "gguf_path": None}, "mentor": {"url": None, "gguf_path": None},
     "judge": {"url": None, "gguf_path": None},
+    # The study lock (harness/study.py): a study.json every arm's run, baseline and scoring pass must match.
+    # null turns it off, for the pilot and smoke tests.
+    "study": None,
 }
 HASH_CACHE = Path.home() / ".cache" / "llm-polarization" / "gguf-hashes.json"
 # How a third Ctrl-C leaves: at once, without joining the worker threads still inside a dyad. A name the
@@ -435,6 +439,7 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
               "this.")
     if roles is None:
         roles = [SEEKER, MENTOR] + (["judge"] if (cfg.get("judge") or {}).get("url") else [])
+    entries = {}
     for role in roles:
         try:
             handle, entry = build_agent(role, cfg[role], 0, cfg)
@@ -443,6 +448,7 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
             print(f"FAIL {what} {role} {cfg[role].get('url')}: {e}")
             ok_all = False
             continue
+        entries[role] = entry
         print(f"[{role}] {entry['alias']} {entry['model_path']} sha256={entry['model_sha256'][:12]} "
               f"slots={entry['total_slots']} family={entry['family']}")
         if role != SEEKER and not entry["family"]:
@@ -451,7 +457,27 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
         for name, ok, detail in check_agent(handle, cfg, max_n_turns=None if role == "judge" else max_n_turns):
             ok_all = ok_all and ok is not False
             print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
+    name, ok, detail = _study_row(cfg, manifest_path, entries.get("judge"))
+    ok_all = ok_all and ok is not False
+    print(f"{'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
     return 0 if ok_all else 1
+
+
+def _study_row(cfg: dict, manifest_path: str | None, judge_entry: dict | None) -> tuple[str, bool | None, str]:
+    """`check`'s row for the study lock: this config (and manifest, and judge, when known) against
+    study.json. A warning when `study` is null, since then nothing ties the arms together."""
+    path = cfg.get("study")
+    if not path:
+        return ("study", None, "config.study is null; nothing checks that the arms share run_seed, now, the "
+                "manifest, the instrument, the grid and the judge")
+    live = study.live_values(cfg, manifest_path, judge_entry)
+    try:
+        diff = study.changes(study.load(path), live)
+    except (StudyMismatch, OSError, ValueError) as e:
+        return ("study", False, str(e))
+    if diff:
+        return ("study", False, f"{path}: " + "; ".join(diff))
+    return ("study", True, f"{path} matches ({', '.join(k for k in study.STUDY_KEYS if k in live)})")
 
 
 def _require_run_dir(paths: RunPaths) -> None:
@@ -608,7 +634,10 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     manifest = {"run_id": run_id, "started_at": now_iso(), "harness_commit": commit,
                 "harness_dirty": dirty, "harness_diff_sha256": _git_diff_sha256() if dirty else None,
                 "config": cfg, "input_manifest": _input_provenance(manifest_path),
-                "batteries": _batteries_provenance(cfg), "resume_compares": RESUME_COMPARES,
+                "batteries": _batteries_provenance(cfg),
+                "grid": _file_provenance(cfg["grid"]) if cfg.get("grid") else None,
+                "study": _file_provenance(cfg["study"]) if cfg.get("study") else None,
+                "resume_compares": RESUME_COMPARES,
                 "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
     if dirty:
         print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
@@ -820,6 +849,10 @@ def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None
     scorer = Scorer(run_id, int(manifest["config"]["run_seed"]), judge, JsonlWriter(paths.scores),
                     _settings(cfg), harness_commit=_git_commit(), concurrency=concurrency)
     scorer.check_independence(manifest, cfg[MENTOR].get("family"))     # before any record of the pass
+    if cfg.get("study"):
+        # The judge, and the run's own run_seed, now, manifest and instrument, must be the study's: a judge
+        # accepted for one arm and not another is a judge-by-arm confound (gap audit F9).
+        study.check(cfg["study"], {**study.run_values(manifest), "judge": study.judge_values(entry)})
     record = write_judge_manifest(paths, entry, scope, subsample)
     n = scorer.score_run(paths, scope, manifest, subsample=subsample, mentor_family=cfg[MENTOR].get("family"))
     notes = [f"judge record {record.name}"]
@@ -900,6 +933,40 @@ def cmd_agreement(cfg: dict, run_id: str, metric: str) -> int:
         mad = "n/a" if pr["mean_abs_diff"] is None else f"{pr['mean_abs_diff']:.3f}"
         w = "n/a" if pr["within_0.1"] is None else f"{pr['within_0.1']:.0%}"
         print(f"   {pr['judges'][0][:12]} vs {pr['judges'][1][:12]}: n={pr['n']} mean_abs_diff={mad} pearson_r={r} within_0.1={w}")
+    return 0
+
+
+def cmd_study(cfg: dict, manifest_path: str) -> int:
+    """Run the `study` subcommand: write study.json (config `study`) from this config, the wave manifest
+    and the live judge, once; afterwards, report whether they still match it. The manifest must pass the
+    same validation and grid gate `run` applies, and the judge's family must be known."""
+    path = cfg.get("study")
+    if not path:
+        print("error: config.study is null; set it to the study.json path to lock", file=sys.stderr)
+        return 1
+    if not (cfg.get("judge") or {}).get("url"):
+        print("error: config needs judge.url: the study lock pins the judge", file=sys.stderr)
+        return 1
+    rows = read_jsonl(Path(manifest_path))
+    validate_manifest_rows(rows)
+    name, ok, detail = _grid_gate(cfg, rows)
+    if ok is False:
+        print(f"error: {detail}", file=sys.stderr)
+        return 1
+    _, entry = build_agent("judge", cfg["judge"], 0, cfg)
+    live = study.live_values(cfg, manifest_path, entry)
+    if Path(path).exists():
+        diff = study.changes(study.load(path), live)
+        for line in diff:
+            print(f"FAIL study {line}")
+        if not diff:
+            print(f"ok   study {path} matches this config, manifest and judge")
+        return 1 if diff else 0
+    rec = study.write(path, live, _git_commit())
+    print(f"wrote {path}: run_seed {rec['run_seed']}, now {rec['now']}, manifest "
+          f"{rec['input_manifest']['sha256'][:12]}, batteries {rec['batteries']['sha256'][:12]}, grid "
+          f"{str(_short('sha256', (rec['grid'] or {}).get('sha256')))}, judge "
+          f"{rec['judge']['model_sha256'][:12]} ({rec['judge']['family']}); commit it")
     return 0
 
 
@@ -1005,11 +1072,13 @@ def _file_provenance(path: str | Path) -> dict:
 
 
 def _input_provenance(manifest_path: str | Path) -> dict:
-    """{path, sha256} of the input dyad manifest, and the same for the assignment log `harness.randomize`
-    wrote beside it (null when there is none: a hand-written manifest)."""
+    """{path, sha256} of the input dyad manifest, the same for the assignment log `harness.randomize`
+    wrote beside it (null when there is none: a hand-written manifest), and the parent manifest's sha256
+    when it is a descoped subset (`--subset-of`), else null."""
     log_path = assignment_log_path(manifest_path)
     return {**_file_provenance(manifest_path),
-            "assignment": _file_provenance(log_path) if log_path.exists() else None}
+            "assignment": _file_provenance(log_path) if log_path.exists() else None,
+            "parent_sha256": study.subset_parent(manifest_path)}
 
 
 def _batteries_provenance(cfg: dict) -> dict:
@@ -1030,16 +1099,17 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     parsers = {}
-    for name in ("check", "run", "survey", "score", "flags", "agreement"):
+    for name in ("check", "run", "survey", "score", "flags", "agreement", "study"):
         parsers[name] = p = sub.add_parser(name)
         p.add_argument("--config", required=True)
-        if name != "check":
+        if name not in ("check", "study"):
             p.add_argument("--run-id", required=True)
         if name in ("run", "survey", "score"):
             p.add_argument("--repair-torn-line", action="store_true",
                            help="back up and fix a *.jsonl whose last line a crash cut off, then go on")
     parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
     parsers["run"].add_argument("--manifest", required=True)
+    parsers["study"].add_argument("--manifest", required=True, help="the wave manifest every arm runs")
     parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
     parsers["score"].add_argument("--scope", choices=SCOPES, default="pilot")
     parsers["score"].add_argument("--subsample", type=float, default=None,
@@ -1059,6 +1129,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_flags(cfg, a.run_id, a.threshold, a.metric, a.run_length, a.judge)
         if a.cmd == "agreement":
             return cmd_agreement(cfg, a.run_id, a.metric)
+        if a.cmd == "study":
+            return cmd_study(cfg, a.manifest)
         # run, survey and score append rows: one process per run_id at a time.
         paths = run_paths(cfg["data_dir"], a.run_id, create=a.cmd == "run")
         _require_run_dir(paths)
@@ -1072,7 +1144,8 @@ def main(argv: list[str] | None = None) -> int:
             if a.cmd == "survey":
                 return cmd_survey(cfg, a.run_id, a.phase)
             return cmd_score(cfg, a.run_id, a.scope, a.subsample)
-    except (ServerError, ManifestMismatch, ValueError, log.RunLocked, TemplateError, OSError, KeyError) as e:
+    except (ServerError, ManifestMismatch, StudyMismatch, ValueError, log.RunLocked, TemplateError, OSError,
+            KeyError) as e:
         # Everything the operator can get wrong -- a dead server, a changed model, a malformed manifest or
         # config, a missing file or GGUF -- becomes one error line and exit 1, never a traceback.
         msg = f"missing key {e}" if isinstance(e, KeyError) else str(e)

@@ -3,15 +3,22 @@
 design section. Notion task "Build the condition randomizer and assignment log" (2026-09-14).
 
     python -m harness.randomize --grid prompts/grid.json --catalogue prompts/personas/catalogue.json \\
-        --out pilot-dyads.jsonl --seed 20260918 --n-per-cell 5 --modes reinforced,once --prefix p
+        --out pilot-dyads.jsonl --seed 20260918 --n-per-cell 6 --modes reinforced,once --prefix p
+    python -m harness.randomize --subset-of w1-dyads.jsonl --per-variant 30 --control 90 \\
+        --out w1-n90-dyads.jsonl
 
 Every treated cell (topic x ideology x openness) gets n_per_cell rows split evenly across that ideology
 level's role variants from the catalogue; each topic gets a bare control cell; every row has its own
-seed from one seeded RNG; the rows are shuffled so cells interleave across the server's slots."""
+seed from one seeded RNG; the rows are shuffled so cells interleave across the server's slots.
+
+--subset-of is the pre-analysis plan's descope rule (docs/pap/pre-analysis-plan.md section 11): it keeps
+rows of an existing manifest by dyad_id and never re-randomizes, so a descoped arm runs the same dyads,
+with the same seeds, as an arm already run at full size."""
 from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import string
 import sys
 from pathlib import Path
@@ -229,11 +236,77 @@ def write_manifest(out: str | Path, rows: list[dict], assignment: dict, *, grid_
     return sidecar
 
 
+# The within-variant index k: the last three digits of a dyad_id build_manifest wrote. It is assigned in grid
+# order before the shuffle, so it is independent of seeds and outcomes.
+_INDEX = re.compile(r"-(\d{3})$")
+
+
+def subset_lines(lines: list[bytes], *, per_variant: int | None = None, control: int | None = None,
+                 ideology: tuple[str, ...] | None = None, topic: tuple[str, ...] | None = None
+                 ) -> tuple[list[bytes], dict]:
+    """The descope rule over a manifest's raw lines: keep a treated row when its index k is at most
+    `per_variant`, a control row when k is at most `control`, and (when given) only the listed treated
+    ideology levels and topics; the control is never cut by level. Lines are returned byte for byte, in
+    order. Also returns the per-cell counts of what was kept."""
+    kept, per_cell = [], {}
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        m = _INDEX.search(str(row.get("dyad_id", "")))
+        if not m:
+            raise ValueError(f"line {n}: dyad_id {row.get('dyad_id')!r} does not end in a three-digit index; "
+                             "only a manifest harness.randomize wrote can be subset")
+        k = int(m.group(1))
+        c = row.get("condition") or {}
+        is_control = c.get("ideology") == "none"
+        limit = control if is_control else per_variant
+        if limit is not None and k > limit:
+            continue
+        if topic and c.get("topic") not in topic:
+            continue
+        if ideology and not is_control and c.get("ideology") not in ideology:
+            continue
+        kept.append(line if line.endswith(b"\n") else line + b"\n")
+        cell = "/".join(str(c.get(x)) for x in ("topic", "ideology", "openness") if c.get(x) is not None)
+        per_cell[cell] = per_cell.get(cell, 0) + 1
+    return kept, per_cell
+
+
+def write_subset(parent: str | Path, out: str | Path, **flt) -> Path:
+    """Write the subset of `parent` that `flt` keeps (subset_lines) to `out`, and its assignment log beside
+    it: the parent's path and sha256 (and its own assignment log's), the filter, and the counts. Returns
+    the log's path. Refuses to write over the parent or its assignment log."""
+    parent, out = Path(parent), Path(out)
+    if all(v is None for v in flt.values()):
+        raise ValueError("no filter given: pass --per-variant, --control, --ideology or --topic")
+    if out.resolve() == parent.resolve() or assignment_log_path(out).resolve() == \
+            assignment_log_path(parent).resolve():
+        raise ValueError(f"--out {out} would overwrite the parent manifest or its assignment log")
+    lines = parent.read_bytes().splitlines(keepends=True)
+    kept, per_cell = subset_lines(lines, **flt)
+    if not kept:
+        raise ValueError("the filter keeps no rows")
+    out.write_bytes(b"".join(kept))
+    parent_log = assignment_log_path(parent)
+    a = {"generated": now_iso(), "harness_version": __version__, "kind": "subset",
+         "rule": "docs/pap/pre-analysis-plan.md section 11: rows kept by dyad_id, never re-randomized",
+         "parent": {"path": str(parent), "sha256": sha256_file(parent),
+                    "assignment": ({"path": str(parent_log), "sha256": sha256_file(parent_log)}
+                                   if parent_log.exists() else None)},
+         "filter": {k: (list(v) if isinstance(v, tuple) else v) for k, v in flt.items()},
+         "rows": len(kept), "rows_dropped": sum(1 for l in lines if l.strip()) - len(kept),
+         "rows_per_cell": per_cell, "output": {"path": str(out), "sha256": sha256_file(out)}}
+    sidecar = assignment_log_path(out)
+    sidecar.write_text(json.dumps(a, indent=2, ensure_ascii=False), encoding="utf-8")
+    return sidecar
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns 0 on success, 1 with one error line on stderr for a bad grid or catalogue."""
     ap = argparse.ArgumentParser(prog="harness.randomize", description=__doc__.split("\n\n")[0])
     ap.add_argument("--grid", default="prompts/grid.json")
-    ap.add_argument("--catalogue", required=True)
+    ap.add_argument("--catalogue", help="the persona catalogue (required unless --subset-of)")
     ap.add_argument("--out", help="the *-dyads.jsonl to write; the assignment log lands beside it")
     ap.add_argument("--seed", type=int, help="the RNG seed; recorded in the assignment log")
     ap.add_argument("--check", action="store_true", help="validate the catalogue against the grid and write nothing")
@@ -244,7 +317,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--modes", default=None, help="comma-separated persona modes (grid default: reinforced)")
     ap.add_argument("--n-turns", type=int, default=None)
     ap.add_argument("--prefix", default="w", help="dyad_id prefix, e.g. p for the pilot, w1 for wave 1")
+    sub = ap.add_argument_group("descope (docs/pap/pre-analysis-plan.md section 11)")
+    sub.add_argument("--subset-of",
+                     help="an existing manifest to keep rows of, by dyad_id; nothing is re-randomized")
+    sub.add_argument("--per-variant", type=int,
+                     help="keep treated rows whose within-variant index is at most this")
+    sub.add_argument("--control", type=int, help="keep control rows whose index is at most this")
+    sub.add_argument("--ideology", help="comma-separated treated levels to keep (the control is always kept)")
+    sub.add_argument("--topic", help="comma-separated topics to keep")
     a = ap.parse_args(argv)
+    if a.subset_of:
+        if a.out is None or a.check or a.seed is not None or a.n_per_cell is not None or a.modes:
+            ap.error("--subset-of takes --out and the filters (--per-variant, --control, --ideology, "
+                     "--topic), and nothing that would randomize")
+        split = lambda v: tuple(x.strip() for x in v.split(",") if x.strip()) if v else None  # noqa: E731
+        try:
+            sidecar = write_subset(a.subset_of, a.out, per_variant=a.per_variant, control=a.control,
+                                   ideology=split(a.ideology), topic=split(a.topic))
+        except (ValueError, OSError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        rec = json.loads(sidecar.read_text(encoding="utf-8"))
+        print(f"kept {rec['rows']} of {rec['rows'] + rec['rows_dropped']} rows of {a.subset_of} in {a.out}; "
+              f"assignment log {sidecar} (parent sha256 {rec['parent']['sha256'][:12]})")
+        return 0
+    if a.catalogue is None:
+        ap.error("--catalogue is required unless --subset-of")
     if not a.check and (a.out is None or a.seed is None):
         ap.error("--out and --seed are required unless --check")
     modes = tuple(m.strip() for m in a.modes.split(",")) if a.modes else None

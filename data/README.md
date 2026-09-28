@@ -40,9 +40,13 @@ it holds that process's pid and is harmless when left behind.
 `run_id`, `started_at`, `harness_commit`, `harness_dirty` (were tracked files under `harness/` or
 `instruments/` modified? null when git could not say, which is not the same as clean),
 `harness_diff_sha256` (sha256 of that uncommitted diff, or null when clean), `config` (the whole
-config as merged onto the defaults), `input_manifest` `{path, sha256, assignment}` (`assignment` is
-`{path, sha256}` of the randomizer's `<stem>-assignment.json` beside the input manifest, or null),
-`batteries` `{path, sha256, n_items, item_ids}`, `resume_compares` (what a resume compares with this file
+config as merged onto the defaults), `input_manifest` `{path, sha256, assignment, parent_sha256}`
+(`assignment` is `{path, sha256}` of the randomizer's `<stem>-assignment.json` beside the input
+manifest, or null; `parent_sha256` is the full wave manifest's sha256 when the input is a descoped subset
+written by `harness.randomize --subset-of`, else null), `batteries` `{path, sha256, n_items, item_ids}`,
+`grid` `{path, sha256}` of `prompts/grid.json` (null when the config's `grid` is null), `study`
+`{path, sha256}` of the study lock the run was checked against (null without one; `harness/README.md`,
+"The study lock"), `resume_compares` (what a resume compares with this file
 and refuses on: `harness/README.md`, "What the config fields mean"), `environment`
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
@@ -61,6 +65,14 @@ that the harness never sets).
 The input dyad manifest the run started with (`--manifest`), byte for byte; its sha256 is
 `manifest.json` → `input_manifest.sha256`. A resume compares each dyad row with it and refuses a changed
 or added dyad.
+
+## `assignment.json`
+
+The randomizer's log for the input manifest, copied when the run starts: the RNG seed, the arguments, the
+counts per cell, variant and mode, and the grid's, catalogue's and manifest's sha256. For a descoped subset
+(`harness.randomize --subset-of`) it is the subset's log instead: `kind: "subset"`, `parent` `{path,
+sha256, assignment}`, `filter` `{per_variant, control, ideology, topic}`, `rows`, `rows_dropped`,
+`rows_per_cell` and `output` `{path, sha256}`.
 
 ## `judge-<sha12>.json`
 
