@@ -1,7 +1,8 @@
 """CLI: check servers, run a dialogue manifest, re-administer surveys, score a run, flag low-adherence
-dialogues, report cross-judge agreement, and lock the study's shared settings.
+dialogues, report cross-judge agreement, lock the study's shared settings, and administer the no-dialogue
+baseline.
 
-    python -m harness.run {check,run,survey,score,flags,agreement,study} --config config.json ...
+    python -m harness.run {check,run,survey,score,flags,agreement,study,baseline} --config config.json ...
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
@@ -22,7 +23,8 @@ from harness.study import StudyMismatch
 from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
                             Scorer, cross_judge_agreement, declared_family, flag_dialogues, is_control,
                             latest_complete_attempts, model_family)
-from harness.survey import SurveyError, SurveyRunner, load_batteries
+from harness.survey import (SURVEY_N_PREDICT, SURVEY_TEMPERATURE, SurveyError, SurveyRunner,
+                            load_batteries)
 from harness.templates import (FIXTURE_MESSAGES, FIXTURE_MESSAGES_USER_FIRST, TemplateError, parity_check,
                                read_template_from_gguf, render)
 from harness.transcript import MENTOR, PERSONA_MODES, SEEKER, Transcript, message_order
@@ -762,7 +764,21 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
     return 2 if failed else 0
 
 
-def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
+def sample_dyads(dyad_ids, n: int, run_seed: int) -> list[str]:
+    """A deterministic sample of n dyads: the n whose sha256(run_seed|sample|dyad_id) sorts first. The same
+    run_seed and dyads give the same sample on every pass."""
+    return sorted(dyad_ids, key=lambda d: log.sha256_text(f"{run_seed}|sample|{d}"))[:max(0, int(n))]
+
+
+def _survey_key(row: dict) -> tuple:
+    """How a survey row was sampled: (schema, temperature, n_predict). Rows written before these fields
+    existed were schema-constrained, greedy and 32 tokens."""
+    return (row.get("schema", True), row.get("temperature", SURVEY_TEMPERATURE),
+            row.get("n_predict", SURVEY_N_PREDICT))
+
+
+def cmd_survey(cfg: dict, run_id: str, phase: str, *, schema: bool = True, sample: int | None = None,
+               temperature: float | None = None, n_predict: int | None = None) -> int:
     """Run the `survey` subcommand: re-administer one survey phase for every complete dyad in a run,
     rebuilding the transcript from turns.jsonl for the post phase. Only the mentor is built: the seeker's
     server has nothing to do with a re-administration and need not even be running. Refuses if the live
@@ -772,7 +788,14 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
     Refuses, too, a run-affecting config that differs from the run's (`run_seed`, `now` and `generation`
     are in every survey prompt or seed), as `run` does. An item already re-administered for a dyad in this
     phase is not asked again, so a second pass only fills in what a failed one left. Returns 2 when any
-    dyad's items failed."""
+    dyad's items failed.
+
+    `schema=False` (`--no-schema`) sends no json_schema, so the answer comes from the parser's salvage path
+    and can be compared with the constrained one (the spec's unconstrained run on a sample; gap audit F12);
+    `sample` (`--sample N`) asks only N dyads, chosen by sample_dyads on the manifest's run_seed;
+    `temperature` and `n_predict` override the instrument's greedy 32 tokens (the pre-analysis plan's
+    baseline option B). Every row records schema, temperature and n_predict, and a pass with other settings
+    is a different measurement: it does not count the items an earlier pass asked as done."""
     paths = run_paths(cfg["data_dir"], run_id)
     manifest = _load_manifest(paths)
     was_cfg, now_cfg = log.run_affecting(manifest.get("config")), log.run_affecting(cfg)
@@ -791,12 +814,20 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
         return 1
     items = load_batteries(cfg["batteries"])
     complete = latest_complete_attempts(read_jsonl(paths.status))
+    if sample is not None:
+        keep = set(sample_dyads(complete, sample, int(manifest["config"]["run_seed"])))
+        complete = {d: a for d, a in complete.items() if d in keep}
     dyads = {(d["dyad_id"], d["attempt"]): d for d in read_jsonl(paths.dyads)}
     turns = read_jsonl(paths.turns)
+    temperature = SURVEY_TEMPERATURE if temperature is None else float(temperature)
+    n_predict = SURVEY_N_PREDICT if n_predict is None else int(n_predict)
+    key = (schema, temperature, n_predict)
     done = {(s["dyad_id"], s["attempt"], s["item_id"]) for s in read_jsonl(paths.surveys)
-            if s.get("origin") == "readministered" and s.get("phase") == phase and not s.get("error")}
+            if s.get("origin") == "readministered" and s.get("phase") == phase and not s.get("error")
+            and _survey_key(s) == key}
     runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, 0), JsonlWriter(paths.surveys),
-                          _settings(cfg), batteries_sha256=live_sha256)
+                          _settings(cfg), batteries_sha256=live_sha256, temperature=temperature,
+                          n_predict=n_predict, schema=schema)
     n = failed = already = 0
     for dyad_id, attempt in complete.items():
         todo = [it for it in items if (dyad_id, attempt, it["id"]) not in done]
@@ -819,9 +850,143 @@ def cmd_survey(cfg: dict, run_id: str, phase: str) -> int:
             failed += 1
             print(f"  {dyad_id}: {e}", file=sys.stderr)
     print(f"{phase} survey: {n} rows for {len(complete) - already} dyads"
+          + ("" if key == (True, SURVEY_TEMPERATURE, SURVEY_N_PREDICT)
+             else f" (schema {str(schema).lower()}, temperature {temperature}, n_predict {n_predict})")
           + (f"; {already} already re-administered, not asked again" if already else "")
           + (f"; {failed} failed, re-run to fill them in" if failed else ""))
+    if not schema:
+        print(_unconstrained_summary(read_jsonl(paths.surveys), phase, key, complete))
     return 2 if failed else 0
+
+
+def _unconstrained_summary(rows: list[dict], phase: str, key: tuple, complete: dict) -> str:
+    """One line comparing this unconstrained pass with the run's own constrained answers to the same
+    (dyad, attempt, item): how many parsed, by which method, and how many agree."""
+    constrained = {(r["dyad_id"], r["attempt"], r["item_id"]): r.get("answer") for r in rows
+                   if r.get("origin") == "run" and r.get("phase") == phase and not r.get("error")
+                   and r.get("schema", True)}
+    free = [r for r in rows if r.get("origin") == "readministered" and r.get("phase") == phase
+            and not r.get("error") and _survey_key(r) == key and complete.get(r["dyad_id"]) == r["attempt"]]
+    methods: dict[str, int] = {}
+    for r in free:
+        methods[str(r.get("answer_method"))] = methods.get(str(r.get("answer_method")), 0) + 1
+    pairs = [(r.get("answer"), constrained[k]) for r in free
+             if (k := (r["dyad_id"], r["attempt"], r["item_id"])) in constrained]
+    agree = sum(1 for a, b in pairs if a is not None and a == b)
+    return (f"unconstrained {phase}: {len(free)} rows, methods "
+            + ", ".join(f"{m} {c}" for m, c in sorted(methods.items()))
+            + f"; {agree} of {len(pairs)} equal the run's constrained answer")
+
+
+# What a `baseline` resume compares with its manifest.json. The seeker, the judge and the grid play no part.
+BASELINE_CONFIG = ("mentor", "run_seed", "now", "batteries")
+BASELINE_COMPARES = {"config": list(BASELINE_CONFIG), "batteries": ["sha256"], MENTOR: list(IDENTITY_KEYS),
+                     "baseline": ["phase", "k", "temperature", "top_p", "n_predict", "schema"],
+                     "harness": ["harness_commit", "harness_dirty", "harness_diff_sha256"]}
+
+
+def baseline_spec(i: int) -> DyadSpec:
+    """Administration i of a baseline run as the survey sees it: no persona, no dialogue, and i as the
+    per-dyad seed, so derive_seed gives every (administration, item) its own seed."""
+    return DyadSpec(f"baseline-{i:04d}", {}, "", "", "once", i, 0)
+
+
+def cmd_baseline(cfg: dict, run_id: str, k: int, temperature: float | None = None, schema: bool = True,
+                 n_predict: int | None = None) -> int:
+    """Run the `baseline` subcommand: the pre battery administered k times to the mentor, in an empty
+    context, with no dialogue, one derived seed per administration and item (docs/pap/pre-analysis-plan.md
+    section 10, option C). Temperature and top_p default to the config's dialogue settings. Rows go to
+    data/<run_id>/baseline.jsonl with origin "baseline" and `administration`; manifest.json has
+    kind "baseline" and a `baseline` block, and a resume refuses anything in BASELINE_COMPARES that
+    differs. Administrations run on the mentor's slots, `concurrency` at once. Returns 2 when any failed."""
+    if k < 1:
+        raise ValueError(f"--k must be at least 1, got {k}")
+    g = cfg["generation"]
+    block = {"phase": "pre", "k": int(k),
+             "temperature": float(g["temperature"] if temperature is None else temperature),
+             "top_p": float(g["top_p"]),
+             "n_predict": SURVEY_N_PREDICT if n_predict is None else int(n_predict), "schema": bool(schema)}
+    if cfg.get("study"):
+        live = study.live_values(cfg)
+        study.check(cfg["study"], {key: live[key] for key in ("run_seed", "now", "batteries")})
+    mentor, entry = _agents(cfg, roles=(MENTOR,))[MENTOR]
+    ok_all = True
+    for name, ok, detail in check_agent(mentor, cfg):
+        ok_all = ok_all and ok is not False
+        print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} mentor {name} {detail}")
+    if not ok_all:
+        print("mentor check failed; not running the baseline", file=sys.stderr)
+        return 1
+    paths = run_paths(cfg["data_dir"], run_id)
+    commit, dirty = _git_commit(), _git_dirty()
+    if not commit:
+        print("error: cannot read this repository's git commit; a run with unknown provenance is refused",
+              file=sys.stderr)
+        return 1
+    manifest = {"run_id": run_id, "kind": "baseline", "started_at": now_iso(), "harness_commit": commit,
+                "harness_dirty": dirty, "harness_diff_sha256": _git_diff_sha256() if dirty else None,
+                "config": cfg, "batteries": _batteries_provenance(cfg), "baseline": block,
+                "study": _file_provenance(cfg["study"]) if cfg.get("study") else None,
+                "resume_compares": BASELINE_COMPARES, "environment": _environment(cfg), MENTOR: entry}
+    if paths.manifest.exists():
+        was = _load_manifest(paths)
+        if was.get("kind") != "baseline":
+            raise ManifestMismatch(f"{paths.manifest} is not a baseline run; use a new run_id")
+        changes = [f"config.{key} differs" for key in BASELINE_CONFIG
+                   if (was.get("config") or {}).get(key) != cfg.get(key)]
+        if (was.get("batteries") or {}).get("sha256") != manifest["batteries"]["sha256"]:
+            changes.append(f"{cfg['batteries']} no longer hashes to what manifest.json records")
+        changes += _identity_changes(was, manifest, (MENTOR,))
+        was_block = was.get("baseline") or {}
+        changes += [f"baseline.{key} is {block[key]!r}, manifest.json records {was_block.get(key)!r}"
+                    for key in block if was_block.get(key) != block[key]]
+        if (was.get("harness_commit"), was.get("harness_dirty"), was.get("harness_diff_sha256")) != \
+                (commit, dirty, manifest["harness_diff_sha256"]):
+            changes.append("the harness code differs from the code this baseline started with")
+        if changes:
+            raise ManifestMismatch(f"{paths.manifest}: not resuming, changed since this baseline started: "
+                                   + "; ".join(changes) + ". Use a new run_id")
+    else:
+        paths.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    items = load_batteries(cfg["batteries"])
+    done = {(r["administration"], r["item_id"]) for r in read_jsonl(paths.baseline) if not r.get("error")}
+    work = [(i, [it for it in items if (i, it["id"]) not in done]) for i in range(1, k + 1)]
+    work = [(i, todo) for i, todo in work if todo]
+    concurrency = cfg["concurrency"] or int(entry["total_slots"])
+    print(f"baseline {run_id}: {len(work)} of {k} administrations to run, temperature "
+          f"{block['temperature']}, schema {str(schema).lower()}, concurrency {concurrency}")
+    writer = JsonlWriter(paths.baseline)
+    settings = _settings(cfg)
+    free, lock = list(range(concurrency)), threading.Lock()
+    counts = {"rows": 0, "failed": 0}
+
+    def job(i: int, todo: list[dict]) -> None:
+        with lock:
+            slot = free.pop()
+        try:
+            runner = SurveyRunner(run_id, int(cfg["run_seed"]), _with_slot(mentor, slot), writer, settings,
+                                  batteries_sha256=manifest["batteries"]["sha256"],
+                                  temperature=block["temperature"], top_p=block["top_p"],
+                                  n_predict=block["n_predict"], schema=block["schema"])
+            rows = runner.administer(baseline_spec(i), 1, "pre", None, todo, origin="baseline",
+                                     extra={"administration": i})
+            with lock:
+                counts["rows"] += len(rows)
+        except SurveyError as e:
+            with lock:
+                counts["failed"] += 1
+            print(f"  administration {i}: {e}", file=sys.stderr)
+        finally:
+            with lock:
+                free.append(slot)
+
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        for f in [ex.submit(job, i, todo) for i, todo in work]:
+            f.result()
+    print(f"baseline {run_id}: {counts['rows']} rows"
+          + (f"; {counts['failed']} administrations failed, re-run to fill them in"
+             if counts["failed"] else ""))
+    return 2 if counts["failed"] else 0
 
 
 def cmd_score(cfg: dict, run_id: str, scope: str, subsample: float | None = None) -> int:
@@ -1099,18 +1264,31 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness", description="Dyad harness for the LLM polarization study")
     sub = ap.add_subparsers(dest="cmd", required=True)
     parsers = {}
-    for name in ("check", "run", "survey", "score", "flags", "agreement", "study"):
+    for name in ("check", "run", "survey", "score", "flags", "agreement", "study", "baseline"):
         parsers[name] = p = sub.add_parser(name)
         p.add_argument("--config", required=True)
         if name not in ("check", "study"):
             p.add_argument("--run-id", required=True)
-        if name in ("run", "survey", "score"):
+        if name in ("run", "survey", "score", "baseline"):
             p.add_argument("--repair-torn-line", action="store_true",
                            help="back up and fix a *.jsonl whose last line a crash cut off, then go on")
     parsers["check"].add_argument("--manifest", help="dyad manifest; adds the context-budget check")
     parsers["run"].add_argument("--manifest", required=True)
     parsers["study"].add_argument("--manifest", required=True, help="the wave manifest every arm runs")
     parsers["survey"].add_argument("--phase", choices=("pre", "post"), default="post")
+    parsers["survey"].add_argument("--sample", type=int, default=None,
+                                   help="ask only this many complete dyads, sampled on run_seed")
+    for name in ("survey", "baseline"):
+        parsers[name].add_argument("--no-schema", action="store_true",
+                                   help="send no json_schema: free text, read by the parser's salvage path")
+        parsers[name].add_argument("--n-predict", type=int, default=None,
+                                   help=f"tokens per answer (default {SURVEY_N_PREDICT})")
+    parsers["survey"].add_argument("--temperature", type=float, default=None,
+                                   help=f"temperature (default {SURVEY_TEMPERATURE}, the instrument's)")
+    parsers["baseline"].add_argument("--k", type=int, required=True,
+                                     help="administrations of the pre battery")
+    parsers["baseline"].add_argument("--temperature", type=float, default=None,
+                                     help="temperature (default: the config's generation.temperature)")
     parsers["score"].add_argument("--scope", choices=SCOPES, default="pilot")
     parsers["score"].add_argument("--subsample", type=float, default=None,
                                   help="fraction of dyads to score, deterministic on run_seed (two-judge design)")
@@ -1132,7 +1310,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "study":
             return cmd_study(cfg, a.manifest)
         # run, survey and score append rows: one process per run_id at a time.
-        paths = run_paths(cfg["data_dir"], a.run_id, create=a.cmd == "run")
+        paths = run_paths(cfg["data_dir"], a.run_id, create=a.cmd in ("run", "baseline"))
         _require_run_dir(paths)
         with log.run_lock(paths, a.cmd):
             if a.repair_torn_line:
@@ -1142,7 +1320,10 @@ def main(argv: list[str] | None = None) -> int:
             if a.cmd == "run":
                 return cmd_run(cfg, a.manifest, a.run_id)
             if a.cmd == "survey":
-                return cmd_survey(cfg, a.run_id, a.phase)
+                return cmd_survey(cfg, a.run_id, a.phase, schema=not a.no_schema, sample=a.sample,
+                                  temperature=a.temperature, n_predict=a.n_predict)
+            if a.cmd == "baseline":
+                return cmd_baseline(cfg, a.run_id, a.k, a.temperature, not a.no_schema, a.n_predict)
             return cmd_score(cfg, a.run_id, a.scope, a.subsample)
     except (ServerError, ManifestMismatch, StudyMismatch, ValueError, log.RunLocked, TemplateError, OSError,
             KeyError) as e:

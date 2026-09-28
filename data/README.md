@@ -25,6 +25,7 @@ data/<run_id>/
   surveys.jsonl        one row per survey item, per dyad, per phase
   scores.jsonl         one row per (turn, agent, metric, judge), written by `score`
   flags.jsonl          one row per scored, complete dyad, written (replaced) by `flags`
+  baseline.jsonl       one row per item per administration, written by `baseline` (a baseline run only)
 ```
 
 Every row is one line, flushed and fsynced as it is written. A line cut off by a crash stops the next
@@ -126,10 +127,12 @@ cannot tell the two apart, which is why both are logged.
 
 `run_id`, `dyad_id`, `attempt`, `phase` (`pre` or `post`), `origin` (`run` for the pass the dialogue run
 makes, `readministered` for a later `python -m harness.run survey` pass — the two share every other key
-field; a later pass never repeats an item already re-administered without an `error`),
+field; a later pass never repeats an item already re-administered without an `error` under the same
+`schema`, `temperature` and `n_predict`),
 `item_id`, `battery`, `scale` `{min, max}`, `batteries_sha256` (which instrument file), `model_sha256`
 and `template_sha256` (which mentor answered), `id_slot`, `turn` (a sentinel: 0 for pre, `n_turns + 1`
-for post, so the two phases derive different seeds), `temperature`, `n_predict`, `prompt_sha256`,
+for post, so the two phases derive different seeds), `temperature`, `top_p`, `n_predict`, `schema`
+(false when the item was sent without the JSON schema: `survey --no-schema`), `prompt_sha256`,
 `prompt_chars`, `seed`, `answer` (integer, or null if the reply did not parse), `answer_method` (how
 `answer` was found: `json` when the schema-constrained reply parsed as an integer on the scale;
 `labelled` or `bare` when the number was salvaged from free text by `harness/parser.py`; `ambiguous`,
@@ -144,6 +147,18 @@ the grammar it is zero, and a salvaged answer is a number the schema did not pro
 The pre-survey runs before turn 1 in a fresh context, one item at a time with no system prompt. The
 post-survey runs after the last turn, branching each item off the mentor's own view of the dialogue.
 Item order is file order and is identical pre and post.
+
+Rows written before `top_p` and `schema` existed were schema-constrained at top_p 0.95.
+
+## `baseline.jsonl` — one row per item per administration, written by `baseline`
+
+A baseline run has no dialogue: `manifest.json` has `kind: "baseline"`, the fields above except
+`input_manifest`, `grid` and the `seeker` block, and a `baseline` block `{phase, k, temperature, top_p,
+n_predict, schema}`; `resume_compares` is what a re-run refuses on. Each row is a `surveys.jsonl` row with
+`origin: "baseline"`, `phase: "pre"`, `attempt` 1, `dyad_id` `baseline-<i>` and `administration` i (1 to
+`k`). The seed is `derive_seed(run_seed, i, "baseline-<i>", 1, 0, "survey:pre:<item_id>")`, so every
+administration of every item has its own. The prompt is the pre-survey's: the item alone, no system
+prompt.
 
 ## `scores.jsonl` — one row per (turn, agent, metric), written by `score`
 

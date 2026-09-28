@@ -18,6 +18,7 @@ class RunPaths:
     flags: Path
     input_dyads: Path       # a verbatim copy of the input dyad manifest, written when the run starts
     assignment: Path        # a copy of the randomizer's assignment log for that manifest, when there is one
+    baseline: Path          # `baseline` rows: the pre battery administered K times, no dialogue
 
 
 # What a run_id or a dyad_id may be: it names a directory, and a dyad_id goes into every derived seed with
@@ -42,7 +43,7 @@ def run_paths(data_dir: str | Path, run_id: str, create: bool = True) -> RunPath
         root.mkdir(parents=True, exist_ok=True)
     return RunPaths(root, root / "manifest.json", root / "dyads.jsonl", root / "status.jsonl",
                     root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl", root / "flags.jsonl",
-                    root / "input-dyads.jsonl", root / "assignment.json")
+                    root / "input-dyads.jsonl", root / "assignment.json", root / "baseline.jsonl")
 
 
 class TornLine(ValueError):

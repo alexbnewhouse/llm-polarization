@@ -38,6 +38,35 @@ the schema was not honoured (a truncated reply, a server without grammar support
 from free text and labels the row's `answer_method` accordingly. Its 50 hand-written cases are
 `harness/tests/parser_cases.jsonl`.
 
+The unconstrained check (the spec's "unconstrained run on a sample"; gap audit F12) asks the same items
+without the schema, so the salvage path's answers can be set against the constrained ones:
+
+```bash
+python -m harness.run survey --config config.json --run-id pilot-2026-09-18 --phase post \
+    --no-schema --sample 20
+```
+
+`--sample N` asks N complete dyads, the same N on every pass (a hash of `run_seed` and `dyad_id`), and the
+pass prints how many free-text answers parsed, by method, and how many equal the run's constrained answer.
+`--temperature T` and `--n-predict N` override the instrument's greedy 32 tokens (the pre-analysis plan's
+baseline option B). Rows record `schema`, `temperature`, `top_p` and `n_predict`; a pass with other
+settings is another measurement and asks again what an earlier pass asked.
+
+The no-dialogue baseline (`docs/pap/pre-analysis-plan.md` section 10, option C) is its own `run_id` per
+arm, with the arm's config:
+
+```bash
+python -m harness.run baseline --config config.json --run-id baseline-qwen --k 1000   # temperature 0.7
+```
+
+It administers the whole pre battery `--k` times to the mentor, in an empty context, with one derived seed
+per administration and item, at the config's `generation.temperature` and `top_p` unless `--temperature`
+says otherwise (`--no-schema` and `--n-predict` as for `survey`). It checks the mentor first, uses
+`concurrency` mentor slots at once, writes `data/<run_id>/baseline.jsonl` and a `manifest.json` of kind
+`baseline`, never talks to the seeker, and exits 2 when any administration failed; a re-run fills in only
+what is missing, and refuses other settings, another mentor, instrument or harness code
+(`BASELINE_COMPARES`).
+
 `run` exits 0 when every dyad completed, 2 when any failed, 130 when Ctrl-C stopped it (in-flight dyads
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
 A second Ctrl-C says how many dyads are still in flight; a third abandons them, marking each attempt

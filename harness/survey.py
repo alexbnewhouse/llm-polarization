@@ -11,9 +11,11 @@ from harness.templates import render
 from harness.transcript import Transcript, MENTOR
 
 PHASES = ("pre", "post")
-ORIGINS = ("run", "readministered")
+# run: the dialogue run's own pass; readministered: a later `survey` pass; baseline: `baseline`, no dialogue.
+ORIGINS = ("run", "readministered", "baseline")
 SURVEY_N_PREDICT = 32
 SURVEY_TEMPERATURE = 0.0
+SURVEY_TOP_P = 0.95
 # answer_method for a reply the n_predict cap cut off before it parsed as JSON: `{"answer": 1` on a 0-10
 # item may have been heading for 10, so no number is salvaged from it.
 TRUNCATED = "truncated"
@@ -60,20 +62,28 @@ def parse_answer(text: str, item: dict) -> Parsed:
 class SurveyRunner:
     """Administers the survey items to the mentor, one prompt per item, and logs one row per item."""
     def __init__(self, run_id: str, run_seed: int, mentor: AgentHandle, surveys_log: JsonlWriter,
-                 settings: GenSettings, clock=now_iso, batteries_sha256: str = ""):
+                 settings: GenSettings, clock=now_iso, batteries_sha256: str = "", *,
+                 temperature: float = SURVEY_TEMPERATURE, top_p: float = SURVEY_TOP_P,
+                 n_predict: int = SURVEY_N_PREDICT, schema: bool = True):
         """Initialize with run metadata, mentor client, logging writer and the sha256 of the batteries file
-        whose items are being administered (written onto every row so an item-wording change is visible)."""
+        whose items are being administered (written onto every row so an item-wording change is visible).
+        The sampling settings default to the instrument's (greedy, 32 tokens, schema-constrained);
+        `survey --temperature/--n-predict/--no-schema` and `baseline` override them, and every row says
+        which it got. schema=False sends no json_schema: the reply is free text and only the parser's
+        salvage path can read it."""
         self.run_id, self.run_seed, self.mentor = run_id, run_seed, mentor
         self.surveys_log, self.settings, self.clock = surveys_log, settings, clock
         self.batteries_sha256 = batteries_sha256
+        self.temperature, self.top_p, self.n_predict, self.schema = temperature, top_p, n_predict, schema
 
     def administer(self, spec: DyadSpec, attempt: int, phase: str, transcript: Transcript | None,
-                   items: list[dict], origin: str = "run") -> list[dict]:
+                   items: list[dict], origin: str = "run", extra: dict | None = None) -> list[dict]:
         """Administer every item for one phase and return the rows; raise SurveyError on a server failure,
         after logging the failed row. Pre items get a fresh context; post items branch off the mentor's view
         of the dialogue on the same slot, so the cached dialogue prefix is reused and each item costs about
-        its own prefill. `origin` is "run" for the pass the dialogue run itself makes and
-        "readministered" for a later `harness survey` pass, whose rows otherwise share the same key."""
+        its own prefill. `origin` is "run" for the pass the dialogue run itself makes,
+        "readministered" for a later `harness survey` pass, whose rows otherwise share the same key, and
+        "baseline" for `harness baseline`. `extra` fields are added to every row."""
         if phase not in PHASES:
             raise ValueError(f"phase must be one of {PHASES}")
         if origin not in ORIGINS:
@@ -94,12 +104,15 @@ class SurveyRunner:
                    "origin": origin, "item_id": it["id"], "battery": it["battery"], "scale": it["scale"],
                    "batteries_sha256": self.batteries_sha256, "model_sha256": self.mentor.model_sha256,
                    "template_sha256": self.mentor.template.sha256, "id_slot": self.mentor.slot, "turn": turn,
-                   "temperature": SURVEY_TEMPERATURE, "n_predict": SURVEY_N_PREDICT,
+                   "temperature": self.temperature, "top_p": self.top_p, "n_predict": self.n_predict,
+                   "schema": self.schema, **(extra or {}),
                    "prompt_sha256": sha256_text(prompt), "prompt_chars": len(prompt), "seed": seed}
             try:
                 comp = self.mentor.client.complete(prompt, id_slot=self.mentor.slot, seed=seed,
-                                                   n_predict=SURVEY_N_PREDICT, temperature=SURVEY_TEMPERATURE,
-                                                   json_schema=answer_schema(it), cache_prompt=True)
+                                                   n_predict=self.n_predict, temperature=self.temperature,
+                                                   top_p=self.top_p,
+                                                   json_schema=answer_schema(it) if self.schema else None,
+                                                   cache_prompt=True)
             except ServerError as e:
                 row.update({"answer": None, "answer_method": None, "raw_text": "", "finish_reason": "error",
                             "predicted_n": None, "truncated": None, "prompt_n": None, "error": str(e),
