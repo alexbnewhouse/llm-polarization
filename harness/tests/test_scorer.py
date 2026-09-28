@@ -100,6 +100,7 @@ def test_score_run_pilot_writes_rows_and_skips_done(tmp_path):
     assert sc.score_run(p, "pilot", manifest) == 0            # idempotent
     for c in jc.calls:
         assert c["json_schema"] == scorer.score_schema() and c["temperature"] == 0.0 and c["n_predict"] == 160
+        assert c["top_p"] == scorer.JUDGE_TOP_P == r0["top_p"] and r0["temperature"] == 0.0
         assert "PERSONA" in c["prompt"] and c["id_slot"] == 0
 
 

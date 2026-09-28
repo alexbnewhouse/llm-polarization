@@ -1,4 +1,5 @@
 """The CLI end to end against FakeClient servers: check, run, resume, survey, score, flags, agreement."""
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -187,7 +188,11 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     env = mf["environment"]
     assert env["python"] == sys.version and env["jinja2"] == jinja2.__version__
     assert env["platform"] and env["harness_version"] == harness.__version__
-    assert set(env) == {"python", "platform", "jinja2", "harness_version", "gguf_py_path", "gguf_py_commit", "gpu"}
+    assert set(env) == {"python", "platform", "jinja2", "numpy", "pyyaml", "harness_version", "gguf_py_path",
+                        "gguf_py_commit", "gpu"}
+    # gap audit F19: gguf-py's own dependencies, as installed
+    assert env["numpy"] == importlib.metadata.version("numpy")
+    assert env["pyyaml"] == importlib.metadata.version("pyyaml")
     assert env["gpu"] is None or isinstance(env["gpu"], str)
     for role in ("seeker", "mentor"):
         assert mf[role]["template_source"] == CHATML          # archived in full, not only hashed
@@ -210,6 +215,9 @@ def test_main_run_and_score_end_to_end(tmp_path, monkeypatch):
     assert judge_files == ["judge-" + "HASH-j.gguf"[:12] + ".json"]
     judge = json.loads((paths.root / judge_files[0]).read_text())
     assert judge["scope"] == "main" and judge["n_predict"] == 160 and judge["temperature"] == 0.0
+    assert judge["top_p"] == 0.95 and all(s["temperature"] == 0.0 and s["top_p"] == 0.95 for s in scores)
+    surveys = log.read_jsonl(paths.surveys)
+    assert all(s["top_p"] == 0.95 and s["temperature"] == 0.0 for s in surveys)
     assert judge["model_sha256"] == "HASH-j.gguf" and judge["template_source"] == CHATML
     assert judge["harness_commit"] and judge["judge_system"] and judge["judge_tasks"]
     assert all(s["harness_commit"] == judge["harness_commit"] for s in scores)

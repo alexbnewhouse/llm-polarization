@@ -54,6 +54,8 @@ def declared_family(value: str | None) -> str | None:
 # Fixed rather than configurable, and written into judge-*.json with the prompt text below.
 JUDGE_N_PREDICT = 160
 JUDGE_TEMPERATURE = 0.0
+# Moot at temperature 0, but sent and recorded rather than left to the client's default (gap audit F19).
+JUDGE_TOP_P = 0.95
 
 JUDGE_SYSTEM = ("You are a careful annotator for a study of LLM-to-LLM political dialogue. You score one line at a "
            "time on a 0.0 to 1.0 scale and give a one-sentence rationale. Respond only with JSON.")
@@ -345,7 +347,8 @@ class Scorer:
             out = {"run_id": self.run_id, "dyad_id": row["dyad_id"], "attempt": key[1], "turn": row["turn"],
                    "agent": row["agent"], "metric": metric, "scope": scope, "subsample": subsample,
                    "judge_sha256": judge.model_sha256,
-                   "id_slot": judge.slot, "harness_commit": self.harness_commit, "seed": seed}
+                   "id_slot": judge.slot, "harness_commit": self.harness_commit, "seed": seed,
+                   "temperature": JUDGE_TEMPERATURE, "top_p": JUDGE_TOP_P}
             if spec is None:
                 out.update({"judge_prompt_sha256": "", "prompt_chars": None, "score": None, "rationale": "",
                             "raw_text": "", "error": "no dyads.jsonl row for this dyad/attempt", "ts": self.clock()})
@@ -366,7 +369,8 @@ class Scorer:
             out["prompt_chars"] = len(prompt)
             try:
                 comp = judge.client.complete(prompt, id_slot=judge.slot, seed=seed, n_predict=JUDGE_N_PREDICT,
-                                             temperature=JUDGE_TEMPERATURE, json_schema=score_schema(),
+                                             temperature=JUDGE_TEMPERATURE, top_p=JUDGE_TOP_P,
+                                             json_schema=score_schema(),
                                              cache_prompt=True, samplers=self.settings.samplers)
             except ServerError as e:
                 out.update({"score": None, "rationale": "", "raw_text": "", "error": str(e), "ts": self.clock()})

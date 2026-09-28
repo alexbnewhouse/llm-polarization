@@ -7,7 +7,7 @@ baseline.
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
 import argparse, copy, dataclasses, ipaddress, json, os, platform, shutil, signal, socket, sys, threading
-import urllib.parse
+import importlib.metadata, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, wait as wait_futures
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +20,8 @@ from harness.dialogue import (AgentHandle, DialogueError, DialogueRunner, DyadSp
                               expected_new_tokens)
 from harness.log import JsonlWriter, ManifestMismatch, RunPaths, now_iso, read_jsonl, run_paths
 from harness.study import StudyMismatch
-from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE, SCOPES,
+from harness.scorer import (FLAG_RULE, JUDGE_N_PREDICT, JUDGE_SYSTEM, JUDGE_TASKS, JUDGE_TEMPERATURE,
+                            JUDGE_TOP_P, SCOPES,
                             Scorer, cross_judge_agreement, declared_family, flag_dialogues, is_control,
                             latest_complete_attempts, model_family)
 from harness.survey import (SURVEY_N_PREDICT, SURVEY_TEMPERATURE, SurveyError, SurveyRunner,
@@ -1385,7 +1386,8 @@ def write_judge_manifest(paths: RunPaths, entry: dict, scope: str, subsample: fl
     manifest.json: that file is written once when the run starts and is deliberately never rewritten, and
     scoring happens later -- often from a different harness commit and against a model the run never saw."""
     judge = dict(entry)      # entry already carries url, alias, model_path, both hashes, the template
-    judge.update({"scope": scope, "subsample": subsample, "temperature": JUDGE_TEMPERATURE, "n_predict": JUDGE_N_PREDICT,
+    judge.update({"scope": scope, "subsample": subsample, "temperature": JUDGE_TEMPERATURE,
+                  "top_p": JUDGE_TOP_P, "n_predict": JUDGE_N_PREDICT,
                   "samplers": samplers,
                   "judge_system": JUDGE_SYSTEM, "judge_tasks": JUDGE_TASKS,
                   "harness_commit": _git_commit(), "ts": now_iso()})
@@ -1444,12 +1446,22 @@ def _gpu() -> str | None:
 def _environment(cfg: dict) -> dict:
     """The software the prompts were built by. Every prompt in the study is rendered by jinja2, so a jinja2
     upgrade that changed whitespace handling would change every prompt; the version has to be in the record
-    even though `check`'s parity test would catch such a change before a run."""
+    even though `check`'s parity test would catch such a change before a run. numpy and pyyaml are what
+    gguf-py imports to read each GGUF's template; None when one is not installed."""
     gguf_py = cfg.get("gguf_py_path")
     return {"python": sys.version, "platform": platform.platform(), "jinja2": jinja2.__version__,
+            "numpy": _dist_version("numpy"), "pyyaml": _dist_version("pyyaml"),
             "harness_version": __version__, "gguf_py_path": gguf_py,
             "gguf_py_commit": _git(["rev-parse", "HEAD"], Path(gguf_py)) if gguf_py else None,
             "gpu": _gpu()}
+
+
+def _dist_version(name: str) -> str | None:
+    """An installed distribution's version, or None when it is not installed."""
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def _git_commit() -> str:
