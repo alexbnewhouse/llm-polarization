@@ -22,6 +22,14 @@ _NUMBER = r"-?\d+(?:\.\d+)?"
 _TOKEN = re.compile(rf"(?<![\w.])({_NUMBER})")
 _THINK_CLOSED = re.compile(r"<think>.*?</think>", re.DOTALL)
 _THINK_OPEN = re.compile(r"<think>.*\Z", re.DOTALL)
+# gpt-oss harmony: only the final channel is the answer; the analysis channel is reasoning.
+_HARMONY_FINAL = "<|channel|>final<|message|>"
+_HARMONY_END = re.compile(r"<\|(?:end|return|call)\|>.*\Z", re.DOTALL)
+# A JSON object inside free text: ```json fences, or an answer after the reasoning.
+_JSON_SPAN = re.compile(r"\{[^{}]*\}")
+# "answer", "my answer", "final answer", "final": the model naming its answer. The last one wins over any
+# number an earlier label pointed at ("I would never choose 5. My answer: 2").
+_ANSWER = re.compile(rf"\b(?:(?:(?:my|final)\s+)?answer|final)\b[^0-9\n]{{0,40}}?({_NUMBER})", re.IGNORECASE)
 # "4/5", "4 out of 5", "7/10": the denominator has to be the top of the scale.
 _FRACTION = re.compile(rf"({_NUMBER})\s*(?:/|out of)\s*(\d+)\b")
 # "3 or 4", "between 3 and 4", "3-4": two candidates the model declined to choose between.
@@ -48,10 +56,29 @@ def _as_int(token: str) -> int | None:
 
 
 def _strip_scale_restatement(text: str, lo: int, hi: int) -> str:
-    """Remove "1 to 5", "0-10", "1 (strongly disagree) to 5 (strongly agree)": a model restating the
-    scale before answering must not contribute two more candidates."""
+    """Remove "1 to 5", "0-10", "1 (strongly disagree) to 5 (strongly agree)", and a parenthesis that names
+    both ends of the scale ("(1 = disagree, 5 = agree)"): a model restating the scale before answering must
+    not contribute two more candidates."""
     pat = re.compile(rf"(?<![\w.]){lo}\b\s*(?:\([^)]*\)\s*)?(?:to|through|-|–|—)\s*{hi}\b(?:\s*\([^)]*\))?")
-    return pat.sub(" ", text)
+    text = pat.sub(" ", text)
+
+    def ends(m: re.Match) -> str:
+        nums = {_as_int(t) for t in _TOKEN.findall(m.group(0))}
+        return " " if {lo, hi} <= nums else m.group(0)
+    return re.sub(r"\([^()]*\)", ends, text)
+
+
+def _reply_body(text: str) -> str:
+    """The part of a reply that can hold its answer: the harmony final channel when there is harmony markup
+    (nothing, when there is no final channel), and without reasoning: every closed <think> block, the text
+    up to an unmatched </think> (a generation prompt that opened <think> itself), and an unclosed <think>."""
+    if "<|channel|>" in text or "<|message|>" in text:
+        text = text.rsplit(_HARMONY_FINAL, 1)[1] if _HARMONY_FINAL in text else ""
+        text = _HARMONY_END.sub("", text)
+    text = _THINK_CLOSED.sub("", text)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return _THINK_OPEN.sub("", text)
 
 
 def _json_answer(text: str) -> tuple[int | None, bool]:
@@ -68,10 +95,13 @@ def _json_answer(text: str) -> tuple[int | None, bool]:
 
 def parse_scale_answer(text: str, lo: int, hi: int) -> Parsed:
     """Parse one survey reply into an integer on [lo, hi]. The JSON-schema path first (`json`); then
-    free-text salvage: a fraction over the scale top or a labelled number (`labelled`), else the single
+    free-text salvage: a JSON object inside the text, the number after the last "answer" / "my answer" /
+    "final" marker, a fraction over the scale top or another labelled number (`labelled`), else the single
     in-range number in the reply (`bare`). Two in-range candidates with nothing to choose between them
     is `ambiguous`; a number that is only ever outside the scale is `out_of_range`; no number at all is
-    `none`. Text inside a <think> block, closed or not, is never an answer."""
+    `none`. Reasoning is never an answer: a <think> block, closed or not, the text before an unmatched
+    </think>, and a harmony analysis channel are dropped first (_reply_body). A parenthesis restating
+    the scale's two ends is dropped too."""
     if lo > hi:
         raise ValueError(f"scale min {lo} is above max {hi}")
     in_range = lambda v: lo <= v <= hi  # noqa: E731
@@ -80,8 +110,24 @@ def parse_scale_answer(text: str, lo: int, hi: int) -> Parsed:
     if found:
         return Parsed(v, "json") if in_range(v) else Parsed(None, "out_of_range")
 
-    body = _THINK_OPEN.sub("", _THINK_CLOSED.sub("", text))
+    body = _reply_body(text)
+    for span in reversed(_JSON_SPAN.findall(body)):
+        v, found = _json_answer(span)
+        if found:
+            return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
     body = _strip_scale_restatement(body, lo, hi)
+
+    marked = [m for m in _ANSWER.finditer(body) if m.group(1) is not None]
+    if marked:
+        m = marked[-1]
+        pair = _PAIR.match(body, m.start(1))
+        if pair:
+            a, b = _as_int(pair.group(1)), _as_int(pair.group(2))
+            if a is not None and b is not None and a != b and in_range(a) and in_range(b):
+                return Parsed(None, "ambiguous")
+        v = _as_int(m.group(1))
+        if v is not None:
+            return Parsed(v, "labelled") if in_range(v) else Parsed(None, "out_of_range")
 
     m = _FRACTION.search(body)
     if m and int(m.group(2)) == hi:

@@ -1,4 +1,5 @@
-"""The free-text-to-scale parser, run against 50 hand-written model responses (parser_cases.jsonl)."""
+"""The free-text-to-scale parser, run against 50 hand-written model responses and the red-team's four
+adversarial ones (parser_cases.jsonl)."""
 import json
 from pathlib import Path
 import pytest
@@ -13,10 +14,10 @@ def load_cases() -> list[dict]:
     return [json.loads(line) for line in CASES_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def test_fixture_holds_fifty_hand_written_responses():
+def test_fixture_holds_fifty_hand_written_responses_and_the_red_teams_four():
     cases = load_cases()
-    assert len(cases) == 50
-    assert len({c["text"] for c in cases}) == 50, "every hand-written response is distinct"
+    assert len(cases) == 54 and sum("red-team L1" in c["note"] for c in cases) == 4
+    assert len({c["text"] for c in cases}) == 54, "every hand-written response is distinct"
 
 
 def test_fixture_uses_only_declared_methods_and_null_iff_failure():
@@ -51,3 +52,13 @@ def test_scale_bounds_are_respected_not_assumed():
 
 def test_unclosed_thinking_block_is_not_an_answer():
     assert parse_scale_answer("<think>I would say 4", 1, 5) == Parsed(None, "none")
+
+
+def test_the_answer_marker_wins_and_reasoning_is_never_the_answer():
+    # Red-team L1, beyond the four fixture cases: an answer marker pointing at two numbers is still
+    # ambiguous, the last marker wins, and a harmony reply with no final channel has no answer.
+    assert parse_scale_answer("Answer: 3 or 4", 1, 5) == Parsed(None, "ambiguous")
+    assert parse_scale_answer("Answer: 3. Final answer: 4", 1, 5) == Parsed(4, "labelled")
+    assert parse_scale_answer("<|channel|>analysis<|message|>Rating 5<|end|>", 1, 5) == Parsed(None, "none")
+    assert parse_scale_answer("I'd say 3.\n<think>maybe 5</think>", 1, 5) == Parsed(3, "labelled")
+    assert parse_scale_answer("Answer: 9", 1, 5) == Parsed(None, "out_of_range")

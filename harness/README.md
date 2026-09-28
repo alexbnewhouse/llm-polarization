@@ -35,8 +35,11 @@ python -m pytest harness/tests -q                  # unit tests; HARNESS_LIVE_UR
 
 Survey replies are schema-constrained to `{"answer": <int>}`; `harness/parser.py` parses them and, when
 the schema was not honoured (a truncated reply, a server without grammar support), salvages the number
-from free text and labels the row's `answer_method` accordingly. Its 50 hand-written cases are
-`harness/tests/parser_cases.jsonl`.
+from free text and labels the row's `answer_method` accordingly. It drops reasoning first (a `<think>`
+block, the text before an unmatched `</think>`, a harmony analysis channel), prefers a JSON object in the
+text and then the number after the last "answer" / "my answer" / "final" marker, and ignores a parenthesis
+that restates both ends of the scale. Its 50 hand-written cases, and the red-team's four adversarial ones,
+are `harness/tests/parser_cases.jsonl`.
 
 The unconstrained check (the spec's "unconstrained run on a sample"; gap audit F12) asks the same items
 without the schema, so the salvage path's answers can be set against the constrained ones:
