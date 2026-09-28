@@ -124,13 +124,23 @@ Nothing errors when that breaks; the wave just runs thousands of times slower. T
 | `judge` | Only needed by `score`. Must be a third model: `score` refuses if the judge hash equals the seeker's or the mentor's, or if the judge is from the mentor's model family. |
 
 `concurrency`, `data_dir`, `gguf_py_path`, `cache_reuse_limit` and `grid` are operational: changing them
-and resuming the same `run_id` is allowed. What a resume actually compares — `RUN_AFFECTING_CONFIG` in
-`harness/log.py` — is exactly `seeker`, `mentor`, `judge`, `generation` (the whole block, so
-`generation.timeout` is compared too, even though it changes no prompt), `run_seed`, `batteries` and
-`now`; changing any of those means a new `run_id`. `batteries` is compared as a path, not by content: the
-file's sha256 is on every survey row, and `survey` (not `run`) refuses a file that no longer hashes to
-the manifest's. Separately from the config, a resume re-verifies each served model's and template's
-sha256 against `manifest.json`.
+and resuming the same `run_id` is allowed. What a `run` resume compares with `manifest.json` —
+`RESUME_COMPARES` in `harness/run.py`, recorded in the manifest as `resume_compares` — is:
+
+- the run-affecting config, `RUN_AFFECTING_CONFIG` in `harness/log.py`: `seeker`, `mentor`, `judge`,
+  `generation` (the whole block, so `generation.timeout` is compared too, even though it changes no
+  prompt), `run_seed`, `batteries` (as a path) and `now`;
+- the `batteries` file's sha256, so an instrument edited in place is refused;
+- every input dyad row, per `dyad_id`, against the copy of the input manifest the run started with
+  (`data/<run_id>/input-dyads.jsonl`): `condition`, `persona_text`, `persona_reminder`, `persona_mode`,
+  `seed`, `n_turns`. A dyad added to the input manifest is refused; a dyad dropped from it is not (a
+  descope is a subset);
+- each served model's sha256, its template's sha256, and its llama.cpp `build_info`;
+- the harness commit, and whether the tree was dirty: a dirty tree resumes only with the same
+  uncommitted diff under `harness/` and `instruments/` (`harness_diff_sha256`), and a git state that
+  cannot be read refuses.
+
+Any difference refuses with one `error:` line naming everything that changed; use a new `run_id`.
 
 ## Retries, attempts and which rows count
 

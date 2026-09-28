@@ -607,3 +607,72 @@ def test_grid_defaults_to_the_repos_grid_and_null_disables_the_gate(tmp_path):
     cfg = R.load_config(write_cfg(tmp_path))
     assert cfg["grid"] is None                                  # write_cfg opts the unit tests out
     assert Path(R.DEFAULT_CONFIG["grid"]) == REPO / "prompts" / "grid.json"
+
+
+def test_resume_compares_instrument_input_rows_build_and_commit(tmp_path, monkeypatch, capsys):
+    # Red-team H2/M1, parallelism M4, gap audit F8: a resume that changes any of these would mix two
+    # instruments, two stimulus sets, two builds or two versions of the code under one manifest.json.
+    _fake_servers(tmp_path, monkeypatch)
+    bat = tmp_path / "batteries.json"; bat.write_text((REPO / "instruments" / "batteries.json").read_text())
+    cfg = write_cfg(tmp_path, batteries=str(bat))
+    rows = manifest_rows(2)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    monkeypatch.setattr(R, "run_dyad", lambda slot, spec, attempt, ctx: "failed")      # leaves work to resume
+    run = lambda m=man, c=cfg: R.main(["run", "--config", str(c), "--manifest", str(m), "--run-id", "r1"])
+    assert run() == 2
+    paths = log.run_paths(tmp_path / "data", "r1")
+    mf = json.loads(paths.manifest.read_text())
+    assert mf["resume_compares"] == R.RESUME_COMPARES and "harness_diff_sha256" in mf
+    assert log.sha256_file(paths.input_dyads) == mf["input_manifest"]["sha256"]
+    assert run() == 2                                                   # nothing changed: resumes
+    capsys.readouterr()
+
+    def refused(expect, m=man, c=cfg):
+        assert run(m, c) == 1
+        err = capsys.readouterr().err
+        assert expect in err and "not resuming" in err and err.count("\n") == 1, err
+    # the instrument edited in place, at the same path
+    original = bat.read_text()
+    edited = json.loads(original); edited["items"][0]["text"] += " (reworded)"
+    bat.write_text(json.dumps(edited))
+    refused("now hashes to")
+    bat.write_text(original)
+    # a dyad row edited, and a dyad added; dropping one (a descope) is allowed
+    other = tmp_path / "other.jsonl"
+    changed = manifest_rows(2); changed[1]["persona_text"] = "EDITED"; changed[0]["n_turns"] = 3
+    other.write_text("".join(json.dumps(r) + "\n" for r in changed))
+    refused("d0 (n_turns), d1 (persona_text)", m=other)
+    other.write_text("".join(json.dumps(r) + "\n" for r in manifest_rows(3)))
+    refused("dyad_ids not in the input manifest this run started with: d2", m=other)
+    other.write_text(json.dumps(rows[0]) + "\n")
+    assert run(other) == 2
+    # a server restarted on another llama.cpp build
+    factory = R.LlamaClient
+    def rebuilt(url, timeout=None):
+        c = factory(url, timeout)
+        c.props = (lambda p: lambda: {**p, "build_info": "b2"})(c.props())
+        return c
+    monkeypatch.setattr(R, "LlamaClient", rebuilt)
+    refused("seeker.build_info is now 'b2', manifest.json records 'b'")
+    monkeypatch.setattr(R, "LlamaClient", factory)
+    # another harness commit; uncommitted changes that differ; a git state that cannot be read
+    real_commit = R._git_commit()
+    monkeypatch.setattr(R, "_git_commit", lambda: "0" * 40)
+    refused("harness_commit is now 000000000000")
+    monkeypatch.setattr(R, "_git_commit", lambda: real_commit)
+    was_dirty = R._git_dirty()
+    monkeypatch.setattr(R, "_git_dirty", lambda: True)
+    monkeypatch.setattr(R, "_git_diff_sha256", lambda: "f" * 64)
+    refused("uncommitted changes")
+    monkeypatch.setattr(R, "_git_dirty", lambda: None)
+    refused("cannot be confirmed unchanged")
+    # an operational key is not compared
+    monkeypatch.setattr(R, "_git_dirty", lambda: was_dirty)
+    monkeypatch.setattr(R, "_git_diff_sha256", lambda: mf["harness_diff_sha256"])
+    assert run(man, write_cfg(tmp_path, batteries=str(bat), concurrency=1)) == 2
+
+
+def test_git_dirty_is_unknown_not_clean_when_git_cannot_answer(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "HARNESS_DIR", tmp_path)               # not a git repository
+    assert R._git_dirty() is None and R._git_diff_sha256() is None

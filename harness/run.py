@@ -5,7 +5,7 @@ dialogues, and report cross-judge agreement.
 
 Usage and exit codes: harness/README.md. What each subcommand writes: data/README.md."""
 from __future__ import annotations
-import argparse, copy, json, os, platform, sys, threading
+import argparse, copy, json, os, platform, shutil, sys, threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -360,17 +360,101 @@ def _load_manifest(paths: RunPaths) -> dict:
     return json.loads(paths.manifest.read_text(encoding="utf-8"))
 
 
-def _verify_identity(existing: dict, entries: dict, roles=(SEEKER, MENTOR)) -> None:
-    """Refuse to add rows to a run whose models are no longer the ones its manifest records. A GGUF
-    re-quantized at the same path, a server restarted on another model, or a llama.cpp upgrade that changed
-    the served template would otherwise be accepted in silence, and only the rows -- never the manifest --
-    would carry the evidence."""
+IDENTITY_KEYS = ("model_sha256", "template_sha256", "build_info")
+# The treatment fields of a dyad row. A resume compares them, per dyad_id, with the copy of the input
+# manifest the run started with.
+DYAD_FIELDS = ("condition", "persona_text", "persona_reminder", "persona_mode", "seed", "n_turns")
+# What a `run` resume compares with manifest.json, recorded there as `resume_compares`. Any difference
+# refuses the resume and names what changed. The operational config keys are not in it.
+RESUME_COMPARES = {"config": list(log.RUN_AFFECTING_CONFIG), "batteries": ["sha256"],
+                   "input_dyads": list(DYAD_FIELDS), SEEKER: list(IDENTITY_KEYS), MENTOR: list(IDENTITY_KEYS),
+                   "harness": ["harness_commit", "harness_dirty", "harness_diff_sha256"]}
+
+
+def _short(key: str, value) -> str:
+    """A value for an error line: hashes cut to 12 characters, anything else as it is."""
+    return str(value)[:12] if key.endswith("sha256") or key == "harness_commit" else repr(value)
+
+
+def _identity_changes(existing: dict, entries: dict, roles) -> list[str]:
+    """One line per model, template or llama.cpp build that differs from what manifest.json records."""
+    out = []
     for role in roles:
         was, now = existing.get(role) or {}, entries[role]
-        for key in ("model_sha256", "template_sha256"):
-            if was.get(key) and was[key] != now[key]:
-                raise ManifestMismatch(f"{role}.{key} is now {now[key][:12]} but manifest.json records "
-                                       f"{was[key][:12]}; use a new run_id")
+        for key in IDENTITY_KEYS:
+            if key in was and was[key] != now.get(key):
+                out.append(f"{role}.{key} is now {_short(key, now.get(key))}, manifest.json records "
+                           f"{_short(key, was[key])}")
+    return out
+
+
+def _verify_identity(existing: dict, entries: dict, roles=(SEEKER, MENTOR)) -> None:
+    """Refuse to add rows to a run whose models are no longer the ones its manifest records. A GGUF
+    re-quantized at the same path, a server restarted on another model or another llama.cpp build, or an
+    upgrade that changed the served template would otherwise be accepted in silence, and only the rows --
+    never the manifest -- would carry the evidence."""
+    changes = _identity_changes(existing, entries, roles)
+    if changes:
+        raise ManifestMismatch("; ".join(changes) + "; use a new run_id")
+
+
+def _dyad_fields(row: dict) -> dict:
+    """The treatment fields of one dyad row, with the defaults DyadSpec.from_row applies."""
+    return {"condition": dict(row.get("condition") or {}), "persona_text": row.get("persona_text"),
+            "persona_reminder": row.get("persona_reminder") or "",
+            "persona_mode": row.get("persona_mode", "reinforced"), "seed": row.get("seed"),
+            "n_turns": row.get("n_turns")}
+
+
+def _few(names: list[str], n: int = 5) -> str:
+    """The first n names, and how many more there are."""
+    return ", ".join(names[:n]) + (f" and {len(names) - n} more" if len(names) > n else "")
+
+
+def resume_changes(existing: dict, live: dict, rows: list[dict], paths: RunPaths) -> list[str]:
+    """What a resume would change about the run manifest.json describes, one line each; empty when it is
+    the same run. `live` is the manifest this invocation would write, `rows` the input dyad manifest. The
+    list of what is compared is RESUME_COMPARES. A dyad dropped from the input manifest is allowed (a
+    descope is a subset); a changed or added one is not."""
+    was_cfg, now_cfg = log.run_affecting(existing.get("config")), log.run_affecting(live["config"])
+    changes = [f"config.{k} differs" for k in log.RUN_AFFECTING_CONFIG if was_cfg[k] != now_cfg[k]]
+    was_b, now_b = (existing.get("batteries") or {}).get("sha256"), live["batteries"]["sha256"]
+    if was_b != now_b:
+        changes.append(f"{live['batteries']['path']} now hashes to {_short('sha256', now_b)}, manifest.json "
+                       f"records {_short('sha256', was_b)}")
+    changes += _identity_changes(existing, live, (SEEKER, MENTOR))
+    if existing.get("harness_commit") != live["harness_commit"]:
+        was_c, now_c = existing.get("harness_commit"), live["harness_commit"]
+        changes.append(f"harness_commit is now {_short('harness_commit', now_c)}, manifest.json records "
+                       f"{_short('harness_commit', was_c)}")
+    if existing.get("harness_dirty") is None or live["harness_dirty"] is None:
+        changes.append("git cannot say whether harness/ and instruments/ have uncommitted changes, so the "
+                       "code cannot be confirmed unchanged")
+    elif (existing.get("harness_dirty"), existing.get("harness_diff_sha256")) != \
+            (live["harness_dirty"], live["harness_diff_sha256"]):
+        changes.append("the uncommitted changes under harness/ and instruments/ differ from the ones this "
+                       "run started with")
+    # The input copy is what the run started with. A run started before the copy existed falls back to
+    # dyads.jsonl, which holds only the dyads that have started, so an added dyad cannot be told there.
+    copied = paths.input_dyads.exists()
+    recorded: dict[str, dict] = {}
+    for r in read_jsonl(paths.input_dyads if copied else paths.dyads):
+        recorded.setdefault(r["dyad_id"], _dyad_fields(r))
+    changed, added = [], []
+    for r in rows:
+        was = recorded.get(r["dyad_id"])
+        if was is None:
+            added.append(str(r["dyad_id"]))
+            continue
+        now = _dyad_fields(r)
+        diff = [f for f in DYAD_FIELDS if was[f] != now[f]]
+        if diff:
+            changed.append(f"{r['dyad_id']} ({', '.join(diff)})")
+    if changed:
+        changes.append(f"input dyad rows changed: {_few(changed)}")
+    if added and copied:
+        changes.append(f"dyad_ids not in the input manifest this run started with: {_few(added)}")
+    return changes
 
 
 def _rebuild_transcript(dyad_row: dict, turn_rows: list[dict]) -> Transcript:
@@ -407,21 +491,32 @@ def cmd_run(cfg: dict, manifest_path: str, run_id: str) -> int:
         print("error: cannot read this repository's git commit; a run with unknown provenance is refused",
               file=sys.stderr)
         return 1
+    dirty = _git_dirty()
     manifest = {"run_id": run_id, "started_at": now_iso(), "harness_commit": commit,
-                "harness_dirty": _git_dirty(), "config": cfg,
-                "input_manifest": _file_provenance(manifest_path), "batteries": _batteries_provenance(cfg),
+                "harness_dirty": dirty, "harness_diff_sha256": _git_diff_sha256() if dirty else None,
+                "config": cfg, "input_manifest": _file_provenance(manifest_path),
+                "batteries": _batteries_provenance(cfg), "resume_compares": RESUME_COMPARES,
                 "environment": _environment(cfg), "seeker": s_entry, "mentor": m_entry}
-    if manifest["harness_dirty"]:
+    if dirty:
         print("WARN the working tree has uncommitted changes; manifest.harness_dirty is true")
+    elif dirty is None:
+        print("WARN git cannot say whether the tree is clean; manifest.harness_dirty is null")
+    rows = read_jsonl(Path(manifest_path))
     if paths.manifest.exists():
-        # Resuming: the config matching is not enough. Re-verify that the servers are still serving the
-        # models and templates this run started with.
-        _verify_identity(_load_manifest(paths), {SEEKER: s_entry, MENTOR: m_entry})
+        # Resuming: the config matching is not enough. Everything in RESUME_COMPARES -- the instrument's
+        # content, the input dyad rows, the served models, templates and builds, the harness code -- must be
+        # what this run started with, or its rows would mix two of something under one manifest.
+        changes = resume_changes(_load_manifest(paths), manifest, rows, paths)
+        if changes:
+            raise ManifestMismatch(f"{paths.manifest}: not resuming, changed since this run started: "
+                                   + "; ".join(changes) + ". Use a new run_id")
+    else:
+        # The input manifest as the run started with it, so a resume can compare dyad rows field by field.
+        shutil.copyfile(manifest_path, paths.input_dyads)
     log.write_manifest(paths, manifest)
     # concurrency: null in the config means "one dialogue per slot, limited by the smaller server".
     server_slots = min(int(s_entry["total_slots"] or 1), int(m_entry["total_slots"] or 1))
     concurrency = cfg["concurrency"] or server_slots
-    rows = read_jsonl(Path(manifest_path))
     work = plan_work(rows, read_jsonl(paths.status))
     print(f"run {run_id}: {len(work)} of {len(rows)} dyads to run, concurrency {concurrency}")
     if not work:
@@ -680,14 +775,22 @@ def _git_commit() -> str:
     return _git(["rev-parse", "HEAD"], HARNESS_DIR) or ""
 
 
-def _git_dirty() -> bool:
+def _git_dirty() -> bool | None:
     """True when tracked files under harness/ or instruments/ have uncommitted modifications, so
-    harness_commit does not fully describe the code (or instrument) that ran. Recorded, not refused: the
-    pilot may legitimately run from a dirty tree. Untracked files are not considered: every run writes its
-    own un-ignored data/<run_id>/manifest.json, and a plain `git status --porcelain` would flag that as
-    dirt on essentially every run. Run output under data/ is not scoped in at all, tracked or not."""
+    harness_commit does not fully describe the code (or instrument) that ran; None when git cannot say,
+    which is not the same as clean. Recorded, not refused: the pilot may legitimately run from a dirty
+    tree. Untracked files are not considered: every run writes its own un-ignored
+    data/<run_id>/manifest.json, and a plain `git status --porcelain` would flag that as dirt on
+    essentially every run. Run output under data/ is not scoped in at all, tracked or not."""
     out = _git(["status", "--porcelain", "--untracked-files=no", "--", "harness", "instruments"], HARNESS_DIR)
-    return bool(out)
+    return None if out is None else bool(out)
+
+
+def _git_diff_sha256() -> str | None:
+    """sha256 of the uncommitted diff under harness/ and instruments/, so a resume from a dirty tree can
+    tell the same uncommitted code from different uncommitted code. None when git cannot say."""
+    out = _git(["diff", "HEAD", "--", "harness", "instruments"], HARNESS_DIR)
+    return None if out is None else log.sha256_text(out)
 
 
 def _file_provenance(path: str | Path) -> dict:

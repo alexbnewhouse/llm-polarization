@@ -14,6 +14,7 @@ serve, and how to reproduce one dialogue from them, is `docs/REPRODUCIBILITY.md`
 ```
 data/<run_id>/
   manifest.json        written once when the run starts; never rewritten
+  input-dyads.jsonl    the input dyad manifest, copied verbatim when the run starts; never rewritten
   judge-<sha12>.json   written by `score`, one per judge model (and scoring pass)
   dyads.jsonl          one row per dyad attempt: the treatment
   status.jsonl         the run's ledger; resume and analysis both read it
@@ -27,9 +28,12 @@ data/<run_id>/
 
 ## `manifest.json`
 
-`run_id`, `started_at`, `harness_commit`, `harness_dirty` (was the tree clean?), `config` (the whole
+`run_id`, `started_at`, `harness_commit`, `harness_dirty` (were tracked files under `harness/` or
+`instruments/` modified? null when git could not say, which is not the same as clean),
+`harness_diff_sha256` (sha256 of that uncommitted diff, or null when clean), `config` (the whole
 config as merged onto the defaults), `input_manifest` `{path, sha256}`, `batteries`
-`{path, sha256, n_items, item_ids}`, `environment`
+`{path, sha256, n_items, item_ids}`, `resume_compares` (what a resume compares with this file and
+refuses on: `harness/README.md`, "What the config fields mean"), `environment`
 `{python, platform, jinja2, harness_version, gguf_py_path, gguf_py_commit, gpu}`, and one block each for
 `seeker` and `mentor`:
 
@@ -39,6 +43,12 @@ name or alias, or null when unrecognised; `score` refuses a judge from the mento
 `build_info` (the llama.cpp build and commit), `model_ftype`, `total_slots`,
 `default_generation_settings` (the server's own sampler defaults — `top_k`, `min_p` and the penalties
 that the harness never sets).
+
+## `input-dyads.jsonl`
+
+The input dyad manifest the run started with (`--manifest`), byte for byte; its sha256 is
+`manifest.json` → `input_manifest.sha256`. A resume compares each dyad row with it and refuses a changed
+or added dyad.
 
 ## `judge-<sha12>.json`
 

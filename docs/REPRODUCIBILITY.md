@@ -29,9 +29,9 @@ list before you archive it. If an item is false, the run is still usable — but
 | 7 | The software environment is recorded: Python, jinja2, gguf-py, OS. | `manifest.json` → `environment` (`python`, `platform`, `jinja2`, `harness_version`, `gguf_py_path`, `gguf_py_commit`). `harness/requirements.lock` pins the development environment. |
 | 8 | The llama.cpp build and commit are recorded. | `manifest.json` → `build_info`, from the server's `/props`. |
 | 9 | The server's flags, backend and GPU are recorded. | `build_info`, `total_slots`, `model_ftype` and `default_generation_settings` from `/props`, and `environment.gpu` (nvidia-smi / rocm-smi / `/sys/class/drm`). The exact `llama-server` command line is **(open)**: it is not in the manifest, and the operating point in `models/RUN_APPROACH.md` is the intended configuration. Say in the appendix that you took the flags from there. |
-| 10 | The harness's own git commit is recorded, and the tree was clean. | `manifest.json` → `harness_commit` (read in the harness's own directory) and `harness_dirty`. A run refuses to start when the commit cannot be read, and prints a WARN when the tree is dirty. `scores.jsonl` rows carry the commit that scored them, which is often a later one. |
+| 10 | The harness's own git commit is recorded, and the tree was clean. | `manifest.json` → `harness_commit` (read in the harness's own directory), `harness_dirty` (null when git could not say) and `harness_diff_sha256`. A run refuses to start when the commit cannot be read, and prints a WARN when the tree is dirty or its state unknown. A resume from another commit, another uncommitted diff or an unreadable git state is refused, so every row of a run comes from the recorded code. `scores.jsonl` rows carry the commit that scored them, which is often a later one. |
 | 11 | The run manifest is sufficient to re-run any single dialogue. | Yes. See section 4. |
-| 12 | The survey items and their version are recorded with the run. | `manifest.json` → `batteries` `{path, sha256, n_items, item_ids}`; `batteries_sha256` on every `surveys.jsonl` row; `version` and `adapted` inside `instruments/batteries.json`, which is committed. The wording is recoverable by checking out the commit whose file hashes to `batteries.sha256`. |
+| 12 | The survey items and their version are recorded with the run. | `manifest.json` → `batteries` `{path, sha256, n_items, item_ids}`, and a resume refuses a file that no longer hashes to it; `batteries_sha256` on every `surveys.jsonl` row; `version` and `adapted` inside `instruments/batteries.json`, which is committed. The wording is recoverable by checking out the commit whose file hashes to `batteries.sha256`. |
 | 13 | The judge model and the judge prompt are recorded. | `judge-<sha>.json`: model path and hash, template hash and source, build info, scope, `temperature`, `n_predict`, and the judge prompt text (`judge_system`, `judge_tasks`) verbatim. Plus `judge_sha256`, `judge_prompt_sha256` and `harness_commit` on every `scores.jsonl` row. |
 | 14 | There is a clear statement of what is archived where. | Section 3 below. The archive record itself is written by hand (section 3, step 4). |
 | 15 | A stranger can follow a written procedure to reproduce one dialogue from its rows. | Section 4 below. |
@@ -43,15 +43,18 @@ list before you archive it. If an item is false, the run is still usable — but
 ## 2. What every run records, and where
 
 Output goes to `data/<run_id>/`. `run_id` is chosen on the command line and never reused for a different
-configuration — the harness refuses to overwrite a manifest whose run-affecting config differs
-(`seeker`, `mentor`, `judge`, `generation`, `run_seed`, `batteries`, `now`). `concurrency`, `data_dir`,
-`gguf_py_path`, `cache_reuse_limit` and `grid` are operational and may change on a resume.
+configuration — a resume refuses when the run-affecting config differs (`seeker`, `mentor`, `judge`,
+`generation`, `run_seed`, `batteries`, `now`), and equally when the instrument's content, an input dyad
+row, a served model, template or llama.cpp build, or the harness code differs from what `manifest.json`
+records (`manifest.json` → `resume_compares`). `concurrency`, `data_dir`, `gguf_py_path`,
+`cache_reuse_limit` and `grid` are operational and may change on a resume.
 
 The field-by-field data dictionary is `data/README.md`, derived from the code. In outline:
 
 | File | One row per | Carries |
 |---|---|---|
-| `manifest.json` | (one object, written once) | run identity, harness commit and dirtiness, the whole config, input-manifest hash, instrument hash and item ids, environment, and per role: model path/hash, template hash **and source**, the served template, build info, slots, server defaults |
+| `manifest.json` | (one object, written once) | run identity, harness commit and dirtiness, the whole config, input-manifest hash, instrument hash and item ids, what a resume compares, environment, and per role: model path/hash, template hash **and source**, the served template, build info, slots, server defaults |
+| `input-dyads.jsonl` | input dyad (copied once) | the `--manifest` file as the run started with it; a resume compares its rows |
 | `judge-<sha12>.json` | scoring pass | the judge's model, template and prompt text, its sampling settings, the scope, and the commit that scored |
 | `dyads.jsonl` | dyad attempt | the treatment: condition, persona text in full, reminder, mode, per-dyad seed, `n_turns` |
 | `turns.jsonl` | message | model hash, slot, sampling, prompt hash, seed, the generation, cache accounting, context accounting, timings |
@@ -66,8 +69,9 @@ sha256 no longer matches `manifest.json` → `batteries.sha256`: a changed instr
 measurement, and mixing its rows under the same battery/item ids as the original pass would be silently
 wrong. Use a new `run_id` against the new instrument instead.
 
-If you re-run the same `run_id` with a changed run-affecting config, or against a model or template whose
-hash differs from the manifest's, the harness stops with a `ManifestMismatch` rather than writing over or
+If you re-run the same `run_id` with a changed run-affecting config, a changed instrument or input dyad
+row, against a model, template or llama.cpp build that differs from the manifest's, or from different
+harness code, the harness stops with a `ManifestMismatch` naming what changed rather than writing over or
 into the record. Use a new `run_id`.
 
 ---
@@ -87,8 +91,9 @@ bulk experiment output out.
 provenance record for a wave. Commit them when the run finishes. A reader who has only the repository
 can then say exactly what was run.
 
-**Tier 3 — NAS or Dropbox, never git.** The row files themselves — `dyads.jsonl`, `turns.jsonl`,
-`surveys.jsonl`, `scores.jsonl`, `status.jsonl` — and the GGUF files for every model in the arm.
+**Tier 3 — NAS or Dropbox, never git.** The row files themselves — `input-dyads.jsonl`, `dyads.jsonl`,
+`turns.jsonl`, `surveys.jsonl`, `scores.jsonl`, `status.jsonl` — and the GGUF files for every model in the
+arm.
 
 The archival step, in order:
 

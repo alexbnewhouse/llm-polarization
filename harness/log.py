@@ -16,6 +16,7 @@ class RunPaths:
     surveys: Path
     scores: Path
     flags: Path
+    input_dyads: Path       # a verbatim copy of the input dyad manifest, written when the run starts
 
 
 def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
@@ -23,7 +24,8 @@ def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
     root = Path(data_dir) / run_id
     root.mkdir(parents=True, exist_ok=True)
     return RunPaths(root, root / "manifest.json", root / "dyads.jsonl", root / "status.jsonl",
-                    root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl", root / "flags.jsonl")
+                    root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl", root / "flags.jsonl",
+                    root / "input-dyads.jsonl")
 
 
 class JsonlWriter:
@@ -90,7 +92,8 @@ class ManifestMismatch(Exception):
 # The config keys that decide what a run produces. Everything else in the config -- concurrency,
 # data_dir, gguf_py_path, cache_reuse_limit, grid -- is operational: dropping concurrency after an OOM
 # and resuming the same run_id must not be refused, because the alternative is fragmenting one wave's
-# data across two run ids. `batteries` is compared as a path; its content hash is checked by `survey`.
+# data across two run ids. `batteries` is compared as a path here; `run` and `survey` also compare its
+# content hash (harness/run.py resume_changes).
 RUN_AFFECTING_CONFIG = ("seeker", "mentor", "judge", "generation", "run_seed", "batteries", "now")
 
 
