@@ -18,7 +18,7 @@ data/<run_id>/
   manifest.json        written once when the run starts; only `run --allow-code-change` appends to it
   input-dyads.jsonl    the input dyad manifest, copied verbatim when the run starts; never rewritten
   assignment.json      the randomizer's assignment log for that manifest, copied beside it (if it has one)
-  judge-<sha12>.json   written by `score`, one per judge model (and scoring pass)
+  judge-<sha12>.json   written by `score`, one per judge and scoring pass (then -<scope>, -<scope>-<n>)
   dyads.jsonl          one row per dyad attempt: the treatment
   status.jsonl         the run's ledger; resume and analysis both read it
   turns.jsonl          one row per message (2 per turn)
@@ -26,6 +26,8 @@ data/<run_id>/
   scores.jsonl         one row per (turn, agent, metric, judge), written by `score`
   flags.jsonl          one row per scored, complete dyad, written (replaced) by `flags`
   baseline.jsonl       one row per item per administration, written by `baseline` (a baseline run only)
+  .lock, .score.lock   held while `run`/`survey`/`baseline`, or `score`, works on the run
+  <name>.torn-<time>   a copy kept by `--repair-torn-line` before it dropped a cut-off last line
 ```
 
 Every row is one line, flushed and fsynced as it is written. A line cut off by a crash stops the next
@@ -160,10 +162,11 @@ Rows written before `top_p` and `schema` existed were schema-constrained at top_
 ## `baseline.jsonl` — one row per item per administration, written by `baseline`
 
 A baseline run has no dialogue: `manifest.json` has `kind: "baseline"`, the fields above except
-`input_manifest`, `grid` and the `seeker` block, and a `baseline` block `{phase, k, temperature, top_p,
-n_predict, schema}`; `resume_compares` is what a re-run refuses on. Each row is a `surveys.jsonl` row with
-`origin: "baseline"`, `phase: "pre"`, `attempt` 1, `dyad_id` `baseline-<i>` and `administration` i (1 to
-`k`). The seed is `derive_seed(run_seed, i, "baseline-<i>", 1, 0, "survey:pre:<item_id>")`, so every
+`input_manifest`, `grid`, `check` and the `seeker` block, and a `baseline` block `{phase, k, temperature,
+top_p, n_predict, schema}`; `resume_compares` is what a re-run refuses on. Each row is a `surveys.jsonl` row with
+`origin: "baseline"`, `phase: "pre"`, `attempt` 1, `dyad_id` `baseline-<i>` with i zero-padded to four
+digits (`baseline-0001`), and `administration` i (1 to `k`). The seed is
+`derive_seed(run_seed, i, "baseline-<i>", 1, 0, "survey:pre:<item_id>")`, so every
 administration of every item has its own. The prompt is the pre-survey's: the item alone, no system
 prompt.
 

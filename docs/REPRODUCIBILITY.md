@@ -2,7 +2,9 @@
 
 Standard of record, first written 2026-09-08 for the fix wave on `feat/dyad-harness`, and kept in step
 with the harness since (the KV-cache reuse assertion, the grid gate, the randomizer, the flag rule and
-the survey parser, all 2026-09-14 to 2026-09-16). The "Deferred" list at the end is the fix wave's.
+the survey parser, all 2026-09-14 to 2026-09-16; the 2026-09-28 remediation of the audits in
+`docs/audit/`). The "Deferred" list at the end is the fix wave's, updated where the remediation changed
+an item.
 
 This is the standard every run of this study is held to, what each run records and where, how to
 reproduce one dialogue from its logged rows, what is genuinely not reproducible and why, and the
@@ -61,6 +63,7 @@ The field-by-field data dictionary is `data/README.md`, derived from the code. I
 |---|---|---|
 | `manifest.json` | (one object, written once) | run identity, harness commit and dirtiness, the whole config, input-manifest hash, instrument hash and item ids, what a resume compares, environment, and per role: model path/hash, template hash **and source**, the served template, build info, slots, server defaults |
 | `input-dyads.jsonl` | input dyad (copied once) | the `--manifest` file as the run started with it; a resume compares its rows |
+| `assignment.json` | (one object, copied once) | the randomizer's assignment log for that manifest, or a subset's record of its parent and filter |
 | `judge-<sha12>.json` | scoring pass | the judge's model, template and prompt text, its sampling settings, the scope, and the commit that scored |
 | `dyads.jsonl` | dyad attempt | the treatment: condition, persona text in full, reminder, mode, per-dyad seed, `n_turns` |
 | `turns.jsonl` | message | model hash, slot, sampling, prompt hash, seed, the generation, cache accounting, context accounting, timings |
@@ -236,10 +239,19 @@ lost or unexpected cache is visible as data. Report the `cache_warning` rate. A 
 also prefills more than `cache_reuse_limit` tokens fails the dyad (`CacheReuseLost`), so a systematic
 loss stops a wave at the second turn of every dyad instead of being found in the rows afterwards.
 
-**2. Continuous batching across slots.** Eight dialogues share one `llama-server`. Which requests land in
-the same batch depends on timing, and that changes the order of floating-point reductions, which can
-change a token. *How it is handled:* it is not eliminated, and it cannot be without giving up eight-way
-concurrency and the compute budget with it. It is declared.
+**2. Continuous batching across slots.** Up to eight dialogues run at once (`concurrency`, at most the
+smaller server's slot count), across two servers: a dyad is on the seeker's server or the mentor's at any
+moment, never both, so each server batches the dialogues on its side at that moment, about four on
+average (parallelism review M2), plus the mentor's survey requests. Which requests land in the same batch
+depends on timing, and that changes the order of floating-point reductions, which can change a token.
+*How it is handled:* it is not eliminated, and it cannot be without giving up concurrency and the compute
+budget with it. It is declared. What the rows let you audit about it: every `turns.jsonl` row records the
+slot the harness requested (`id_slot`), `prompt_n`, `predicted_n`, `tokens_cached`, `tokens_evaluated`,
+`truncated`, the server's full `timings`, and `ts`, the local time the reply came back, to the second.
+`surveys.jsonl` rows record `id_slot`, `prompt_n`, `predicted_n`, `truncated` and `finish_reason`, and
+`scores.jsonl` rows only `id_slot`. No row records the slot the server actually used, when the request was
+sent, or how many requests were in flight on that server, so batch membership cannot be reconstructed
+from the rows (parallelism review L2).
 
 **3. Which slot a dialogue gets.** Slots are handed out from a pool as workers free up, so a given dyad
 does not get the same slot on a second run, and the slot determines which cache it reuses. *How it is
@@ -268,12 +280,19 @@ starts a queued one; `run` then exits 130. The stopped dyads have no `status` ro
 run by the next `run` with the same `run_id`, as attempt 1. A second Ctrl-C reports how many dyads are
 still in flight; a third abandons them: each gets a `failed` row with reason `abandoned`, and the next
 `run` retries it as a new attempt. Report abandoned attempts apart from other failures, since an operator
-chose them. Nothing is half-written, because a dyad
-writes its `complete` row only after its post-survey, and every row is flushed and fsynced before the next
-is written, so a `complete` row is never on disk without the rows it vouches for. A crash, a kill or a
-full disk can still cut off the last line of a file; every reader then names the file and line, nothing
-is appended after it, and `run`, `survey` or `score` with `--repair-torn-line` copies the file to
-`<name>.torn-<time>` and drops that one line (or adds its newline, when it is a whole row).
+chose them; an abandoned attempt keeps the rows it wrote, and analysis never uses them, since it is not
+complete.
+
+What a stop leaves on disk. Each row is written as one whole line, flushed and fsynced before the write
+returns (`harness/log.py`, `JsonlWriter`), and a dyad writes its `complete` row only after its
+post-survey rows, from the same thread, so a `complete` row is never on disk without the rows it vouches
+for. (The directory is not fsynced, so a file created moments before a power loss is the one case this
+does not cover.) What can still happen is a cut-off last line: a crash, a `kill -9`, a power loss or a
+full disk in the middle of a write. Every reader then names the file and the line, the
+writer refuses to append after it, and `run`, `survey`, `baseline` or `score` with `--repair-torn-line`
+copies the file to `<name>.torn-<time>` and drops that one line (or adds its newline, when it is a whole
+row). `score` reads the files a live `run` is appending to and skips an unterminated last line there as
+a row still being written.
 
 **8. Scoring is idempotent, with one asymmetry to declare.** `score` skips any (dyad, attempt, turn,
 agent, metric) that already has a row from that judge, in that scope, without an `error`. A row whose
@@ -299,13 +318,15 @@ so anything still open is closed before the last wave rather than after.
 
 **The repository**
 
-- [ ] `LICENSE` exists at the root.
-- [ ] `CITATION.cff` exists at the root, with the ORCID filled in.
+- [x] `LICENSE` exists at the root.
+- [ ] `CITATION.cff` exists at the root, with the ORCID filled in. (It exists; the ORCID is a commented
+      slot to fill.)
 - [ ] `README.md` says which commit produced the results in the paper.
 - [ ] Every run's `manifest.json` and `judge-*.json` are committed.
 - [ ] `data/README.md` still describes the files the harness actually writes.
-- [ ] The final `instruments/batteries.json` carries a bumped `version` and `adapted: true`, and every
-      run records the sha256 of the file it used.
+- [x] The final `instruments/batteries.json` carries a bumped `version` and `adapted: true`, and every
+      run records the sha256 of the file it used. (1.0.0, `adapted: true`, 2026-09-28; recheck if the
+      pilot changes the wording.)
 - [ ] `python -m pytest harness/tests -q` passes at the submission commit, and the live test passes
       against a real server.
 
@@ -338,6 +359,8 @@ so anything still open is closed before the last wave rather than after.
 
 **The appendix text**
 
+`python -m analysis.rates` computes every rate below, by arm and condition (`analysis/README.md`).
+
 - [ ] Section 5 of this document, in prose, appears in the methods or the appendix. Do not claim bitwise
       reproducibility.
 - [ ] The rate of `cache_warning = true` is reported.
@@ -364,9 +387,9 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   `--cache-reuse`, `--cache-ram`, `--jinja`) come from `models/RUN_APPROACH.md`. A config field the
   operator pastes the invocation into was considered and not adopted: a field nobody updates is worse
   than a document that is the operating point of record.
-- **Full server `timings` are kept only on dialogue rows** (N1). Survey rows keep `prompt_n`; score rows
-  keep none. The compute-budget claims in `models/RUN_APPROACH.md` are checkable from the dialogue rows,
-  which are 99% of the compute.
+- **Full server `timings` are kept only on dialogue rows** (N1). Survey rows keep `prompt_n`,
+  `predicted_n`, `truncated` and `finish_reason`; score rows keep none. The compute-budget claims in
+  `models/RUN_APPROACH.md` are checkable from the dialogue rows, which are 99% of the compute.
 - **Timestamps are local time with a UTC offset, not UTC** (N4). Unambiguous as long as the box's
   timezone does not change mid-study; changing the format now would make old and new runs inconsistent,
   which is worse.
@@ -378,9 +401,10 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   `manifest.json` is deliberately never rewritten, so the archival step is the written procedure in
   section 3 rather than code.
 - **`write_manifest` is not atomic across processes** and `JsonlWriter` reopens the file per write. Both
-  assume one process per `run_id`, which `run`, `survey` and `score` enforce with a lock on
-  `data/<run_id>/.lock`; the per-write open, flush and fsync is the right durability trade for a research
-  log.
+  assume one writer per file, which the locks enforce: `run`, `survey` and `baseline` hold
+  `data/<run_id>/.lock`, and `score`, which writes only `scores.jsonl`, holds `.score.lock`. The only later
+  write to `manifest.json`, a `run --allow-code-change` resume, goes through a rename under the lock. The
+  per-write open, flush and fsync is the right durability trade for a research log.
 - **`cmd_run` builds its agents twice**, once inside `check` and once for the run: two extra `/props`
   round-trips per run, in exchange for the manifest recording `/props` as it stands at the moment the run
   actually starts.
@@ -396,7 +420,8 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   GREEN-phase run is what a reviewer checks today, and it is pasted in full.
 - **The redundant `pass` in `ServerError`** (`harness/client.py`). Its docstring already makes the class
   body non-empty; the `pass` is a no-op left over from before the docstring was added.
-- **`run.py` is broad** (about 750 lines) but cohesive as planned: it is the one place that owns the
-  check/run/survey/score/flags/agreement subcommands and the plumbing (`RunContext`, `_agents`, `_verify_identity`,
-  provenance capture) they share. Splitting it was considered and rejected — the shared machinery would
-  then cross a module boundary for no isolation gained.
+- **`run.py` is broad** (about 1,500 lines since the 2026-09-28 remediation) but cohesive as planned: it
+  is the one place that owns the check/run/survey/baseline/score/flags/agreement/study subcommands and the
+  plumbing (`RunContext`, `_agents`, `_verify_identity`, provenance capture) they share. Splitting it was
+  considered and rejected — the shared machinery would then cross a module boundary for no isolation
+  gained.

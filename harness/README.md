@@ -16,10 +16,11 @@ verify exactly what every model was asked, and to detect a lost cache, but not t
 ## Use
 
 ```bash
-pip install -r harness/requirements.txt            # jinja2 + numpy; gguf-py comes from the llama.cpp checkout
+pip install -e ".[dev]"      # jinja2, numpy, pyyaml, pytest; gguf-py comes from the llama.cpp checkout
+# or: pip install -r harness/requirements.txt pytest (or requirements.lock, the pinned versions)
 cp harness/config.example.json config.json         # edit urls, gguf_py_path, run_seed
 python -m harness.randomize --catalogue prompts/personas/catalogue.json --out pilot-dyads.jsonl \
-    --seed 20260918 --n-per-cell 6 --modes reinforced,once --prefix p       # grid -> manifest + assignment log
+    --seed 20260918 --n-per-cell 6 --modes reinforced,once --prefix p   # manifest + assignment log
 python -m harness.run check  --config config.json --manifest pilot-dyads.jsonl
 python -m harness.run run    --config config.json --manifest pilot-dyads.jsonl --run-id pilot-2026-09-18
 python -m harness.run score  --config config.json --run-id pilot-2026-09-18 --scope pilot
@@ -81,8 +82,8 @@ what is missing, and refuses other settings, another mentor, instrument or harne
 finish, queued ones never start; re-run with the same `--run-id` to resume), and 1 when it refused to start.
 A second Ctrl-C says how many dyads are still in flight; a third abandons them, marking each attempt
 `failed` with reason `abandoned`, and exits 130 at once.
-A `*.jsonl` whose last line a crash cut off stops `run`, `survey` and `score` with the file and line
-named; add `--repair-torn-line` to back the file up and drop that one line, then carry on.
+A `*.jsonl` whose last line a crash cut off stops `run`, `survey`, `baseline` and `score` with the file
+and line named; add `--repair-torn-line` to back the file up and drop that one line, then carry on.
 `survey` and `score` exit 2 when any item or judge call failed in that pass; re-run them to fill in what
 failed, since neither repeats what is already done. Every subcommand exits 1 with one `error:` line on
 stderr for a dead server, a changed model or template, a missing file or GGUF, or a malformed config or
@@ -101,7 +102,7 @@ is using it. The cache probe is not sent to a busy slot.
 
 | Module | What it holds |
 |---|---|
-| `run.py` | The CLI: `check`, `run`, `survey`, `score`, `flags`, `agreement`; config loading, pre-flight checks, the worker pool, provenance capture. |
+| `run.py` | The CLI: `check`, `run`, `survey`, `baseline`, `score`, `flags`, `agreement`, `study`; config loading, pre-flight checks, the worker pools, provenance capture, the resume comparison. |
 | `randomize.py` | `python -m harness.randomize`: grid + persona catalogue -> dyad manifest and assignment log; `--subset-of` descopes one. |
 | `study.py` | The study lock: `study.json`, which every arm's `run`, `baseline` and `score` must match. |
 | `grid.py` | Loads `prompts/grid.json` and checks each manifest row's `condition` against it. |
@@ -134,7 +135,8 @@ confused. A worked example with two rows: `harness/dyads.example.jsonl`.
 
 ```json
 {"dyad_id": "p01-immig-rural-open-a",
- "condition": {"topic": "immigration_enforcement", "ideology": "lean_right", "openness": "open", "role": "rural_rancher"},
+ "condition": {"topic": "immigration_enforcement", "ideology": "lean_right", "openness": "open",
+               "role": "rural_rancher"},
  "persona_text": "You are Dana, a 54-year-old rancher ... Open by asking for guidance about ...",
  "persona_reminder": "Note to self: I am Dana, a rancher; worried but open-minded.",
  "persona_mode": "reinforced", "seed": 4242, "n_turns": 40}
@@ -176,6 +178,13 @@ the line the partner sees and the judge scores. A reply with gpt-oss harmony cha
 (`<|channel|>`, `<|start|>assistant`, `<|message|>`) or a `<think>` it never closes has no clean answer to
 pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `UnterminatedThink`).
 
+For the gpt-oss arm this is a pre-pilot question, not a detail. The red-team review found, in llama.cpp's
+source, that gpt-oss's channel tokens render as text on the raw `/completion` path (red-team H1, not
+confirmed against a live server). If the served model does that, every gpt-oss mentor turn fails with
+`HarmonyMarkup` and the arm completes no dyad: the harness does not extract the `final` channel, it
+refuses the reply. `check` does not generate a real turn, so only a pilot dyad against the gpt-oss server
+shows which it is.
+
 ## What the config fields mean
 
 | Field | What it does |
@@ -187,7 +196,7 @@ pass on: its row is logged with `error` and the dyad fails (`HarmonyMarkup`, `Un
 | `gguf_py_path` | Path to llama.cpp's `gguf-py` directory; the harness reads the chat template out of the GGUF with it. On the Framework Desktop: `/home/alex/.local/llamacpp/src/gguf-py` (this is what `config.example.json` ships with). On the development desktop: `/home/alex/llm-serving/llama.cpp/gguf-py`. |
 | `batteries` | The survey items file. Its sha256 and item ids go into `manifest.json`, and the sha256 onto every survey row. |
 | `grid` | The frozen factorial (`prompts/grid.json` by default). `check --manifest` and `run` refuse a row whose condition is not a cell of it. `null` disables the gate, for smoke tests only. |
-| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own fixed settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`. Also every other llama.cpp sampler, at llama.cpp's defaults unless set here: `top_k` 40, `min_p` 0.05, `typical_p` 1, `top_n_sigma` -1, `repeat_penalty` 1, `repeat_last_n` 64, `presence_penalty` 0, `frequency_penalty` 0, `dry_multiplier` 0, `xtc_probability` 0, `mirostat` 0 (`SAMPLER_DEFAULTS` in `harness/client.py`). They go out on every dialogue, survey and judge request, so what a server was started with cannot change a generation, and they are compared on resume with the rest of `generation`. |
+| `generation` | `temperature`, `top_p`, `n_predict`, `timeout`, `enable_thinking` for dialogue turns. Surveys and the judge use their own settings (temperature 0; `n_predict` 32 and 160), which are written onto the rows and into `judge-*.json`; `survey --temperature` and `--n-predict` override the survey's for a pass, and `baseline` samples at this block's `temperature` and `top_p`. Also every other llama.cpp sampler, at llama.cpp's defaults unless set here: `top_k` 40, `min_p` 0.05, `typical_p` 1, `top_n_sigma` -1, `repeat_penalty` 1, `repeat_last_n` 64, `presence_penalty` 0, `frequency_penalty` 0, `dry_multiplier` 0, `xtc_probability` 0, `mirostat` 0 (`SAMPLER_DEFAULTS` in `harness/client.py`). They go out on every dialogue, survey and judge request, so what a server was started with cannot change a generation, and they are compared on resume with the rest of `generation`. |
 | `data_dir` | Where `data/<run_id>/` is created. |
 | `study` | Path to the study lock, `study.json` (below), or `null` (the default) for none. Operational: not compared on resume, because what it holds is compared directly. |
 | `seeker`, `mentor` | `{url, gguf_path?, family?}`. Must be two different servers: one server would make the two agents evict each other's KV cache every turn, and `run` refuses it. Two URLs count as one server when they resolve to the same address, port and path (every loopback name is one address; a trailing slash is ignored), or when the servers report the same model file, model hash, build, slot count and per-slot context. |
@@ -270,6 +279,16 @@ left `started` (the process died mid-dyad) is restarted the same way. The earlie
 rest out. Because that rule conditions on failure and failures are not random, report the number of dyads
 with `attempt > 1`. See `docs/REPRODUCIBILITY.md` section 5.
 
+A design note on what retries do to the sample (red-team L10). A failed dyad is re-drawn with new seeds,
+not replayed, so the dialogue analysed for it is a different draw from the one that failed. Failures are
+not content-free: a verbose dialogue is the one that runs out of context, and a long prompt the one that
+loses its cache. The attempt that completes can therefore differ in kind from the one that failed, and
+more often in some cells than others. So the `attempt > 1` count is reported **by condition**, as the
+pre-analysis plan requires (section 6): `python -m analysis.rates` gives it by arm and condition with a
+chi-square test against condition. The failure reasons are in `status.jsonl` (`reason`), with operator
+abandonments apart (`abandoned`); `analysis/` does not tabulate those yet. Every attempt's rows stay in
+the files, so the first attempt's status can enter a sensitivity analysis as a covariate.
+
 ## Servers
 
 Servers are started outside the harness with the flags in `models/RUN_APPROACH.md`. **Every server used
@@ -300,11 +319,25 @@ What the parity rows allow, and say when they use it (2026-09-28):
 
 `run` writes the rows it checked into `manifest.json` as `check`.
 
+What the date adjustment means for a gpt-oss wave (red-team H4). The prompts never carry the server's
+date: the harness renders every prompt itself with the pinned `now` and sends it to `/completion`, so the
+server's clock reaches only `/apply-template`, which `check` alone calls. `check` renders our side on
+the dates the server may print (local and UTC today, and local yesterday and tomorrow, for a check that
+straddles midnight) and passes when one matches and differs from the pinned render only in the date. So
+a gpt-oss wave that runs past midnight, or is stopped and resumed days later, keeps the same prompts, and
+its `check` passes on each start. `now` itself is run-affecting, and the study lock pins it across arms:
+never set it to today to make parity pass. `manifest.json` → `check` holds the rows as the first start saw them,
+including the date the comparison used; a resume does not rewrite them.
+
 ## Output
 
-Output lands in `data/<run_id>/` as `manifest.json`, `judge-<sha12>.json`, `dyads.jsonl`, `status.jsonl`,
-`turns.jsonl`, `surveys.jsonl`, `scores.jsonl` and `flags.jsonl`, or, for a `baseline` run,
-`manifest.json` and `baseline.jsonl`. Every file and every field: `data/README.md`.
+Output lands in `data/<run_id>/`: `manifest.json`, `input-dyads.jsonl` (the input manifest as the run
+started with it), `assignment.json` (its assignment log, when it has one), `dyads.jsonl`, `status.jsonl`,
+`turns.jsonl` and `surveys.jsonl` from `run`; `scores.jsonl` and one `judge-<sha12>.json` per judge and
+scoring pass (then `judge-<sha12>-<scope>.json`, `-<scope>-2.json` ...) from `score`; `flags.jsonl` from
+`flags`; and the lock files `.lock` and `.score.lock`. A `baseline` run has `manifest.json` and
+`baseline.jsonl`. `study.json` lives wherever the config's `study` points, outside `data/`. Every file and
+every field: `data/README.md`.
 
 ## Terms (fixed 2026-09-02)
 
@@ -352,10 +385,12 @@ server's `timings` on every call so a lost cache is visible immediately.
   every seeker turn. Never reinforce the mentor.
 - **40 turns.** Neither agent is told the turn budget, so turn 20 of a 40-turn
   dialogue is a valid 20-turn observation and no separate 20-turn arm is needed.
-- The W4 pilot still runs both delivery modes, 40 turns, five dyads each, but as
-  a **measurement rather than a gate**: five dyads cannot support the
-  non-inferiority claim that would license dropping the reminder. The pilot
-  supplies the drift curve and calibrates the threshold instead.
+- The pilot still runs both delivery modes, 40 turns, six dyads per cell in
+  each (252 dialogues; the decision named five, and the randomizer needs a
+  multiple of three), but as a **measurement rather than a gate**: a pilot this
+  size cannot support the non-inferiority claim that would license dropping
+  the reminder. The pilot supplies the drift curve and calibrates the
+  threshold instead.
 - **The adherence threshold is calibrated on pilot hand labels, not set at
   0.8.** That number is a rate in `li2024instability` and does not transfer to a
   continuous per-turn score.
