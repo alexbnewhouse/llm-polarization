@@ -19,8 +19,8 @@ class Completion:
     the n_predict cap and a dyad that has run out of context."""
     text: str
     finish_reason: str
-    prompt_n: int
-    predicted_n: int
+    prompt_n: int | None            # None when the server reported no timings: unknown, not zero
+    predicted_n: int | None
     timings: dict
     raw: dict
     truncated: bool | None = None
@@ -38,8 +38,8 @@ def parse_completion(raw: dict) -> Completion:
     return Completion(
         text=raw.get("content", ""),
         finish_reason="length" if limit else "stop",
-        prompt_n=int(timings.get("prompt_n") or 0),
-        predicted_n=int(timings.get("predicted_n") or 0),
+        prompt_n=None if timings.get("prompt_n") is None else int(timings["prompt_n"]),
+        predicted_n=None if timings.get("predicted_n") is None else int(timings["predicted_n"]),
         timings=timings,
         raw=raw,
         truncated=raw.get("truncated"),

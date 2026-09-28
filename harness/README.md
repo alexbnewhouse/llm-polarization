@@ -93,13 +93,13 @@ confused. A worked example with two rows: `harness/dyads.example.jsonl`.
 
 | Field | What it does |
 |---|---|
-| `dyad_id` | Unique in the file: it is the resume key. A duplicate is refused before anything is written. |
+| `dyad_id` | Unique in the file: it is the resume key. A duplicate is refused before anything is written. A string of letters, digits, `.`, `_` and `-`, starting with a letter or digit: it goes into every derived seed. |
 | `condition` | The experimental cell: `topic`, `ideology`, `openness`, `role`, always all four (the control row is `ideology: "none"` with `openness` and `role` null). Levels are frozen in `prompts/grid.json` (`docs/decisions/factorial.md`); `harness/tests/test_grid.py` checks the example manifest against it. Copied verbatim into `dyads.jsonl` and read by the scorer for `topic`. |
 | `persona_text` | The seeker's system prompt, in full. Copied into `dyads.jsonl`, so the archive is self-contained even if the persona templates change later. It carries the instruction to open the conversation. |
 | `persona_reminder` | The compact reminder appended as a trailing system message on every seeker turn in `reinforced` mode. Required and non-empty when the mode is `reinforced`. |
 | `persona_mode` | `once` (system prompt only) or `reinforced` (reminder every seeker turn). |
-| `seed` | The per-dyad seed. It is a live component of every derived seed for this dyad, so two rows that differ only in `seed` are independent replicates. |
-| `n_turns` | Exchanges, not messages: 40 turns is 80 rows in `turns.jsonl`. |
+| `seed` | The per-dyad seed, an integer and required. It is a live component of every derived seed for this dyad, so two rows that differ only in `seed` are independent replicates. |
+| `n_turns` | Exchanges, not messages: 40 turns is 80 rows in `turns.jsonl`. A positive integer (`2.9`, `true` and `"3"` are refused). |
 
 `check --manifest` uses the largest `n_turns` in the file to check that a dialogue fits in one slot's
 context before the run starts.

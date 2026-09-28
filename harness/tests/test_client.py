@@ -11,7 +11,9 @@ def test_parse_completion_stop_and_length():
     assert c.timings["predicted_per_second"] == 9.5 and c.raw is raw
     assert C.parse_completion({"content": "x", "stop_type": "limit", "timings": {}}).finish_reason == "length"
     assert C.parse_completion({"content": "x", "stopped_limit": True}).finish_reason == "length"
-    assert C.parse_completion({"content": "x"}).prompt_n == 0
+    # No timings is unknown, not zero: a 0 would pass every cache check (red-team L8).
+    assert C.parse_completion({"content": "x"}).prompt_n is None
+    assert C.parse_completion({"content": "x", "timings": {"prompt_n": 0}}).prompt_n == 0
 
 
 def test_complete_builds_request_body(monkeypatch):

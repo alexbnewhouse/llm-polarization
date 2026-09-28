@@ -266,12 +266,12 @@ def test_main_run_manifest_mismatch_returns_1_without_raising(tmp_path, monkeypa
     assert R.main(["run", "--config", str(cfg2), "--manifest", str(man), "--run-id", "r1"]) == 1
 
 
-def test_model_sha256_cache_hit_is_keyed_by_path_size_and_mtime_ns(tmp_path):
+def test_model_sha256_cache_hit_is_keyed_by_path_size_mtime_ns_and_inode(tmp_path):
     f = tmp_path / "m.gguf"; f.write_bytes(b"abc")
     cache = tmp_path / "hashes.json"
     assert R.model_sha256_cached(str(f), cache) == log.sha256_text("abc")
     key = next(iter(json.loads(cache.read_text())))
-    assert key == f"{f}|3|{f.stat().st_mtime_ns}"
+    assert key == f"{f}|3|{f.stat().st_mtime_ns}|{f.stat().st_ino}"
     # A cache hit does not re-hash: poison the entry and it is returned as it stands.
     cache.write_text(json.dumps({key: "POISONED"}))
     assert R.model_sha256_cached(str(f), cache) == "POISONED"
@@ -280,6 +280,14 @@ def test_model_sha256_cache_hit_is_keyed_by_path_size_and_mtime_ns(tmp_path):
     f.write_bytes(b"xyz")
     st = f.stat(); os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
     assert R.model_sha256_cached(str(f), cache) == log.sha256_text("xyz")
+    # Red-team L9: a file replaced the way `rsync -a` does it -- a new file, same size, same mtime, renamed
+    # over the old one -- differs only in its inode.
+    st = f.stat()
+    new = tmp_path / "m.gguf.tmp"; new.write_bytes(b"XYZ")
+    os.utime(new, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(new, f)
+    assert f.stat().st_mtime_ns == st.st_mtime_ns and f.stat().st_size == st.st_size
+    assert R.model_sha256_cached(str(f), cache) == log.sha256_text("XYZ")
 
 
 def _git_repo_with_one_tracked_harness_file(tmp_path):
@@ -921,3 +929,45 @@ def test_a_torn_status_line_is_diagnosed_and_repaired_on_request(tmp_path, monke
     assert run("--repair-torn-line") == 2
     assert "dropped a cut-off last line" in capsys.readouterr().out
     assert len(list(paths.root.glob("status.jsonl.torn-*"))) == 1
+
+
+def test_manifest_rows_need_safe_ids_and_integer_n_turns_and_seed():
+    # Red-team L6: 7 and "7" derived the same seeds; 2.9, True and "3" turns became 2, 1 and 3; a missing
+    # seed became 0; a dyad_id is part of every seed and a run_id is a directory.
+    def rows(**over):
+        r = manifest_rows(1)[0]; r.update(over); return [r]
+    for bad in (rows(dyad_id=7), rows(dyad_id=""), rows(dyad_id="../x"), rows(dyad_id="a|b"),
+                rows(n_turns=2.9), rows(n_turns=True), rows(n_turns="3"), rows(seed=None), rows(seed="12"),
+                rows(seed=1.9), rows(seed=True)):
+        with pytest.raises(ValueError):
+            R.validate_manifest_rows(bad)
+    no_seed = rows(); del no_seed[0]["seed"]
+    with pytest.raises(ValueError, match="seed"):
+        R.validate_manifest_rows(no_seed)
+    R.validate_manifest_rows(rows(dyad_id="p-immig-lean_right-open-rancher-reinforced-001"))
+
+
+def test_run_ids_are_checked_and_a_typo_leaves_no_directory(tmp_path, monkeypatch, capsys):
+    _fake_servers(tmp_path, monkeypatch)
+    cfg = write_cfg(tmp_path)
+    man = tmp_path / "dyads.jsonl"
+    man.write_text(json.dumps(manifest_rows(1)[0]) + "\n")
+    for run_id in ("../escaped", "", "/abs", "a/b"):
+        assert R.main(["run", "--config", str(cfg), "--manifest", str(man), "--run-id", run_id]) == 1
+        assert "run_id must be" in capsys.readouterr().err
+    assert not (tmp_path / "escaped").exists() and not (tmp_path / "data").exists()
+    for cmd in (["survey"], ["score"], ["flags", "--threshold", "0.5"], ["agreement"]):
+        assert R.main([cmd[0], "--config", str(cfg), "--run-id", "tpyo", *cmd[1:]]) == 1
+        assert "does not exist" in capsys.readouterr().err
+    assert not (tmp_path / "data" / "tpyo").exists()
+
+
+def test_the_cache_probe_fails_when_the_server_reports_no_timings():
+    fc = FakeClient(["ok"])
+    real = fc.complete
+    def blind(prompt, **kw):
+        c = real(prompt, **kw); c.prompt_n = None; return c
+    fc.complete = blind
+    handle = AgentHandle(SEEKER, fc, ChatTemplate.from_source(CHATML), "h", 0)
+    rows = dict((n, (ok, d)) for n, ok, d in R.check_agent(handle, R._merge(R.DEFAULT_CONFIG, {})))
+    assert rows["cache_reuse"][0] is False and "no timings" in rows["cache_reuse"][1]

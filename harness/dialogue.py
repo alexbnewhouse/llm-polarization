@@ -1,6 +1,7 @@
 """One dyad, end to end: seeker opens, agents alternate, every generation logged with provenance."""
 from __future__ import annotations
 import re
+import sys
 from dataclasses import dataclass
 from harness.client import ServerError
 from harness.log import JsonlWriter, derive_seed, now_iso, sha256_text
@@ -49,7 +50,7 @@ class DyadSpec:
         """Build a DyadSpec from a plain dict row, e.g. one read back from a dyads.jsonl file."""
         return cls(row["dyad_id"], dict(row.get("condition") or {}), row["persona_text"],
                    row.get("persona_reminder", ""), row.get("persona_mode", "reinforced"),
-                   int(row.get("seed", 0)), int(row["n_turns"]))
+                   int(row["seed"]), int(row["n_turns"]))
 
 
 class CacheReuseLost(Exception):
@@ -131,6 +132,7 @@ class DialogueRunner:
         self.run_id, self.run_seed = run_id, run_seed
         self.agents = {SEEKER: seeker, MENTOR: mentor}
         self.settings, self.turns_log, self.clock, self.cache_margin = settings, turns_log, clock, cache_margin
+        self._warned: set[str] = set()      # agents already warned about missing timings
 
     def run(self, spec: DyadSpec, attempt: int) -> Transcript:
         """Run one dyad from an empty transcript through spec.n_turns of alternating seeker/mentor turns."""
@@ -174,8 +176,15 @@ class DialogueRunner:
             leak = None
         except (HarmonyMarkup, UnterminatedThink) as e:
             text, reasoning, leak = comp.text, None, e
+        # A server that reports no timings leaves prompt_n unknown, not 0: the cache audit cannot run, so
+        # the row says so and the operator is told once per agent.
+        no_timings = comp.prompt_n is None
+        if no_timings and agent not in self._warned:
+            self._warned.add(agent)
+            print(f"WARN {agent} server reported no timings.prompt_n; KV cache reuse is not checked "
+                  "(turns.jsonl timings_missing)", file=sys.stderr)
         row.update({"prompt_n": comp.prompt_n, "predicted_n": comp.predicted_n, "expected_new": expected,
-                    "cache_warning": comp.prompt_n > expected + self.cache_margin,
+                    "cache_warning": None if no_timings else comp.prompt_n > expected + self.cache_margin,
                     # The server's own context accounting: `truncated` true means this slot ran out of
                     # context, which finish_reason "length" (the n_predict cap) does not distinguish.
                     "truncated": comp.truncated, "tokens_evaluated": comp.tokens_evaluated,
@@ -184,6 +193,8 @@ class DialogueRunner:
                     # What the model reasoned before answering, kept out of `text` and so out of the
                     # partner's view and the judge's; null when the reply had none.
                     "reasoning": reasoning, "timings": comp.timings, "adherence": None, "ts": self.clock()})
+        if no_timings:
+            row["timings_missing"] = True
         if leak is not None:
             row["error"] = f"{type(leak).__name__}: {leak}"
         self.turns_log.write(row)

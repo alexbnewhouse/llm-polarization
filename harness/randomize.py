@@ -18,6 +18,7 @@ from pathlib import Path
 from harness import __version__
 from harness.grid import check_conditions, load_grid, treated_cells
 from harness.log import now_iso, sha256_file
+from harness.transcript import PERSONA_MODES
 
 CONTROL_MODE = "reinforced"       # the control always runs reinforced so its mechanics match the treated cells
 SLOT_FIELDS = ("slug", "name", "backstory", "reminder_self")   # every role variant must fill all four
@@ -150,9 +151,13 @@ def build_manifest(grid: dict, catalogue: dict, *, seed: int, n_per_cell: int | 
 
     for topic, ideology, openness in treated_cells(grid):
         variants = catalogue["roles"][ideology]
-        if n_per_cell % len(variants):
-            raise ValueError(f"n_per_cell {n_per_cell} does not split evenly across the {len(variants)} "
-                             f"role variant(s) of {ideology!r}")
+        k = len(variants)
+        if n_per_cell % k:
+            lower, upper = n_per_cell // k * k, (n_per_cell // k + 1) * k
+            raise ValueError(f"n_per_cell {n_per_cell} does not split evenly across the {k} role variant(s) "
+                             f"of {ideology!r}; use a multiple of {k} (--n-per-cell "
+                             + (f"{lower} or {upper}" if lower else f"{upper}")
+                             + "), or a catalogue with one variant per level")
         per_var = n_per_cell // len(variants)
         cell = f"{topic}/{ideology}/{openness}"
         for mode in modes:
@@ -225,13 +230,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, help="the RNG seed; recorded in the assignment log")
     ap.add_argument("--check", action="store_true", help="validate the catalogue against the grid and write nothing")
     ap.add_argument("--n-per-cell", type=int, default=None, help="rows per treated cell (grid default: 135)")
-    ap.add_argument("--n-control", type=int, default=None, help="rows per control cell (grid default: 135)")
+    ap.add_argument("--n-control", type=int, default=None,
+                    help="rows per control cell (default: --n-per-cell when that is given, else the grid's "
+                         "control n_per_cell, 135)")
     ap.add_argument("--modes", default=None, help="comma-separated persona modes (grid default: reinforced)")
     ap.add_argument("--n-turns", type=int, default=None)
     ap.add_argument("--prefix", default="w", help="dyad_id prefix, e.g. p for the pilot, w1 for wave 1")
     a = ap.parse_args(argv)
     if not a.check and (a.out is None or a.seed is None):
         ap.error("--out and --seed are required unless --check")
+    modes = tuple(m.strip() for m in a.modes.split(",")) if a.modes else None
+    if modes is not None and (not all(modes) or len(set(modes)) != len(modes)
+                              or any(m not in PERSONA_MODES for m in modes)):
+        ap.error(f"--modes must be distinct values from {', '.join(PERSONA_MODES)}, comma-separated; "
+                 f"got {a.modes!r}")
     try:
         grid = load_grid(a.grid)
         catalogue = load_catalogue(a.catalogue)
@@ -240,7 +252,6 @@ def main(argv: list[str] | None = None) -> int:
             n = {lvl: len(v) for lvl, v in catalogue["roles"].items()}
             print(f"{a.catalogue} (version {catalogue['version']}) is valid against {a.grid}: role variants per level {n}")
             return 0
-        modes = tuple(m.strip() for m in a.modes.split(",")) if a.modes else None
         rows, assignment = build_manifest(grid, catalogue, seed=a.seed, n_per_cell=a.n_per_cell,
                                           n_control=a.n_control, modes=modes, n_turns=a.n_turns, prefix=a.prefix)
         sidecar = write_manifest(a.out, rows, assignment, grid_path=a.grid, catalogue_path=a.catalogue)

@@ -62,12 +62,13 @@ def load_config(path: str | Path) -> dict:
 
 
 def model_sha256_cached(path: str, cache_file: Path | None = None) -> str:
-    """Return a GGUF file's sha256, cached on disk keyed by path|size|mtime_ns so re-hashing a 20 GB file
-    is skipped. Nanoseconds rather than whole seconds: a file rewritten within the same second, to the same
-    size, would otherwise return the previous file's hash."""
+    """Return a GGUF file's sha256, cached on disk keyed by path|size|mtime_ns|inode so re-hashing a 20 GB
+    file is skipped. Nanoseconds rather than whole seconds: a file rewritten within the same second, to the
+    same size, would otherwise return the previous file's hash. The inode: `rsync -a` or `cp -p` onto a new
+    file keeps size and mtime but not the inode."""
     cache_file = cache_file or HASH_CACHE
     st = os.stat(path)
-    key = f"{path}|{st.st_size}|{st.st_mtime_ns}"
+    key = f"{path}|{st.st_size}|{st.st_mtime_ns}|{st.st_ino}"
     cache = {}
     if cache_file.exists():
         try:
@@ -181,6 +182,9 @@ def _cache_reuse_probe(handle: AgentHandle, now: str) -> tuple[str, bool | None,
         c2 = handle.client.complete(p2, id_slot=handle.slot, seed=0, n_predict=1, temperature=0.0, cache_prompt=True)
     except (ServerError, TemplateError) as e:
         return ("cache_reuse", False, f"probe failed: {e}")
+    if c2.prompt_n is None:
+        return ("cache_reuse", False, "the server reports no timings.prompt_n, so KV cache reuse cannot be "
+                "checked")
     ok = c2.prompt_n <= expected + CACHE_PROBE_MARGIN
     return ("cache_reuse", ok, f"second call prefilled {c2.prompt_n} tokens, expected about {expected} "
             f"(first call {c1.prompt_n}) on slot {handle.slot}" + ("" if ok else " -- the slot did not reuse its KV cache"))
@@ -254,17 +258,22 @@ def validate_manifest_rows(manifest_rows: list[dict]) -> None:
     persona_mode 'reinforced' is worse than a crash: it labels the dyad reinforced without reinforcing it."""
     seen: set[str] = set()
     for i, row in enumerate(manifest_rows, 1):
-        for key in ("dyad_id", "persona_text", "n_turns"):
+        for key in ("dyad_id", "persona_text", "n_turns", "seed"):
             if key not in row:
                 raise ValueError(f"dyad manifest line {i}: missing {key!r}")
-        dyad_id = row["dyad_id"]
+        dyad_id = log.check_id(row["dyad_id"], f"dyad manifest line {i}: dyad_id")
+        for key in ("n_turns", "seed"):
+            # bool is an int in Python; 2.9, True and "3" must not become 2, 1 and 3 in silence.
+            if type(row[key]) is not int:
+                raise ValueError(f"dyad manifest line {i} ({dyad_id}): {key} must be an integer, "
+                                 f"got {row[key]!r}")
         if dyad_id in seen:
             raise ValueError(f"dyad manifest line {i}: duplicate dyad_id {dyad_id!r}, which is the resume key")
         seen.add(dyad_id)
         mode = row.get("persona_mode", "reinforced")
         if mode not in PERSONA_MODES:
             raise ValueError(f"dyad manifest line {i} ({dyad_id}): persona_mode must be one of {PERSONA_MODES}, got {mode!r}")
-        if int(row["n_turns"]) <= 0:
+        if row["n_turns"] <= 0:
             raise ValueError(f"dyad manifest line {i} ({dyad_id}): n_turns must be positive, got {row['n_turns']!r}")
         if mode == "reinforced" and not str(row.get("persona_reminder") or "").strip():
             raise ValueError(f"dyad manifest line {i} ({dyad_id}): persona_mode 'reinforced' needs a non-empty "
@@ -439,6 +448,13 @@ def cmd_check(cfg: dict, manifest_path: str | None = None, roles: tuple[str, ...
             ok_all = ok_all and ok is not False
             print(f"   {'ok  ' if ok else ('FAIL' if ok is False else 'warn')} {name} {detail}")
     return 0 if ok_all else 1
+
+
+def _require_run_dir(paths: RunPaths) -> None:
+    """Refuse a run_id with no data/<run_id>/ yet, rather than create one for a typo."""
+    if not paths.root.is_dir():
+        raise ManifestMismatch(f"{paths.root} does not exist; this run has never been started "
+                               "(check --run-id)")
 
 
 def _load_manifest(paths: RunPaths) -> dict:
@@ -771,7 +787,8 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
     row per dyad attempt to flags.jsonl (replaced, not appended: flags are derived from scores, not a
     ledger), and print the flagged rate by ideology level and by delivery mode -- the two breakdowns the
     pre-analysis plan reports. Only the latest complete attempt of each dyad is flagged."""
-    paths = run_paths(cfg["data_dir"], run_id)
+    paths = run_paths(cfg["data_dir"], run_id, create=False)
+    _require_run_dir(paths)
     scores = read_jsonl(paths.scores)
     if judge:
         matches = {s["judge_sha256"] for s in scores if str(s.get("judge_sha256", "")).startswith(judge)}
@@ -813,7 +830,8 @@ def cmd_flags(cfg: dict, run_id: str, threshold: float, metric: str, run_length:
 def cmd_agreement(cfg: dict, run_id: str, metric: str) -> int:
     """Run the `agreement` subcommand: print cross-judge agreement on `metric` for every pair of judges
     that scored this run, on the targets both scored."""
-    paths = run_paths(cfg["data_dir"], run_id)
+    paths = run_paths(cfg["data_dir"], run_id, create=False)
+    _require_run_dir(paths)
     a = cross_judge_agreement(read_jsonl(paths.scores), metric=metric)
     print(f"agreement {run_id} on {metric}: {len(a['judges'])} judge(s)")
     for j, v in a["per_judge"].items():
@@ -978,7 +996,8 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "agreement":
             return cmd_agreement(cfg, a.run_id, a.metric)
         # run, survey and score append rows: one process per run_id at a time.
-        paths = run_paths(cfg["data_dir"], a.run_id)
+        paths = run_paths(cfg["data_dir"], a.run_id, create=a.cmd == "run")
+        _require_run_dir(paths)
         with log.run_lock(paths, a.cmd):
             if a.repair_torn_line:
                 for msg in log.repair_torn_lines(paths.root):

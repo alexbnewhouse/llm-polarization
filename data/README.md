@@ -5,7 +5,8 @@ Experiment output lives here on the box that produced it. The row files are **gi
 **not** ignored, because a clone of this repository alone must be able to say what was run.
 
 One directory per run: `data/<run_id>/`. A `run_id` is chosen on the command line
-(`pilot-2026-09-18`, `baseline`, `wave1` ...) and is never reused for a different configuration — the
+(`pilot-2026-09-18`, `baseline`, `wave1` ...; letters, digits, `.`, `_` and `-`, starting with a letter or
+digit) and is never reused for a different configuration — the
 harness refuses to overwrite a manifest whose run-affecting config differs.
 
 This page is the data dictionary: exactly the files and fields `harness/` writes. The standard they
@@ -89,7 +90,9 @@ the partner and scored by the judge), `reasoning` (what the model reasoned befor
 `text`: the server's `reasoning_content`, every `<think>...</think>` block, and the text before an
 unmatched `</think>`; null when there was none), `timings`
 (the server's own per-request numbers), `adherence` (always null; the scorer writes the equivalent into
-`scores.jsonl`), `ts`. On a failure there is also `error`, and the numeric fields are null. A reply
+`scores.jsonl`), `ts`. On a failure there is also `error`, and the numeric fields are null. When the
+server reported no timings there is also `timings_missing: true`, and `prompt_n`, `predicted_n` and
+`cache_warning` are null: unknown, not zero. A reply
 that carries gpt-oss harmony channel markup (`<|channel|>`, `<|start|>assistant`, `<|message|>`), or opens
 a `<think>` block it never closes, is logged with `error` (`HarmonyMarkup: ...` or `UnterminatedThink: ...`)
 and its raw `text`, and the dyad fails: the partner never sees it.
@@ -115,8 +118,10 @@ for post, so the two phases derive different seeds), `temperature`, `n_predict`,
 `prompt_chars`, `seed`, `answer` (integer, or null if the reply did not parse), `answer_method` (how
 `answer` was found: `json` when the schema-constrained reply parsed as an integer on the scale;
 `labelled` or `bare` when the number was salvaged from free text by `harness/parser.py`; `ambiguous`,
-`out_of_range` or `none` when `answer` is null and why; null on an error row), `raw_text` (what the
-model actually said), `prompt_n`, `ts`. On a failure there is also `error`.
+`out_of_range` or `none` when `answer` is null and why; `truncated` when the `n_predict` cap cut the reply
+off before it parsed as JSON, so no number is salvaged from it; null on an error row), `raw_text` (what
+the model actually said), `finish_reason` (`stop`, `length` or `error`), `predicted_n`, `truncated` (the
+server's context accounting), `prompt_n`, `ts`. On a failure there is also `error`.
 
 Analysis should report the share of rows whose `answer_method` is not `json`: on a server that honours
 the grammar it is zero, and a salvaged answer is a number the schema did not produce.

@@ -326,7 +326,8 @@ so anything still open is closed before the last wave rather than after.
 - [ ] The rate of `truncated = true` is reported (a slot that ran out of context, not a capped turn).
 - [ ] The number of dyads with `attempt > 1` is reported, with a check against condition.
 - [ ] The number of survey items that failed to parse (`answer: null`) is reported, and so is the number
-      whose answer was salvaged from free text (`answer_method` other than `json`).
+      whose answer was salvaged from free text (`answer_method` other than `json`) and the number cut off
+      by the cap (`answer_method: "truncated"`).
 - [ ] The number of turns with `finish_reason: "length"` is reported — those turns hit the 300-token cap
       and their text is truncated by design.
 - [ ] Section 4 of this document — the reproduce-one-dialogue procedure — is included verbatim or
@@ -351,7 +352,8 @@ Known and deliberately not done in this wave. Each is a judgement about cost, no
   timezone does not change mid-study; changing the format now would make old and new runs inconsistent,
   which is worse.
 - **No `--verify-hashes` flag** (S6, superseded). The GGUF hash cache is keyed by
-  `path|size|mtime_ns`, which closes the stale-hash case that motivated the flag. To force a full
+  `path|size|mtime_ns|inode`, which closes the stale-hash case that motivated the flag, and a file
+  replaced by `rsync -a` or `cp -p` onto a new file. To force a full
   re-hash anyway, delete `~/.cache/llm-polarization/gguf-hashes.json`.
 - **`archive.json` is written by hand** (S12). The destination is not known when a run starts and
   `manifest.json` is deliberately never rewritten, so the archival step is the written procedure in

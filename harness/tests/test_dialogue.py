@@ -244,3 +244,22 @@ def test_harmony_channel_markup_fails_the_dyad_instead_of_reaching_the_partner(t
     assert rows[-1]["agent"] == MENTOR and rows[-1]["error"].startswith("HarmonyMarkup")   # logged first
     assert rows[-1]["text"] == harmony
     assert len(sc.calls) == 1                                       # the seeker never saw it
+
+
+def test_missing_timings_are_marked_not_read_as_zero(tmp_path, capsys):
+    # Red-team L8: prompt_n defaulted to 0, which passed every cache check in silence.
+    class NoTimings(FakeClient):
+        def complete(self, prompt, **kw):
+            c = FakeClient.complete(self, prompt, **kw)
+            c.prompt_n = c.predicted_n = None
+            c.timings = {}
+            return c
+    runner, sc, mc, _ = make_runner(tmp_path)
+    runner.agents[MENTOR].client = NoTimings(["Tell me more."])
+    runner.run(spec(n_turns=3), attempt=1)
+    rows = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == MENTOR]
+    assert all(r["timings_missing"] is True and r["prompt_n"] is None and r["cache_warning"] is None
+               for r in rows)
+    seeker = [r for r in log.read_jsonl(tmp_path / "turns.jsonl") if r["agent"] == SEEKER]
+    assert all("timings_missing" not in r for r in seeker)
+    assert capsys.readouterr().err.count("reported no timings") == 1          # warned once, not every turn

@@ -1,6 +1,6 @@
 """Append-only JSONL logging, run manifest, resume index, seeds and hashing."""
 from __future__ import annotations
-import contextlib, fcntl, hashlib, json, os, shutil, threading, time
+import contextlib, fcntl, hashlib, json, os, re, shutil, threading, time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,10 +19,26 @@ class RunPaths:
     input_dyads: Path       # a verbatim copy of the input dyad manifest, written when the run starts
 
 
-def run_paths(data_dir: str | Path, run_id: str) -> RunPaths:
-    """The paths for one run_id, creating data/<run_id>/ if it does not exist yet."""
-    root = Path(data_dir) / run_id
-    root.mkdir(parents=True, exist_ok=True)
+# What a run_id or a dyad_id may be: it names a directory, and a dyad_id goes into every derived seed with
+# `|` as the separator, so no path separators, no `..`, no `|`, and not empty.
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def check_id(value, what: str) -> str:
+    """Return `value` if it is a string made of letters, digits, `.`, `_` and `-` that starts with a letter
+    or digit; raise ValueError naming `what` otherwise."""
+    if not isinstance(value, str) or not SAFE_ID.fullmatch(value):
+        raise ValueError(f"{what} must be a non-empty string of letters, digits, '.', '_' and '-' starting "
+                         f"with a letter or digit, got {value!r}")
+    return value
+
+
+def run_paths(data_dir: str | Path, run_id: str, create: bool = True) -> RunPaths:
+    """The paths for one run_id, creating data/<run_id>/ if it does not exist yet and `create` is true.
+    Commands that only read a run pass create=False, so a mistyped run_id does not leave a directory."""
+    root = Path(data_dir) / check_id(run_id, "run_id")
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
     return RunPaths(root, root / "manifest.json", root / "dyads.jsonl", root / "status.jsonl",
                     root / "turns.jsonl", root / "surveys.jsonl", root / "scores.jsonl", root / "flags.jsonl",
                     root / "input-dyads.jsonl")

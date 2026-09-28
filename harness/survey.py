@@ -14,6 +14,9 @@ PHASES = ("pre", "post")
 ORIGINS = ("run", "readministered")
 SURVEY_N_PREDICT = 32
 SURVEY_TEMPERATURE = 0.0
+# answer_method for a reply the n_predict cap cut off before it parsed as JSON: `{"answer": 1` on a 0-10
+# item may have been heading for 10, so no number is salvaged from it.
+TRUNCATED = "truncated"
 
 
 class SurveyError(Exception):
@@ -98,13 +101,18 @@ class SurveyRunner:
                                                    n_predict=SURVEY_N_PREDICT, temperature=SURVEY_TEMPERATURE,
                                                    json_schema=answer_schema(it), cache_prompt=True)
             except ServerError as e:
-                row.update({"answer": None, "answer_method": None, "raw_text": "", "prompt_n": None,
-                            "error": str(e), "ts": self.clock()})
+                row.update({"answer": None, "answer_method": None, "raw_text": "", "finish_reason": "error",
+                            "predicted_n": None, "truncated": None, "prompt_n": None, "error": str(e),
+                            "ts": self.clock()})
                 self.surveys_log.write(row)
                 raise SurveyError(spec.dyad_id, phase, it["id"], e) from e
             parsed = parse_answer(comp.text, it)
-            row.update({"answer": parsed.value, "answer_method": parsed.method, "raw_text": comp.text,
-                        "prompt_n": comp.prompt_n, "ts": self.clock()})
+            answer, method = parsed.value, parsed.method
+            if comp.finish_reason == "length" and method != "json":
+                answer, method = None, TRUNCATED
+            row.update({"answer": answer, "answer_method": method, "raw_text": comp.text,
+                        "finish_reason": comp.finish_reason, "predicted_n": comp.predicted_n,
+                        "truncated": comp.truncated, "prompt_n": comp.prompt_n, "ts": self.clock()})
             self.surveys_log.write(row)
             rows.append(row)
         return rows

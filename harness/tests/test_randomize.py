@@ -222,3 +222,29 @@ def test_cli_check_validates_the_catalogue_without_writing_anything(tmp_path, ca
     bad.write_text(json.dumps(c))
     assert RZ.main(["--grid", str(GRID), "--catalogue", str(bad), "--check"]) == 1
     assert "moderate" in capsys.readouterr().err
+
+
+def test_uneven_n_per_cell_names_the_fix_and_bad_modes_are_refused_up_front(tmp_path, capsys):
+    # Gap audit F6: the documented pilot command (--n-per-cell 5) fails once a level has 3 variants; the
+    # error now says what to pass instead. Red-team: --modes was checked only after the catalogue loaded.
+    c = catalogue()
+    for lvl in c["roles"]:
+        c["roles"][lvl] = [dict(c["roles"][lvl][0], slug=f"{lvl}_{i}") for i in range(3)]
+    with pytest.raises(ValueError, match=r"use a multiple of 3 \(--n-per-cell 3 or 6\)"):
+        RZ.build_manifest(grid(), c, seed=1, n_per_cell=5)
+    with pytest.raises(ValueError, match=r"--n-per-cell 3\)"):
+        RZ.build_manifest(grid(), c, seed=1, n_per_cell=2)
+    missing = str(tmp_path / "no-such-catalogue.json")
+    for modes in ("reinforced,sometimes", "reinforced,,once", "once,once"):
+        with pytest.raises(SystemExit) as e:
+            RZ.main(["--catalogue", missing, "--out", str(tmp_path / "x.jsonl"), "--seed", "1",
+                     "--modes", modes])
+        assert e.value.code == 2 and "--modes must be" in capsys.readouterr().err
+    assert not (tmp_path / "x.jsonl").exists()
+
+
+def test_n_control_help_says_what_the_default_is(capsys):
+    with pytest.raises(SystemExit):
+        RZ.main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--n-per-cell when that is given" in out

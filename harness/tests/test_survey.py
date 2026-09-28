@@ -178,3 +178,21 @@ def test_error_row_has_no_answer_method(tmp_path):
         runner.administer(spec(), 1, "pre", None, items()[:1])
     row = log.read_jsonl(tmp_path / "surveys.jsonl")[0]
     assert row["answer"] is None and row["answer_method"] is None and "fake failure" in row["error"]
+
+
+def test_rows_carry_finish_reason_and_a_cut_off_reply_is_not_salvaged(tmp_path):
+    # Red-team L2: `{"answer": 1` cut off by n_predict on a 0-10 item was stored as a labelled 1.
+    runner, mc = make(tmp_path)
+    real = mc.complete
+    def cut(prompt, **kw):
+        c = real(prompt, **kw)
+        c.text, c.finish_reason = '{"answer": 1', "length"
+        return c
+    mc.complete = cut
+    row = runner.administer(spec(), 1, "pre", None, items()[:1])[0]
+    assert row["answer"] is None and row["answer_method"] == "truncated" and row["raw_text"] == '{"answer": 1'
+    assert row["finish_reason"] == "length" and "predicted_n" in row and "truncated" in row
+    (tmp_path / "b").mkdir()
+    runner2, _ = make(tmp_path / "b")
+    ok = runner2.administer(spec(), 1, "pre", None, items()[:1])[0]
+    assert ok["finish_reason"] == "stop" and ok["answer_method"] == "json"
