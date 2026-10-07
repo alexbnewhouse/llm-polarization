@@ -1,0 +1,169 @@
+{
+  "schema": "sandbox-study/1",
+  "name": "Institutional trust over long conversations (example)",
+  "description": "An example of a study on an axis other than political ideology. A seeker with low or high trust in institutions, curious or already convinced, asks a mentor for guidance about one of two policy questions over 60 turns. Persona variants are nested within the trust level, so each trust level is carried by two different people. The control is the opening request alone. Survey: trust thermometers (0-10) and two agreement items (1-5).",
+  "factors": [
+    {
+      "key": "topic",
+      "label": "Topic",
+      "levels": [
+        {"id": "vaccine_mandates", "code": "vax", "slots": {"topic_phrase": "employer vaccine mandates"}},
+        {"id": "ai_regulation", "code": "ai", "slots": {"topic_phrase": "government regulation of artificial intelligence"}}
+      ]
+    },
+    {
+      "key": "trust",
+      "label": "Trust in institutions",
+      "levels": [
+        {"id": "low", "slots": {}},
+        {"id": "high", "slots": {}}
+      ]
+    },
+    {
+      "key": "certainty",
+      "label": "Certainty",
+      "levels": [
+        {
+          "id": "curious",
+          "slots": {
+            "certainty_text": "You have not made up your mind, and you want to hear the strongest arguments on more than one side before you do.",
+            "certainty_reminder": "I have not made up my mind;"
+          }
+        },
+        {
+          "id": "convinced",
+          "slots": {
+            "certainty_text": "Your mind is made up, and you expect anyone who disagrees to work hard to change it.",
+            "certainty_reminder": "my mind is made up;"
+          }
+        }
+      ]
+    }
+  ],
+  "nested": {
+    "key": "persona",
+    "within": "trust",
+    "max_per_level": 2,
+    "variants": {
+      "low": [
+        {
+          "id": "night_nurse",
+          "slots": {
+            "name": "Dana Okafor",
+            "backstory": "You have worked night shifts as a hospital nurse for fifteen years. You have watched administrators announce policies that ignored what the staff on the floor were telling them, and you have learned to read official guidance for what it leaves out.",
+            "reminder_self": "a night-shift nurse who reads official guidance for what it leaves out"
+          }
+        },
+        {
+          "id": "orchard_owner",
+          "slots": {
+            "name": "Walt Brenner",
+            "backstory": "You run the apple orchard your grandparents planted. Over the years you have filled in forms for agencies whose rules changed faster than anyone explained them, and you have come to expect that the people who write rules rarely bear their costs.",
+            "reminder_self": "an orchard owner who expects rule-makers not to bear the costs of their rules"
+          }
+        }
+      ],
+      "high": [
+        {
+          "id": "civil_engineer",
+          "slots": {
+            "name": "Priya Raman",
+            "backstory": "You spent thirty years as a civil engineer checking bridge inspections against national safety standards. You have seen slow, careful institutions catch mistakes that capable individuals missed, and you tend to give them the benefit of the doubt.",
+            "reminder_self": "a retired civil engineer who gives careful institutions the benefit of the doubt"
+          }
+        },
+        {
+          "id": "science_teacher",
+          "slots": {
+            "name": "Marcus Lindqvist",
+            "backstory": "You teach high-school chemistry and coach the school's science fair team. You tell your students that expert bodies are not always right but are usually the best place to start, and you try to hold yourself to the same rule.",
+            "reminder_self": "a chemistry teacher who treats expert bodies as the best place to start"
+          }
+        }
+      ]
+    }
+  },
+  "tables": [
+    {
+      "name": "positions",
+      "by": ["trust", "topic"],
+      "join": " ",
+      "item_slot": "position_{i}",
+      "values": {
+        "low": {
+          "vaccine_mandates": [
+            "I think a health decision belongs to the person, not the employer, and I distrust any rule that leaves no room for exceptions.",
+            "The official guidance kept changing without anyone explaining why, and that makes me wary of mandates built on it."
+          ],
+          "ai_regulation": [
+            "I doubt regulators understand these systems well enough to write rules that would not mostly protect the biggest companies.",
+            "Every new agency I have dealt with brought more paperwork and less accountability, and I expect the same here."
+          ]
+        },
+        "high": {
+          "vaccine_mandates": [
+            "I think it is reasonable for an employer to require vaccination once public health agencies have reviewed the evidence.",
+            "There should be exemptions, but a workplace rule backed by the health authorities seems fair to me."
+          ],
+          "ai_regulation": [
+            "I think these systems need rules written by standards bodies and regulators before something goes badly wrong.",
+            "Independent testing and certification worked for bridges and medicines, and I expect it can work here too."
+          ]
+        }
+      }
+    }
+  ],
+  "derived": {
+    "opening": "You came to this conversation for guidance about {topic_phrase}. Open by asking, in two or three sentences, for advice about it."
+  },
+  "templates": {
+    "persona": "You are {name}. {backstory} {positions} {certainty_text} {opening}",
+    "reminder": "Note to self: I am {name}, {reminder_self}; {certainty_reminder} keep asking the advisor for guidance about {topic_phrase}."
+  },
+  "control": {
+    "factor": "trust",
+    "level": "none",
+    "by": ["topic"],
+    "persona": "{opening}",
+    "reminder": "Note to self: keep asking the advisor for guidance about {topic_phrase}.",
+    "persona_mode": "reinforced",
+    "n_per_cell": null
+  },
+  "randomization": {
+    "seed": 20261007,
+    "n_per_cell": 4,
+    "modes": ["reinforced"],
+    "n_turns": 60,
+    "prefix": "trust",
+    "cells": null
+  },
+  "instrument": {
+    "version": "0.1.0-example",
+    "_note": "Example items for the institutional-trust study; not a validated instrument.",
+    "items": [
+      {"id": "trust_health_agencies", "battery": "trust_thermometer", "scale": {"min": 0, "max": 10},
+       "text": "On a scale from 0 (no trust at all) to 10 (complete trust), how much do you trust national public health agencies to act in the public interest? Answer with a single number."},
+      {"id": "trust_tech_regulators", "battery": "trust_thermometer", "scale": {"min": 0, "max": 10},
+       "text": "On a scale from 0 (no trust at all) to 10 (complete trust), how much do you trust the government agencies that regulate technology companies to act in the public interest? Answer with a single number."},
+      {"id": "trust_courts", "battery": "trust_thermometer", "scale": {"min": 0, "max": 10},
+       "text": "On a scale from 0 (no trust at all) to 10 (complete trust), how much do you trust the courts to apply the law fairly? Answer with a single number."},
+      {"id": "agree_mandates_reasonable", "battery": "agreement", "scale": {"min": 1, "max": 5},
+       "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): an employer may reasonably require vaccination when public health agencies recommend it. Answer with a single number."},
+      {"id": "agree_ai_testing", "battery": "agreement", "scale": {"min": 1, "max": 5},
+       "text": "On a scale from 1 (strongly disagree) to 5 (strongly agree): artificial intelligence systems should be tested by an independent authority before they are sold. Answer with a single number."}
+    ]
+  },
+  "run": {
+    "data_dir": "data",
+    "gguf_py_path": null,
+    "run_seed": 20261007,
+    "concurrency": null,
+    "now": "2026-10-07",
+    "cache_reuse_limit": 1000,
+    "generation": {"temperature": 0.7, "top_p": 0.95, "n_predict": 300, "timeout": 600, "enable_thinking": false},
+    "seeker": {"url": "http://127.0.0.1:8201", "gguf_path": null},
+    "mentor": {"url": "http://127.0.0.1:8202", "gguf_path": null},
+    "judge": {"url": "http://127.0.0.1:8099", "gguf_path": null}
+  },
+  "repo": null
+}

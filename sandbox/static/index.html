@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dyad Sandbox</title>
+  <meta name="description" content="Design, run and inspect LLM-to-LLM dialogue studies over the dyad harness.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script type="module" src="/static/js/app.js"></script>
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <a class="brand" href="#/study" title="Dyad Sandbox: a GUI over harness/">
+      <span class="brand-mark" aria-hidden="true">◐◑</span>
+      <span class="brand-name">Dyad Sandbox</span>
+    </a>
+    <div class="study-bar" id="study-bar" aria-label="Study"></div>
+    <div class="status-bar" id="status-bar" aria-live="polite"></div>
+  </header>
+  <div id="banners" class="banners"></div>
+  <div class="layout">
+    <nav class="sidenav" id="sidenav" aria-label="Views"></nav>
+    <main class="main" id="main" tabindex="-1">
+      <div class="loading" id="boot">Loading…</div>
+    </main>
+  </div>
+  <noscript><p class="noscript">The sandbox needs JavaScript (ES modules) to run.</p></noscript>
+</body>
+</html>

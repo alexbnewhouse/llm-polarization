@@ -33,6 +33,9 @@ models/
   benchmarks/                    scripts + raw results (llama-bench sweeps, parallel scaling)
   serving/                       llama-server watchdog scripts used on the box
 harness/                         the dyad harness: dialogues, surveys, scoring (see harness/README.md)
+sandbox/                         the GUI over the harness: design a study on any axes, run it, watch it
+                                 (python -m sandbox; see sandbox/README.md)
+studies/                         saved sandbox study designs (*.study.json); the repo study is rebuilt live
 prompts/                         seeker persona templates (to be written)
 instruments/survey-batteries.md  ideological + affective batteries (from de Jong 2024)
 analysis/                        analysis code (to be written)
@@ -54,6 +57,9 @@ LICENSE, CITATION.cff            MIT; cite the repository as in CITATION.cff
   (6.0), glm-4.7-flash 29.1 (8.6). About 19.8 days for four arms at 20 turns.
   See `models/RUN_APPROACH.md`.
 - Pipeline: `harness/` runs dialogues, surveys and scoring (unit-tested; live-tested on the desktop 5080). No pilot data yet.
+- Sandbox GUI (2026-10-07): `python -m sandbox` designs a study over any axes, loads this study
+  exactly (its export goes through `harness.randomize`), runs it through the harness CLI and shows
+  transcripts, survey shifts and judge curves live. A mock backend lets it run without a GPU.
 - Reproducibility standard: `docs/REPRODUCIBILITY.md`. Same seed does not mean same tokens under
   prompt caching and continuous batching; what is and is not reproducible is written down there,
   and the appendix checklist lives at the end of it.
