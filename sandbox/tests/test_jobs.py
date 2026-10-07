@@ -1,12 +1,17 @@
 """Jobs: the argv is built only from validated fields, matching harness/run.py's options; a job's status
-and meaning follow its exit code; stop is SIGINT then SIGKILL; records survive a restart."""
+and meaning follow its exit code; stop is SIGINT then SIGKILL; records survive a restart, and a job still
+running after a restart is followed by its pid and still blocks a duplicate."""
 from __future__ import annotations
 import json
+import os
+import subprocess
 import sys
 import time
 import pytest
 from harness import run as R
-from sandbox.jobs import EXIT_MEANINGS, JOB_KINDS, JobConflict, JobManager, build_argv, exit_meaning
+from sandbox import jobs as J
+from sandbox.jobs import (DETACHED_MEANING, EXIT_MEANINGS, JOB_KINDS, LOST_MEANING, JobConflict, JobManager,
+                          build_argv, exit_meaning, pid_alive)
 
 PY = sys.executable
 HR = [PY, "-m", "harness.run"]
@@ -73,6 +78,7 @@ def test_every_built_argv_parses_with_the_harness_parser(monkeypatch):
     ("run", {"config": "c", "manifest": "m", "run_id": "a/b"}, "run_id"),
     ("run", {"config": "c", "manifest": "m", "run_id": ".."}, "run_id"),
     ("run", {"config": "c", "manifest": "m", "run_id": "a b"}, "run_id"),
+    ("run", {"config": "c", "manifest": "m", "run_id": "wave1\n"}, "run_id"),      # `$` matches before a final \n
     ("survey", {"config": "c", "run_id": "r", "phase": "mid"}, "phase"),
     ("score", {"config": "c", "run_id": "r", "scope": "all"}, "scope"),
     ("score", {"config": "c", "run_id": "r", "subsample": 0}, "subsample"),
@@ -88,6 +94,7 @@ def test_every_built_argv_parses_with_the_harness_parser(monkeypatch):
     ("flags", {"config": "c", "run_id": "r", "threshold": 0.5, "run_length": 2.5}, "run_length"),
     ("flags", {"config": "c", "run_id": "r", "threshold": 0.5, "judge": "--x"}, "judge"),
     ("flags", {"config": "c", "run_id": "r", "threshold": 0.5, "judge": "xyz"}, "judge"),
+    ("flags", {"config": "c", "run_id": "r", "threshold": 0.5, "judge": "abc\n"}, "judge"),
     ("agreement", {"config": "c", "run_id": "r", "metric": "vibes"}, "metric"),
 ])
 def test_build_argv_refuses_bad_fields(kind, fields, field):
@@ -234,15 +241,172 @@ def test_reload_keeps_records_and_marks_running_ones_lost(tmp_path):
     (log_dir / f"{ghost['id']}.json").write_text(json.dumps(ghost))
     (log_dir / "garbage.json").write_text("{not json")
     second = JobManager(tmp_path, log_dir)
-    assert second.get(done["id"]) == done
+    assert second.get(done["id"]) == done and done["detached"] is False
     lost = second.get(ghost["id"])
-    assert lost["status"] == "lost" and "pid 999999" in lost["meaning"]
+    assert lost["status"] == "lost" and lost["meaning"] == LOST_MEANING and lost["pid"] == 999999
     assert json.loads((log_dir / f"{ghost['id']}.json").read_text())["status"] == "lost"
     assert second.stop(ghost["id"]) == lost and second.wait(ghost["id"], timeout=0.1) == lost
     assert second.read_log(ghost["id"]) == ("", 0)
     new = second.start_argv(_exit_argv(0), kind="check")
     assert int(new["id"].rsplit("-", 1)[1]) > 7
     second.wait(new["id"], timeout=10)
+
+
+# --- a job that outlives the sandbox that started it ---------------------------------------------------------
+
+def _orphan(log_dir, run_id, *, code="import time; print('ready', flush=True); time.sleep(30)", seq=7,
+            harness=True, servers=()):
+    """A job left running by an earlier sandbox process: a process in its own session (as start_argv makes
+    it) whose record on disk still says running. Its command line names harness.run and the run id the way
+    a real job's does (`-c` ignores the arguments after the code). Returns (Popen, job id)."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    job_id = f"20261007-120000-run-{seq}"
+    log_path = log_dir / f"{job_id}.log"
+    argv = [PY, "-c", code] + (["-m", "harness.run", "run", "--run-id", run_id] if harness else [])
+    with open(log_path, "wb") as log:
+        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+    record = {"id": job_id, "kind": "run", "label": "", "argv": argv, "run_id": run_id, "status": "running",
+              "returncode": None, "meaning": None, "started_at": "2026-10-07T12:00:00+0000", "ended_at": None,
+              "log_path": str(log_path), "pid": proc.pid, "stop_requested": False, "data_dir": "data",
+              "servers": list(servers)}
+    (log_dir / f"{job_id}.json").write_text(json.dumps(record))
+    deadline = time.monotonic() + 10
+    while b"ready" not in log_path.read_bytes() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return proc, job_id
+
+
+def _reap(proc):
+    """The test process is the orphan's parent, so it reaps it (an earlier sandbox's children are init's)."""
+    try:
+        os.killpg(proc.pid, 9)
+    except OSError:
+        pass
+    proc.wait(timeout=10)
+
+
+def test_a_job_still_running_after_a_restart_stays_running_and_blocks_a_duplicate(tmp_path):
+    """Restarting the GUI must not let a second `run` start on a run id the first one is still writing: two
+    writers would append duplicate (dyad_id, attempt) rows."""
+    log_dir = tmp_path / "jobs"
+    servers = ["http://127.0.0.1:8201", "http://127.0.0.1:8202"]
+    proc, job_id = _orphan(log_dir, "wave1", servers=servers)
+    try:
+        jm = JobManager(tmp_path, log_dir, poll=0.05)
+        job = jm.get(job_id)
+        assert job["status"] == "running" and job["detached"] is True and job["meaning"] == DETACHED_MEANING
+        assert json.loads((log_dir / f"{job_id}.json").read_text())["detached"] is True
+        assert jm.wait(job_id, timeout=0.2)["status"] == "running"
+        with pytest.raises(JobConflict, match=job_id):
+            jm.start_argv(_exit_argv(0), kind="run", run_id="wave1")
+        (tmp_path / "c.json").write_text(json.dumps({"seeker": {"url": servers[0] + "/"}, "mentor": {"url": "x"}}))
+        with pytest.raises(JobConflict, match="8201"):              # and its servers stay taken
+            jm.start("check", {"config": "c.json"})
+        stopped = jm.stop(job_id)                                   # SIGINT to its process group
+        assert stopped["stop_requested"] is True and stopped["status"] == "running"
+        done = jm.wait(job_id, timeout=10)
+        assert done["status"] == "lost" and done["meaning"] == LOST_MEANING and done["ended_at"]
+        assert done["returncode"] is None and "exit code unknown" in jm.read_log(job_id)[0]
+        assert json.loads((log_dir / f"{job_id}.json").read_text())["status"] == "lost"
+        assert jm.stop(job_id) == done
+        jm.wait(jm.start_argv(_exit_argv(0), kind="run", run_id="wave1")["id"], timeout=10)   # free again
+    finally:
+        _reap(proc)
+
+
+def test_a_second_stop_kills_a_detached_job_that_ignores_sigint(tmp_path):
+    code = ("import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\ntime.sleep(30)\n")
+    proc, job_id = _orphan(tmp_path / "jobs", "wave2", code=code)
+    try:
+        jm = JobManager(tmp_path, tmp_path / "jobs", poll=0.05)
+        jm.stop(job_id)
+        assert jm.wait(job_id, timeout=0.3)["status"] == "running"
+        jm.stop(job_id)
+        assert jm.wait(job_id, timeout=10)["status"] == "lost"
+        assert proc.wait(timeout=10) == -9
+    finally:
+        _reap(proc)
+
+
+def test_a_detached_job_that_has_ended_frees_its_run_id_before_the_next_poll(tmp_path):
+    """The duplicate guard asks the pid again rather than trusting a status the watcher has not updated yet."""
+    proc, job_id = _orphan(tmp_path / "jobs", "wave3")
+    try:
+        jm = JobManager(tmp_path, tmp_path / "jobs", poll=3600)
+        assert jm.get(job_id)["status"] == "running"
+        _reap(proc)                                                 # gone, and reaped as init would
+        new = jm.start_argv(_exit_argv(0), kind="run", run_id="wave3")
+        assert jm.get(job_id)["status"] == "lost" and jm.wait(job_id, timeout=1)["meaning"] == LOST_MEANING
+        jm.wait(new["id"], timeout=10)
+    finally:
+        _reap(proc)
+
+
+def test_a_reused_pid_is_not_the_job(tmp_path, monkeypatch):
+    """A pid the job once had may now be another process: on Linux its command line must still name
+    harness.run and the run id. Without /proc (macOS) only signal 0 is asked."""
+    other, other_id = _orphan(tmp_path / "jobs", "wave4", harness=False, seq=8)
+    mine, mine_id = _orphan(tmp_path / "jobs", "wave5", seq=9)
+    try:
+        assert pid_alive(mine.pid, "wave5") and pid_alive(mine.pid)
+        assert not pid_alive(mine.pid, "wave") and not pid_alive(other.pid, "wave4")
+        assert not pid_alive(None) and not pid_alive(0) and not pid_alive(-1) and not pid_alive(True)
+        if os.path.isdir("/proc/self"):
+            jm = JobManager(tmp_path, tmp_path / "jobs", poll=0.05)
+            assert jm.get(other_id)["status"] == "lost" and jm.get(mine_id)["status"] == "running"
+        monkeypatch.setattr(J, "PROC", tmp_path / "no-proc")
+        assert pid_alive(other.pid, "wave4")                       # signal 0 only
+    finally:
+        _reap(other)
+        _reap(mine)
+    assert not pid_alive(mine.pid, "wave5")
+
+
+# --- jobs that share model servers with a run ------------------------------------------------------------------
+
+def test_a_check_or_survey_on_a_running_runs_servers_is_refused(tmp_path):
+    """A check or survey probes slot 0 of the seeker/mentor servers, evicting the KV cache of the dyad a run
+    has there (and cache_reuse_limit then fails that dyad)."""
+    jm = JobManager(tmp_path, tmp_path / "jobs", python=PY)
+
+    def config(name, seeker, mentor):
+        (tmp_path / name).write_text(json.dumps({"seeker": {"url": seeker, "gguf_path": None},
+                                                 "mentor": {"url": mentor, "gguf_path": None},
+                                                 "judge": {"url": "http://127.0.0.1:8201", "gguf_path": None}}))
+        return name
+
+    same = config("same.json", "http://127.0.0.1:8201/", "http://127.0.0.1:8202")
+    mentor_only = config("mentor.json", "http://127.0.0.1:9201", "http://127.0.0.1:8202")
+    other = config("other.json", "http://127.0.0.1:9201", "http://127.0.0.1:9202")
+    run = jm.start_argv([PY, "-c", "import time; time.sleep(30)"], kind="run", run_id="w",
+                        servers=["http://127.0.0.1:8201", "http://127.0.0.1:8202"])
+    assert run["servers"] == ["http://127.0.0.1:8201", "http://127.0.0.1:8202"]
+    started = []
+    try:
+        with pytest.raises(JobConflict, match=f"{run['id']}.*http://127.0.0.1:8201"):
+            jm.start("check", {"config": same})
+        with pytest.raises(JobConflict, match="8202"):
+            jm.start("survey", {"config": mentor_only, "run_id": "w"})
+        started.append(jm.start("check", {"config": other}))
+        started.append(jm.start("survey", {"config": config("seeker.json", "http://127.0.0.1:8201",
+                                                             "http://127.0.0.1:9202"), "run_id": "w"}))
+        started.append(jm.start("score", {"config": same, "run_id": "w"}))     # the judge is not the run's
+        assert [j["servers"] for j in started] == [["http://127.0.0.1:9201", "http://127.0.0.1:9202"],
+                                                   ["http://127.0.0.1:9202"], []]
+        assert jm.start_argv(_exit_argv(0), kind="check")["servers"] == []
+    finally:
+        jm.stop(run["id"])
+        jm.stop(run["id"])
+        jm.wait(run["id"], timeout=10)
+        for j in started:
+            jm.wait(j["id"], timeout=60)
+    started.append(jm.start("check", {"config": same}))                       # the run has ended
+    assert started[-1]["servers"] == ["http://127.0.0.1:8201", "http://127.0.0.1:8202"]
+    assert jm.start("check", {"config": "missing.json"})["servers"] == []
+    for j in jm.list():
+        jm.wait(j["id"], timeout=60)
 
 
 def test_read_log_offsets_and_utf8_boundaries(jm):

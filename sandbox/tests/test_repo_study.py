@@ -320,3 +320,120 @@ def test_repo_shape_reason_never_raises(spec):
 def test_the_example_study_is_not_repo_shaped(repo_root):
     spec = json.loads((repo_root / "studies" / "example-institutional-trust.study.json").read_text())
     assert "repo" in R.repo_shape_reason(spec)
+
+
+# --- the config's batteries and grid ------------------------------------------------------------------------
+
+def _copied_root(repo_root, tmp_path):
+    """A root with copies of prompts/ and instruments/ (and no config.json yet), so the config can name others."""
+    root = tmp_path / "root"
+    for d in ("prompts", "instruments"):
+        shutil.copytree(repo_root / d, root / d)
+    (root / "harness").mkdir()
+    shutil.copy(repo_root / "harness" / "config.example.json", root / "harness" / "config.example.json")
+    return root.resolve()
+
+
+def test_the_config_names_the_batteries_and_grid_the_repo_study_is_built_from(repo_root, tmp_path):
+    """The harness reads config.batteries and config.grid, so the repo study must too: a config naming a US
+    battery file is a study on that instrument, and its export must point at that file."""
+    root = _copied_root(repo_root, tmp_path)
+    batteries = json.loads((root / "instruments" / "batteries.json").read_text())
+    batteries["version"], batteries["items"] = "1.0.0-us", batteries["items"][:3]
+    (root / "instruments" / "batteries-us.json").write_text(json.dumps(batteries))
+    grid = json.loads((root / "prompts" / "grid.json").read_text())
+    grid["n_per_cell"] = 30
+    grid["control"]["n_per_cell"] = 30
+    (root / "prompts" / "grid-small.json").write_text(json.dumps(grid))
+    config = json.loads((root / "harness" / "config.example.json").read_text())
+    config.update(batteries="instruments/batteries-us.json", grid="prompts/grid-small.json")
+    (root / "config.json").write_text(json.dumps(config))
+
+    src = R.repo_sources(root)
+    assert src["batteries"] == root / "instruments" / "batteries-us.json"
+    assert src["grid"] == root / "prompts" / "grid-small.json" and src["config"] == root / "config.json"
+    spec = R.load_repo_study(root)
+    assert spec["instrument"] == batteries and spec["randomization"]["n_per_cell"] == 30
+    assert spec["repo"]["sources"] == {"grid": "prompts/grid-small.json",
+                                       "catalogue": "prompts/personas/catalogue.example.json",
+                                       "batteries": "instruments/batteries-us.json", "config": "config.json"}
+    assert not S.has_errors(S.validate_study(spec)) and R.repo_exact_reason(spec, root) is None
+    assert "batteries" not in spec["run"] and "grid" not in spec["run"]
+
+    # An empty batteries and a null grid (the harness's gate off) fall back to the repo's files.
+    config.update(batteries="", grid=None)
+    (root / "config.json").write_text(json.dumps(config))
+    src = R.repo_sources(root)
+    assert src["batteries"] == root / "instruments" / "batteries.json" and src["grid"] == root / "prompts" / "grid.json"
+    # So does a config that is not JSON (load_repo_study then says why).
+    (root / "config.json").write_text("{not json")
+    assert R.repo_sources(root)["batteries"] == root / "instruments" / "batteries.json"
+    with pytest.raises(ValueError):
+        R.load_repo_study(root)
+
+
+# --- exactly the repo's study ---------------------------------------------------------------------------------
+
+def test_repo_exact_reason_is_none_for_the_repo_study_whatever_its_randomization_and_run(repo_root):
+    spec = R.load_repo_study(repo_root)
+    assert R.repo_exact_reason(spec, repo_root) is None
+    spec["randomization"] = copy.deepcopy(R.RANDOMIZATION_PRESETS["pilot"])       # randomize's arguments
+    spec["randomization"]["cells"] = ["immigration_enforcement/strong_left/open"]
+    spec["run"]["data_dir"] = "workspace/mock-data"                               # the config
+    spec["run"]["seeker"]["url"] = "http://127.0.0.1:18201"
+    spec["name"], spec["description"] = "renamed", "described"
+    assert R.repo_exact_reason(spec, repo_root) is None
+
+
+def _other_study(spec):
+    """Another study in the repo's shape (t2 in the review): other topic, persona text, anchors, instrument."""
+    spec["factors"][0]["levels"] = [{"id": "gun_control", "code": "gun", "slots": {"topic_phrase": "gun control"}}]
+    spec["templates"]["persona"] = "You are {name}, a different persona. {opening}"
+    for ideology in spec["tables"][0]["values"]:
+        spec["tables"][0]["values"][ideology] = {"gun_control": ["Guns are X."]}
+    spec["instrument"]["items"] = spec["instrument"]["items"][:1]
+
+
+@pytest.mark.parametrize("mutate,words", [
+    (lambda s: s["templates"].update(persona="Edited. " + s["templates"]["persona"]), ["persona catalogue"]),
+    (lambda s: s["nested"]["variants"]["moderate"][0]["slots"].update(name="Someone Else"), ["persona catalogue"]),
+    (lambda s: s["factors"][2]["levels"].pop(), ["grid", "persona catalogue"]),       # openness: grid + catalogue
+    (lambda s: s["nested"].update(max_per_level=4), ["grid"]),
+    (lambda s: s["instrument"]["items"][0].update(text="Edited?"), ["instrument", "instruments/batteries.json"]),
+    (lambda s: s["instrument"].update(version="9"), ["instrument"]),
+    (_other_study, ["grid", "persona catalogue", "instrument"]),
+])
+def test_repo_exact_reason_names_what_differs_from_the_files(repo_root, mutate, words):
+    """Repo-shaped is not exact: a different study in the repo's shape is exported by harness.randomize, but
+    it is not the study this repository implements."""
+    spec = R.load_repo_study(repo_root)
+    mutate(spec)
+    assert R.repo_shape_reason(spec) is None
+    reason = R.repo_exact_reason(spec, repo_root)
+    assert reason and all(w in reason for w in words), reason
+    if "persona catalogue" in words:
+        catalogue = R.repo_sources(repo_root)["catalogue"].relative_to(repo_root).as_posix()
+        assert f"the persona catalogue differs from {catalogue}" in reason
+    if "grid" in words:
+        assert "the grid differs from prompts/grid.json" in reason
+
+
+def test_repo_exact_reason_of_a_study_that_is_not_repo_shaped(repo_root):
+    spec = json.loads((repo_root / "studies" / "example-institutional-trust.study.json").read_text())
+    reason = R.repo_exact_reason(spec, repo_root)
+    assert reason.startswith("not repo-shaped: ") and reason[len("not repo-shaped: "):] == R.repo_shape_reason(spec)
+    for garbage in (None, [], {}, {"repo": {}}):
+        assert R.repo_exact_reason(garbage, repo_root).startswith("not repo-shaped: ")
+
+
+def test_repo_exact_reason_follows_the_files_on_disk_now(repo_root, tmp_path):
+    root = _copied_root(repo_root, tmp_path)
+    spec = R.load_repo_study(root)
+    assert R.repo_exact_reason(spec, root) is None
+    batteries = json.loads((root / "instruments" / "batteries.json").read_text())
+    batteries["items"][0]["text"] += " (revised)"
+    (root / "instruments" / "batteries.json").write_text(json.dumps(batteries))
+    assert R.repo_exact_reason(spec, root) == "the instrument differs from instruments/batteries.json"
+    assert R.repo_exact_reason(R.load_repo_study(root), root) is None
+    (root / "prompts" / "grid.json").unlink()
+    assert "prompts/grid.json" in R.repo_exact_reason(spec, root)

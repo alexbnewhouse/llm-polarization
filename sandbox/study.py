@@ -9,8 +9,10 @@ of a half-typed draft; everything that needs a valid spec raises StudyError (a V
 seeds and the shuffle follow `harness.randomize.build_manifest` step for step, so the repo study compiled here
 is the repo's manifest: sandbox/tests/test_repo_study.py holds the two to the same rows."""
 from __future__ import annotations
+import datetime as _dt
 import itertools
 import json
+import math
 import random
 import re
 import string
@@ -935,6 +937,41 @@ def _check_instrument(instrument, issues: _Issues) -> None:
             issues.error(f"{p}.scale", f"min {scale['min']} is above max {scale['max']}")
 
 
+def _is_number(x) -> bool:
+    """A finite JSON number that is not a boolean (Python's bool is an int; the harness would take true as 1)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    return not isinstance(x, float) or math.isfinite(x)
+
+
+def _parses_as_day(x) -> bool:
+    """What harness/templates.py does with `now`: datetime.strptime(now, "%Y-%m-%d")."""
+    try:
+        _dt.datetime.strptime(x, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+# The run block's fields that have a type to check: (path under run, check, what it must be). A key left out
+# takes the harness's default (harness/run.py DEFAULT_CONFIG, deep-merged), so only a key that is present is
+# checked -- and a present null is not left out: the merge keeps it, and the run fails on it, often mid-wave.
+_RUN_FIELDS = (
+    ("generation.temperature", lambda x: _is_number(x) and x >= 0, "a number >= 0"),
+    ("generation.top_p", lambda x: _is_number(x) and 0 < x <= 1, "a number in (0, 1]"),
+    ("generation.n_predict", lambda x: _is_int(x) and x >= 1, "a whole number >= 1"),
+    ("generation.timeout", lambda x: _is_number(x) and x > 0, "a number of seconds > 0"),
+    ("generation.enable_thinking", lambda x: isinstance(x, bool), "true or false"),
+    ("run_seed", _is_int, "a whole number"),
+    ("now", _parses_as_day, "a date YYYY-MM-DD (the chat templates' strftime_now; harness/templates.py)"),
+    ("concurrency", lambda x: x is None or (_is_int(x) and x >= 1), "null (one dyad per server slot) or a whole "
+                                                                    "number >= 1"),
+    ("cache_reuse_limit", lambda x: x is None or (_is_int(x) and x >= 0), "null (no limit) or a whole number >= 0"),
+    ("gguf_py_path", lambda x: x is None or (isinstance(x, str) and x.strip() != ""), "null or a path"),
+    ("data_dir", lambda x: isinstance(x, str) and x.strip() != "", "a path"),
+)
+
+
 def _check_run(run, issues: _Issues) -> None:
     if not isinstance(run, dict):
         issues.error("run", f"a harness config without batteries and grid, got {_kind(run)}")
@@ -942,18 +979,27 @@ def _check_run(run, issues: _Issues) -> None:
     for key in ("batteries", "grid"):
         if key in run:
             issues.warn(f"run.{key}", "ignored: the export writes its own")
-    if run.get("generation") is not None and not isinstance(run.get("generation"), dict):
+    if "generation" in run and not isinstance(run["generation"], dict):
         issues.error("run.generation", f"an object of sampling settings, got {_kind(run['generation'])}")
+    for path, ok, want in _RUN_FIELDS:
+        block, key = (run.get("generation"), path.split(".", 1)[1]) if "." in path else (run, path)
+        if isinstance(block, dict) and key in block and not ok(block[key]):
+            value = block[key]
+            issues.error(f"run.{path}", f"{want}, got {value!r}" if isinstance(value, (str, int, float))
+                         and not isinstance(value, bool) else f"{want}, got {_kind(value)}")
     urls = {}
     for role in ("seeker", "mentor", "judge"):
-        entry = run.get(role)
-        if entry is None:
+        if role not in run:
             if role != "judge":
                 issues.warn(f"run.{role}.url", "no URL: check and run refuse a config without one")
             continue
+        entry = run[role]
         if not isinstance(entry, dict):
             issues.error(f"run.{role}", f"an object with url and gguf_path, got {_kind(entry)}")
             continue
+        gguf = entry.get("gguf_path")
+        if gguf is not None and not isinstance(gguf, str):
+            issues.error(f"run.{role}.gguf_path", f"null (read from the server's /props) or a path, got {_kind(gguf)}")
         url = entry.get("url")
         if url is not None and not isinstance(url, str):
             issues.error(f"run.{role}.url", f"a URL string, got {_kind(url)}")

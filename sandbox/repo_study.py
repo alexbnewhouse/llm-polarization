@@ -1,13 +1,20 @@
 """The repo's own study as a sandbox spec (docs/superpowers/specs/2026-10-07-sandbox-gui-design.md section 4).
 
-`load_repo_study` builds the spec live from prompts/grid.json, the persona catalogue, instruments/batteries.json
-and the config on every call, so the GUI never holds a stale copy and nothing about the study is saved twice.
-`to_repo_files` inverts the mapping into (grid, catalogue) for a spec that is still repo-shaped, so an export
-of the repo study goes through `harness.randomize.build_manifest` itself; `repo_shape_reason` says in words
-why a spec no longer is (a fourth factor, a renamed table, a template slot the catalogue cannot fill)."""
+`load_repo_study` builds the spec live from the grid, the persona catalogue, the batteries and the config on
+every call (the grid and batteries the config names, as the harness reads them), so the GUI never holds a stale
+copy and nothing about the study is saved twice. `to_repo_files` inverts the mapping into (grid, catalogue) for
+a spec that is still repo-shaped, so an export of the repo study goes through `harness.randomize.build_manifest`
+itself; `repo_shape_reason` says in words why a spec no longer is (a fourth factor, a renamed table, a template
+slot the catalogue cannot fill).
+
+Repo-shaped is not the same as the repo's study: any text may change and a spec stays repo-shaped (it is still
+randomized by harness.randomize), while `repo_exact_reason` asks whether it is the study the files on disk
+describe now -- the same grid, catalogue and instrument. Randomization and run settings never count: they are
+the randomizer's arguments and the config, not the study's files."""
 from __future__ import annotations
 import copy
 import json
+import os
 import re
 from pathlib import Path
 from harness.grid import load_grid
@@ -47,19 +54,39 @@ class NotRepoShaped(ValueError):
     """A spec that cannot be written as the repo's grid.json and catalogue; the message says why."""
 
 
+def _config_path(root: Path, config: dict, key: str, default: Path) -> Path:
+    """The file the config names under `key` (a non-empty string; relative to the root, where the CLI runs),
+    else `default`. Normalised without following symlinks, so a source inside the root stays root-relative."""
+    value = config.get(key)
+    if not isinstance(value, str) or not value.strip() or "\0" in value:
+        return default
+    p = Path(value.strip())
+    return Path(os.path.normpath(p if p.is_absolute() else root / p))
+
+
 def repo_sources(root) -> dict[str, Path]:
-    """The four files the repo study is built from, as absolute paths: the persona catalogue is
-    prompts/personas/catalogue.json once it is written, else catalogue.example.json; the config is config.json
-    at the root when there is one, else harness/config.example.json."""
+    """The four files the repo study is built from, as absolute paths: the config is config.json at the root
+    when there is one, else harness/config.example.json; the batteries and the grid are the files the config
+    names (`batteries`, `grid`), as `harness run` reads them, else instruments/batteries.json and
+    prompts/grid.json (a null grid turns the harness's gate off; the study is still the repo's grid); the
+    persona catalogue is prompts/personas/catalogue.json once it is written, else catalogue.example.json. A
+    config that cannot be read names nothing here; load_repo_study then says why."""
     root = Path(root).resolve()
     catalogue = root / "prompts" / "personas" / "catalogue.json"
     if not catalogue.exists():
         catalogue = root / "prompts" / "personas" / "catalogue.example.json"
-    config = root / "config.json"
-    if not config.exists():
-        config = root / "harness" / "config.example.json"
-    return {"grid": root / "prompts" / "grid.json", "catalogue": catalogue,
-            "batteries": root / "instruments" / "batteries.json", "config": config}
+    config_path = root / "config.json"
+    if not config_path.exists():
+        config_path = root / "harness" / "config.example.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = {}
+    if not isinstance(config, dict):
+        config = {}
+    return {"grid": _config_path(root, config, "grid", root / "prompts" / "grid.json"), "catalogue": catalogue,
+            "batteries": _config_path(root, config, "batteries", root / "instruments" / "batteries.json"),
+            "config": config_path}
 
 
 def load_repo_study(root) -> dict:
@@ -276,6 +303,48 @@ def _build_files(spec: dict) -> tuple[dict, dict]:
         if k not in catalogue:
             catalogue[k] = copy.deepcopy(v)
     return grid, catalogue
+
+
+def _canonical(obj) -> str:
+    """Key order does not matter; types do (1 is not 1.0 or true), as they would in the file's hash."""
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def same_json(obj, path) -> bool:
+    """Whether the JSON file at `path` holds `obj` (key order aside; False when it cannot be read)."""
+    try:
+        return _canonical(json.loads(Path(path).read_text(encoding="utf-8"))) == _canonical(obj)
+    except (OSError, ValueError):
+        return False
+
+
+def repo_exact_reason(spec, root) -> str | None:
+    """None when `spec` is the repo's study exactly: repo-shaped, its grid and persona catalogue
+    (to_repo_files) equal to the files repo_sources(root) names now, and its instrument equal to the batteries
+    file. Else a short reason naming what differs ("the instrument differs from instruments/batteries.json";
+    "not repo-shaped: ..."). Randomization and run settings never count: they are randomize's arguments and
+    the config. Never raises."""
+    reason = repo_shape_reason(spec)
+    if reason:
+        return f"not repo-shaped: {reason}"
+    root = Path(root).resolve()
+    try:
+        src = repo_sources(root)
+        grid, catalogue = _build_files(spec)
+    except Exception as e:                       # repo_shape_reason passed, so this is not expected
+        return f"the study could not be compared with the repo's files ({type(e).__name__}: {e})"
+
+    def shown(path: Path) -> str:
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return str(path)
+
+    differs = [f"the {what} differs from {shown(src[key])}"
+               for what, key, obj in (("grid", "grid", grid), ("persona catalogue", "catalogue", catalogue),
+                                      ("instrument", "batteries", spec.get("instrument")))
+               if not same_json(obj, src[key])]
+    return "; ".join(differs) or None
 
 
 def to_repo_files(spec) -> tuple[dict, dict]:

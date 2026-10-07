@@ -6,8 +6,9 @@ check is tested without a socket; `make_server` puts it behind a stdlib Threadin
 authentication: the server binds 127.0.0.1 and is reached from another machine through an SSH tunnel. What
 stands in for it is what a browser enforces: every non-GET request must carry `X-Sandbox: 1` and a JSON content
 type, which a page on another site cannot send without a CORS preflight this server never answers, and every
-request's Host must be this server's own name (a DNS-rebinding page arrives under its own host name). Nothing a
-client sends reaches a shell: jobs are built from structured fields by sandbox/jobs.py."""
+request's Host must name this server, on any port (a DNS-rebinding page arrives under its own host name; an SSH
+tunnel may arrive on another local port). Nothing a client sends reaches a shell: jobs are built from structured
+fields by sandbox/jobs.py."""
 from __future__ import annotations
 import argparse
 import importlib.util
@@ -42,6 +43,7 @@ PRESETS = {"repo": repo_study.REPO_STUDY_NAME, "blank": "Blank study"}
 MANIFEST_LIMIT, MANIFEST_LIMIT_MAX = 20, 500
 MOCK_BASE_PORT = 18201                 # stable mock URLs across restarts, so a mock run can be resumed; 0 if taken
 MOCK_MAX_SLOTS = 256
+MOCK_DATA_DIR = "mock-data"            # under the workspace: mock runs never land in the repo's data/
 JSON_TYPE = "application/json; charset=utf-8"
 MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
         ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -257,8 +259,10 @@ class App:
         return None, []
 
     def host_allowed(self, host) -> bool:
-        """True when the Host header names this server: the bound host, localhost, 127.0.0.1 or [::1], with no
-        port or with the bound port. A DNS-rebinding page reaches 127.0.0.1 under its own host name."""
+        """True when the Host header names this server: the bound host, localhost, 127.0.0.1 or [::1], with any
+        port or none. The defence against DNS rebinding is the name -- a rebinding page reaches 127.0.0.1 under
+        its own host name -- not the port, which differs whenever an SSH tunnel forwards another local port
+        (ssh -L 9000:127.0.0.1:8765 sends Host 127.0.0.1:9000)."""
         if not isinstance(host, str) or not host.strip():
             return False
         host = host.strip().lower()
@@ -268,11 +272,11 @@ class App:
                 return False
             name, rest = host[:end + 1], host[end + 1:]
         elif ":" in host:
-            name, port = host.rsplit(":", 1)
+            name, port = host.split(":", 1)
             rest = ":" + port
         else:
             name, rest = host, ""
-        if rest and rest != f":{self.port}":
+        if rest and not re.fullmatch(r":[0-9]{1,5}", rest):
             return False
         bound = self.host.lower()
         return name in {*LOCAL_NAMES, f"[{bound}]" if ":" in bound else bound}
@@ -296,7 +300,7 @@ class App:
         out = []
         for p in sorted(self.studies_dir.glob(f"*{STUDY_SUFFIX}")):
             name = p.name[:-len(STUDY_SUFFIX)]
-            if STUDY_NAME_RE.match(name) and name not in PRESETS and p.is_file():
+            if STUDY_NAME_RE.fullmatch(name) and name not in PRESETS and p.is_file():
                 out.append((name, p))
         return out
 
@@ -305,7 +309,7 @@ class App:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _study_path(self, name: str) -> Path:
-        if not isinstance(name, str) or len(name) > 100 or not STUDY_NAME_RE.match(name):
+        if not isinstance(name, str) or len(name) > 100 or not STUDY_NAME_RE.fullmatch(name):
             raise HTTPError(400, f"a study name matches {STUDY_NAME_RE.pattern} (at most 100 characters), "
                                  f"got {name!r}")
         return self.studies_dir / f"{name}{STUDY_SUFFIX}"
@@ -347,10 +351,18 @@ class App:
                 "workspace": self.show(self.workspace), "studies_dir": self.show(self.studies_dir),
                 "data_dirs": self._data_dirs(), "randomization_presets": repo_study.RANDOMIZATION_PRESETS,
                 "gguf_importable": importlib.util.find_spec("gguf") is not None,
-                "repo_sources": {k: self.show(p) for k, p in repo_study.repo_sources(self.root).items()}}
+                "repo_sources": {k: self.show(p) for k, p in repo_study.repo_sources(self.root).items()},
+                "mock_data_dir": self.show(self.mock_data_dir)}
+
+    @property
+    def mock_data_dir(self) -> Path:
+        """Where a study run against the mock backend writes: workspace/mock-data, git-ignored, so mock runs
+        never land in the repo's data/ (whose manifest.json files .gitignore deliberately keeps trackable)."""
+        return self.workspace / MOCK_DATA_DIR
 
     def _data_dirs(self) -> list[str]:
-        """"data", then every other run.data_dir named by the repo study and the saved studies."""
+        """"data", then every other run.data_dir named by the repo study and the saved studies, then the mock
+        data directory once it exists."""
         specs = []
         try:
             specs.append(repo_study.load_repo_study(self.root))
@@ -373,6 +385,9 @@ class App:
                 continue
             if shown not in out:
                 out.append(shown)
+        mock = self.show(self.mock_data_dir)
+        if self.mock_data_dir.is_dir() and mock not in out:
+            out.append(mock)
         return out
 
     def _list_studies(self, req):
@@ -443,8 +458,14 @@ class App:
             reason = repo_study.repo_shape_reason(spec)
         except Exception as e:
             reason = f"the study's shape could not be checked ({type(e).__name__}: {e})"
+        # Repo-shaped: exported by harness.randomize itself. Exact: and it is the study the repo's files describe
+        # now (what the "exact repo study" badge claims); a different study in the repo's shape is not.
+        try:
+            exact = repo_study.repo_exact_reason(spec, self.root)
+        except Exception as e:
+            exact = f"the study could not be compared with the repo's files ({type(e).__name__}: {e})"
         return {"issues": issues, "summary": summary, "slots": slots, "repo_shaped": reason is None,
-                "repo_shape_reason": reason}
+                "repo_shape_reason": reason, "repo_exact": exact is None, "repo_exact_reason": exact}
 
     def _cells(self, req):
         spec = self._spec(req)

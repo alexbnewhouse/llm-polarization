@@ -77,36 +77,37 @@ def read_from(path, offset, max_bytes: int | None = None, contains: bytes | None
     missing file gives ([], offset). An offset past the end means the file was replaced, so it reads from
     the start. With `max_bytes` it stops after about that many bytes, but always on a line end and never
     with nothing when a whole line is there. A line that is not a JSON object is skipped, and so, with
-    `contains`, is a line without those bytes: a cheap prefilter that spares parsing a wave's other rows."""
+    `contains`, is a line without those bytes: a cheap prefilter that spares parsing a wave's other rows.
+    The file is streamed a line at a time, never read whole: one dyad out of a wave's turns.jsonl (hundreds
+    of MB) costs the memory of that dyad's rows."""
     offset = int(offset)
     if offset < 0:
         raise ValueError(f"offset must be >= 0, got {offset}")
+    budget = None if max_bytes is None else max(1, int(max_bytes))
     try:
         f = open(path, "rb")
     except FileNotFoundError:
         return [], offset
+    rows = []
     with f:
         if offset > os.fstat(f.fileno()).st_size:
             offset = 0
         f.seek(offset)
-        if max_bytes is None:
-            data = f.read()
-        else:
-            data = f.read(max(1, int(max_bytes)))
-            if data and not data.endswith(b"\n"):
-                data += f.readline()          # finish the line the cap cut through, if it is finished
-    end = data.rfind(b"\n") + 1
-    rows = []
-    for line in data[:end].split(b"\n"):
-        if not line.strip() or (contains is not None and contains not in line):
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows, offset + end
+        end = offset
+        for line in f:
+            if not line.endswith(b"\n"):
+                break                         # a row the harness is still writing
+            end += len(line)
+            if line.strip() and (contains is None or contains in line):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    row = None
+                if isinstance(row, dict):
+                    rows.append(row)
+            if budget is not None and end - offset >= budget:
+                break                         # the cap, on the end of the line it fell in
+    return rows, end
 
 
 def read_rows(path, contains: bytes | None = None) -> list[dict]:
@@ -122,43 +123,63 @@ def _id_bytes(dyad_id: str) -> bytes:
     return json.dumps(dyad_id).encode("utf-8")
 
 
-class _TurnProgress:
-    """Per-run progress from turns.jsonl, read incrementally: the run summary is refreshed every few seconds
-    while a wave runs, and a wave's turns.jsonl is hundreds of MB, so it is parsed once and then only from
-    the last offset. Holds (dyad_id, attempt) -> completed mentor rows and dyad_id -> latest row ts."""
+class _Incremental:
+    """A per-file aggregate of a JSONL file, read incrementally: the run summary is refreshed every few
+    seconds while a wave runs, and a wave's turns.jsonl and scores.jsonl run to hundreds of MB, so each is
+    parsed once and then only from the last offset. `new()` makes an empty aggregate, `add(agg, row)` folds
+    one row in, and `view(agg)` is what get() returns (a copy, taken under the lock). The aggregate starts
+    over when the file shrinks or is replaced (another inode); a missing file is the empty aggregate."""
     CHUNK = 16 << 20
 
-    def __init__(self):
+    def __init__(self, new, add, view):
+        self._new, self._add, self._view = new, add, view
         self._lock = threading.Lock()
         self._state: dict[str, dict] = {}
 
-    def get(self, path: Path) -> tuple[dict, dict]:
+    def get(self, path: Path):
         key = str(path)
         with self._lock:
-            st = self._state.get(key)
             try:
-                size = path.stat().st_size
+                st = os.stat(path)
             except OSError:
                 self._state.pop(key, None)
-                return {}, {}
-            if st is None or size < st["offset"]:          # new, or replaced by a shorter file
-                st = self._state[key] = {"offset": 0, "done": {}, "last_ts": {}}
-            while st["offset"] < size:
-                rows, new = read_from(path, st["offset"], max_bytes=self.CHUNK)
-                if new == st["offset"]:
+                return self._view(self._new())
+            entry = self._state.get(key)
+            if entry is None or st.st_size < entry["offset"] or (st.st_dev, st.st_ino) != entry["file"]:
+                entry = self._state[key] = {"offset": 0, "file": (st.st_dev, st.st_ino), "agg": self._new()}
+            while entry["offset"] < st.st_size:
+                rows, new = read_from(path, entry["offset"], max_bytes=self.CHUNK)
+                if new <= entry["offset"]:
                     break                                   # only a half-written line is left
-                st["offset"] = new
+                entry["offset"] = new
                 for r in rows:
-                    d = r.get("dyad_id")
-                    if r.get("ts") and r["ts"] > st["last_ts"].get(d, ""):
-                        st["last_ts"][d] = r["ts"]
-                    if r.get("agent") == "mentor" and r.get("finish_reason") != "error":
-                        k = (d, _attempt(r))
-                        st["done"][k] = st["done"].get(k, 0) + 1
-            return dict(st["done"]), dict(st["last_ts"])
+                    self._add(entry["agg"], r)
+            return self._view(entry["agg"])
 
 
-_TURN_PROGRESS = _TurnProgress()
+def _add_turn(agg: dict, r: dict) -> None:
+    """turns.jsonl: (dyad_id, attempt) -> completed mentor rows, and dyad_id -> latest row ts."""
+    d = r.get("dyad_id")
+    if r.get("ts") and r["ts"] > agg["last_ts"].get(d, ""):
+        agg["last_ts"][d] = r["ts"]
+    if r.get("agent") == "mentor" and r.get("finish_reason") != "error":
+        k = (d, _attempt(r))
+        agg["done"][k] = agg["done"].get(k, 0) + 1
+
+
+def _add_score(agg: dict, r: dict) -> None:
+    """scores.jsonl: the metrics and the judge hashes, each in the order it first appears."""
+    m, j = r.get("metric"), r.get("judge_sha256")
+    if m is not None and m not in agg["metrics"]:
+        agg["metrics"].append(m)
+    if j and j not in agg["judges"]:
+        agg["judges"].append(j)
+
+
+_TURN_PROGRESS = _Incremental(lambda: {"done": {}, "last_ts": {}}, _add_turn,
+                              lambda a: (dict(a["done"]), dict(a["last_ts"])))
+_SCORE_INDEX = _Incremental(lambda: {"metrics": [], "judges": []}, _add_score,
+                            lambda a: (_metric_order(a["metrics"]), list(a["judges"])))
 
 
 def _read_json(path) -> dict | None:
@@ -227,6 +248,11 @@ def condition_levels(dyad_rows: list[dict], level_order: dict | None = None) -> 
     return {k: order_levels(v, (level_order or {}).get(k)) for k, v in seen.items()}
 
 
+def _metric_order(present: list) -> list:
+    """Metrics in harness.scorer.METRICS order, any others after in the order given."""
+    return [m for m in METRICS if m in present] + [m for m in present if m not in METRICS]
+
+
 def metrics_present(score_rows: list[dict]) -> list[str]:
     """The metrics scores.jsonl holds, in harness.scorer.METRICS order (any others after)."""
     present = []
@@ -234,7 +260,7 @@ def metrics_present(score_rows: list[dict]) -> list[str]:
         m = r.get("metric")
         if m is not None and m not in present:
             present.append(m)
-    return [m for m in METRICS if m in present] + [m for m in present if m not in METRICS]
+    return _metric_order(present)
 
 
 def judge_shas(score_rows: list[dict]) -> list[str]:
@@ -370,7 +396,7 @@ def run_summary(data_dir, run_id, root=None) -> dict:
     status = _status_rows(read_rows(path / "status.jsonl"))
     dyad_rows = [r for r in read_rows(path / "dyads.jsonl") if "dyad_id" in r]
     done, turn_ts = _TURN_PROGRESS.get(path / "turns.jsonl")
-    scores = read_rows(path / "scores.jsonl")
+    metrics, judges = _SCORE_INDEX.get(path / "scores.jsonl")
     index = resume_index(status)
 
     order: list[str] = []
@@ -416,7 +442,7 @@ def run_summary(data_dir, run_id, root=None) -> dict:
             "roles": {role: _role_info((manifest or {}).get(role)) for role in ("seeker", "mentor")},
             "judges": _judges(path), "dyads": dyads,
             "factors": condition_levels(dyad_rows, level_order(data_dir, run_id, root=root)),
-            "metrics": metrics_present(scores), "judge_shas": judge_shas(scores),
+            "metrics": metrics, "judge_shas": judges,
             # Where a live view starts tailing (GET .../tail): the files as this summary read them.
             "offsets": {name: line_end_offset(path / f"{name}.jsonl") for name in TAIL_FILES}}
 

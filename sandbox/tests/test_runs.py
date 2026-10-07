@@ -383,3 +383,69 @@ def test_run_summary_offsets_end_on_a_whole_line_and_tail_from_them(data, retrie
         f.write('": 1}\n')
     assert runs.tail(data, "r1", s["offsets"])["rows"]["turns"] == [{"dyad_id": "d07", "half": 1}]
     assert runs.line_end_offset(retried_run / "missing.jsonl") == 0
+
+
+def test_read_from_streams_a_whole_file_with_contains(tmp_path):
+    """A dyad's transcript out of a wave's turns.jsonl (hundreds of MB) must not hold the file in memory: the
+    lines are streamed and only those holding the dyad's id are parsed."""
+    import tracemalloc
+    p = tmp_path / "turns.jsonl"
+    pad = "x" * 480
+    with open(p, "w", encoding="utf-8") as f:
+        for i in range(40_000):                                        # about 20 MB
+            f.write(json.dumps({"dyad_id": "w-target" if i % 10_000 == 7 else f"w-{i:05d}", "pad": pad}) + "\n")
+        f.write(json.dumps({"dyad_id": "w-target", "half": True})[:-1])  # the harness is mid-line
+    size = p.stat().st_size
+    tracemalloc.start()
+    try:
+        rows, offset = runs.read_from(p, 0, contains=b'"w-target"')
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert [r["dyad_id"] for r in rows] == ["w-target"] * 4 and not any("half" in r for r in rows)
+    assert offset == size - len(json.dumps({"dyad_id": "w-target", "half": True})[:-1])
+    assert peak < size // 10, peak                                     # never the whole file at once
+    # The semantics are unchanged: whole lines only, offsets past the last one, a filter that matches nothing.
+    assert runs.read_from(p, 0, contains=b'"nobody"') == ([], offset)
+    assert runs.read_from(p, offset, contains=b'"w-target"') == ([], offset)
+    with open(p, "a", encoding="utf-8") as f:
+        f.write("}\n")
+    assert runs.read_from(p, offset, contains=b'"w-target"') == ([{"dyad_id": "w-target", "half": True}],
+                                                                  p.stat().st_size)
+    assert runs.read_from(p, size * 2, contains=b'"w-target"')[1] == p.stat().st_size   # replaced: from 0
+
+
+def test_run_summary_reads_scores_incrementally(data, retried_run, monkeypatch):
+    """metrics and judge_shas come from scores.jsonl, which a scored wave makes hundreds of MB: parsed once,
+    then only from the last offset; reset when the file shrinks or is replaced."""
+    scores = retried_run / "scores.jsonl"
+    first = runs.run_summary(data, "r1")
+    judge = first["judge_shas"][0]
+    assert first["metrics"] and first["metrics"] == runs.metrics_present(read_jsonl(scores))
+
+    reads = []
+    real = runs.read_from
+    monkeypatch.setattr(runs, "read_from", lambda path, offset, *a, **k: reads.append((Path(path).name, offset))
+                        or real(path, offset, *a, **k))
+    size = scores.stat().st_size
+    row = {"run_id": "r1", "dyad_id": "d01", "attempt": 1, "turn": 1, "agent": "mentor", "metric": "zz_custom",
+           "judge_sha256": "b" * 64, "score": 0.5}
+    JsonlWriter(scores).write(row)
+    again = runs.run_summary(data, "r1")
+    assert again["metrics"] == first["metrics"] + ["zz_custom"] and again["judge_shas"] == [judge, "b" * 64]
+    assert [o for name, o in reads if name == "scores.jsonl"] == [size]          # only the appended bytes
+    reads.clear()
+    assert runs.run_summary(data, "r1")["metrics"] == again["metrics"]
+    assert [o for name, o in reads if name == "scores.jsonl"] == []               # nothing new: nothing read
+
+    tmp = retried_run / "scores.new"                                              # replaced by a longer file
+    tmp.write_text(json.dumps({**row, "metric": "alignment", "judge_sha256": "c" * 64}) + "\n" +
+                   scores.read_text(encoding="utf-8"), encoding="utf-8")
+    os.replace(tmp, scores)
+    replaced = runs.run_summary(data, "r1")
+    assert replaced["judge_shas"] == ["c" * 64, judge, "b" * 64]
+    scores.write_text(json.dumps(row) + "\n", encoding="utf-8")                   # truncated in place, shorter
+    assert runs.run_summary(data, "r1")["metrics"] == ["zz_custom"]
+    assert runs.run_summary(data, "r1")["judge_shas"] == ["b" * 64]
+    scores.unlink()
+    assert runs.run_summary(data, "r1")["metrics"] == [] and runs.run_summary(data, "r1")["judge_shas"] == []

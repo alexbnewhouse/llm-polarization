@@ -51,18 +51,6 @@ def _write_json(path: Path, obj) -> Path:
     return path
 
 
-def _canonical(obj) -> str:
-    """Key order does not matter; types do (1 is not 1.0 or true), as they would in the file's hash."""
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-
-
-def _same_json(obj, path: Path) -> bool:
-    try:
-        return _canonical(json.loads(path.read_text(encoding="utf-8"))) == _canonical(obj)
-    except (OSError, ValueError):
-        return False
-
-
 def _source(spec, key: str, root: Path) -> Path | None:
     """The repo file the spec was built from (spec.repo.sources[key]), if it exists inside the root. A source
     outside the root is never referenced: the spec arrives from a browser, and only the repo's own files are
@@ -81,7 +69,7 @@ def _source(spec, key: str, root: Path) -> Path | None:
 
 def _reuse_or_write(obj, source: Path | None, target: Path) -> tuple[Path, bool]:
     """The repo's file when its content equals `obj` (True), else `obj` written to `target` (False)."""
-    if source is not None and _same_json(obj, source):
+    if source is not None and repo_study.same_json(obj, source):
         return source, True
     return _write_json(target, obj), False
 
@@ -179,6 +167,11 @@ def _export(spec: dict, root: Path, out: Path, python: str) -> dict:
         grid_path, same_grid = _reuse_or_write(grid, _source(spec, "grid", root), out / "grid.json")
         catalogue_path, same_catalogue = _reuse_or_write(catalogue, _source(spec, "catalogue", root),
                                                          out / "catalogue.json")
+        if not same_catalogue:
+            # The edited catalogue still carries the repo's version string (the spec keeps it in repo.catalogue),
+            # so the assignment log's version alone would read as the repo's catalogue.
+            notes.append(f"the catalogue differs from the repo's but keeps version {catalogue.get('version')}; "
+                         "the assignment log's catalogue sha256 tells them apart")
         kwargs = repo_study.build_manifest_kwargs(spec)
         rows, assignment = build_manifest(grid, catalogue, **kwargs)
         if cells is not None:
@@ -247,7 +240,7 @@ def _judge(judge) -> dict:
     if unknown:
         raise ValueError(f"judge takes url and gguf_path, not {', '.join(unknown)}")
     url = judge.get("url")
-    if not isinstance(url, str) or not _URL_RE.match(url.strip()):
+    if not isinstance(url, str) or not _URL_RE.fullmatch(url.strip()):
         raise ValueError(f"judge.url must be an http(s) URL, got {url!r}")
     gguf = judge.get("gguf_path")
     if isinstance(gguf, str) and not gguf.strip():

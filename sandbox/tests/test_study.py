@@ -442,6 +442,43 @@ RULES = [
     ("run", lambda s: s.update(run=[])),
     ("run.seeker", lambda s: s["run"].update(seeker="http://127.0.0.1:8201")),
     ("run.mentor.url", lambda s: s["run"]["mentor"].update(url=8202)),
+    ("run.mentor.gguf_path", lambda s: s["run"]["mentor"].update(gguf_path=5)),
+    ("run.judge", lambda s: s["run"].update(judge=None)),             # the harness's merge would keep null
+    ("run.judge.url", lambda s: s["run"]["judge"].update(url=["x"])),
+    ("run.generation", lambda s: s["run"].update(generation=None)),
+    ("run.generation", lambda s: s["run"].update(generation="hot")),
+    # the run block's types: what the harness would otherwise fail on mid-run, or send to llama-server as is
+    ("run.generation.temperature", lambda s: s["run"]["generation"].update(temperature=None)),  # a cleared field
+    ("run.generation.temperature", lambda s: s["run"]["generation"].update(temperature="0.7")),
+    ("run.generation.temperature", lambda s: s["run"]["generation"].update(temperature=-0.1)),
+    ("run.generation.temperature", lambda s: s["run"]["generation"].update(temperature=True)),
+    ("run.generation.top_p", lambda s: s["run"]["generation"].update(top_p="0.9")),
+    ("run.generation.top_p", lambda s: s["run"]["generation"].update(top_p=0)),
+    ("run.generation.top_p", lambda s: s["run"]["generation"].update(top_p=1.01)),
+    ("run.generation.n_predict", lambda s: s["run"]["generation"].update(n_predict=0)),
+    ("run.generation.n_predict", lambda s: s["run"]["generation"].update(n_predict=300.0)),
+    ("run.generation.n_predict", lambda s: s["run"]["generation"].update(n_predict=True)),
+    ("run.generation.timeout", lambda s: s["run"]["generation"].update(timeout=0)),
+    ("run.generation.timeout", lambda s: s["run"]["generation"].update(timeout=None)),
+    ("run.generation.enable_thinking", lambda s: s["run"]["generation"].update(enable_thinking="false")),
+    ("run.generation.enable_thinking", lambda s: s["run"]["generation"].update(enable_thinking=0)),
+    ("run.run_seed", lambda s: s["run"].update(run_seed=None)),
+    ("run.run_seed", lambda s: s["run"].update(run_seed="20261007")),
+    ("run.run_seed", lambda s: s["run"].update(run_seed=1.5)),
+    ("run.run_seed", lambda s: s["run"].update(run_seed=False)),
+    ("run.now", lambda s: s["run"].update(now=5)),
+    ("run.now", lambda s: s["run"].update(now=None)),
+    ("run.now", lambda s: s["run"].update(now="2026-13-01")),
+    ("run.now", lambda s: s["run"].update(now="07/10/2026")),
+    ("run.concurrency", lambda s: s["run"].update(concurrency=0)),
+    ("run.concurrency", lambda s: s["run"].update(concurrency="4")),
+    ("run.concurrency", lambda s: s["run"].update(concurrency=True)),
+    ("run.cache_reuse_limit", lambda s: s["run"].update(cache_reuse_limit=-1)),
+    ("run.cache_reuse_limit", lambda s: s["run"].update(cache_reuse_limit=10.5)),
+    ("run.gguf_py_path", lambda s: s["run"].update(gguf_py_path="")),
+    ("run.gguf_py_path", lambda s: s["run"].update(gguf_py_path=3)),
+    ("run.data_dir", lambda s: s["run"].update(data_dir="")),
+    ("run.data_dir", lambda s: s["run"].update(data_dir=None)),
 ]
 
 
@@ -454,6 +491,25 @@ def test_each_validation_rule_reports_an_error_at_its_path(path, mutate):
     assert S.has_errors(issues)
     with pytest.raises(S.StudyError):
         S.compile_manifest(spec)
+
+
+def test_the_run_block_accepts_every_value_the_harness_does():
+    """Nulls where the harness takes them, the edges of each range, and keys left out (the harness's
+    defaults fill them): no errors."""
+    spec = example()
+    spec["run"].update(concurrency=4, cache_reuse_limit=0, gguf_py_path="/opt/gguf-py", run_seed=0, now="2026-2-28",
+                       data_dir="/scratch/data")
+    spec["run"]["generation"].update(temperature=0, top_p=1, n_predict=1, timeout=0.5, enable_thinking=True)
+    spec["run"]["judge"].update(url=None, gguf_path="/models/judge.gguf")
+    assert not errors(S.validate_study(spec))
+    spec["run"].update(concurrency=None, cache_reuse_limit=None, gguf_py_path=None)
+    spec["run"]["generation"].update(temperature=1.3, top_p=0.5, timeout=600)
+    assert not errors(S.validate_study(spec))
+    spec["run"] = {"seeker": {"url": "http://127.0.0.1:1"}, "mentor": {"url": "http://127.0.0.1:2"},
+                   "generation": {"n_predict": 64}}
+    assert not errors(S.validate_study(spec))
+    for clean in (example(), S.blank_study(), minimal()):
+        assert not [i for i in S.validate_study(clean) if i["path"].startswith("run")]
 
 
 def test_the_reminder_may_be_empty_when_no_mode_is_reinforced():

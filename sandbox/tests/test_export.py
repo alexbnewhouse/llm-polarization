@@ -4,6 +4,7 @@ config points at them; a generic study goes through sandbox.study; a run's manif
 import copy
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,11 @@ def lines(path) -> list[dict]:
 
 def sidecar(result) -> dict:
     return json.loads(at(result["assignment"]).read_text(encoding="utf-8"))
+
+
+def sidecar_at(root, result) -> dict:
+    p = Path(result["assignment"])
+    return json.loads((p if p.is_absolute() else root / p).read_text(encoding="utf-8"))
 
 
 # --- the repo study ---------------------------------------------------------------------------------------
@@ -120,6 +126,34 @@ def test_a_changed_persona_template_writes_the_catalogue_and_still_uses_harness_
     assert all(r["persona_text"].startswith("Edited. ") for r in rows if r["condition"]["ideology"] != "none")
     cmd = result["commands"]["randomize"]
     assert cmd[cmd.index("--catalogue") + 1] == str(catalogue)
+    # The written catalogue keeps the repo's version string, so only its hash tells the two apart: say so.
+    version = R.to_repo_files(spec)[1]["version"]
+    assert result["notes"] == [f"the catalogue differs from the repo's but keeps version {version}; the "
+                               "assignment log's catalogue sha256 tells them apart"]
+    assert a["catalogue"]["version"] == version
+
+
+def test_the_export_points_at_the_batteries_and_grid_the_config_names(tmp_path):
+    """A config naming another battery file (and grid) makes the repo study that instrument's; exported
+    unchanged, the config points at the same files, as the CLI's would."""
+    root = tmp_path / "root"
+    for d in ("prompts", "instruments"):
+        shutil.copytree(ROOT / d, root / d)
+    batteries = json.loads((root / "instruments" / "batteries.json").read_text())
+    batteries["version"], batteries["items"] = "1.0.0-us", batteries["items"][:3]
+    (root / "instruments" / "batteries-us.json").write_text(json.dumps(batteries))
+    shutil.copy(root / "prompts" / "grid.json", root / "prompts" / "grid-copy.json")
+    config = json.loads((ROOT / "harness" / "config.example.json").read_text())
+    config.update(batteries="instruments/batteries-us.json", grid="prompts/grid-copy.json")
+    (root / "config.json").write_text(json.dumps(config))
+    spec = R.load_repo_study(root)
+    spec["randomization"] = copy.deepcopy(R.RANDOMIZATION_PRESETS["pilot"])
+    result = E.export_study(spec, root=root, workspace=root / "ws")
+    assert result["unchanged_from_repo"] == {"grid": True, "catalogue": True, "batteries": True}
+    assert result["notes"] == []
+    written = json.loads((root / result["config"]).read_text())
+    assert written["batteries"] == "instruments/batteries-us.json" and written["grid"] == "prompts/grid-copy.json"
+    assert sidecar_at(root, result)["grid"]["path"] == "prompts/grid-copy.json"
 
 
 def test_a_cells_subset_keeps_the_full_exports_rows_for_those_cells(tmp_path):

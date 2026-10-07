@@ -37,7 +37,7 @@ HTML, CSS and ES-module JavaScript served by the same process, so it works offli
 | `study.py` | The study spec (section 3): validate, enumerate cells, render a cell's persona, compile a manifest. Pure functions. | harness.transcript, harness.log |
 | `repo_study.py` | Build the spec from the repo's files; map a repo-shaped spec back to `grid.json` + catalogue. | study, harness.randomize |
 | `export.py` | Write the manifest, assignment log, config, batteries (and grid + catalogue when repo-shaped) into an export directory; build the CLI argv for each command. | study, repo_study, harness.randomize |
-| `jobs.py` | Run `harness.run` / `harness.randomize` as subprocesses; log to file; stop with SIGINT. | stdlib |
+| `jobs.py` | Run `harness.run` / `harness.randomize` as subprocesses; log to file; stop with SIGINT; follow a job an earlier sandbox process started by its pid. | stdlib |
 | `runs.py` | Read `data/<run_id>/`: list runs, summarise one, a dyad's transcript, tail new rows by byte offset. | harness.log, harness.scorer |
 | `analysis.py` | Survey shift (post minus pre) and judge-score curves by axis level. Pure functions, stdlib statistics. | harness.scorer |
 | `mock_server.py` | A fake llama-server (and a minimal GGUF writer) so the sandbox and the end-to-end test run without a GPU. Never for data. | harness.templates |
@@ -58,6 +58,7 @@ workspace/                           git-ignored scratch
   configs/<run_id>*.json             configs derived from a run's manifest (for score / flags / survey)
   jobs/<job_id>.log                  subprocess output
   mock/                              mock GGUFs
+  mock-data/                         the data_dir of studies run against the mock backend (never data/)
 ```
 
 ## 3. The study spec (`sandbox-study/1`)
@@ -161,16 +162,22 @@ combination present and non-empty; no slot collisions; every treated and control
 reminder is non-empty wherever the mode is `reinforced`; `control.level` is not a level of `control.factor`;
 `control.by` excludes `control.factor`; `n_per_cell` divides by each level's variant count; `modes` a non-empty
 subset of `harness.transcript.PERSONA_MODES`; `n_turns >= 1`; `cells` entries are cell keys; the instrument
-passes the rules of `harness.survey.load_batteries` and `scale.min <= scale.max`. Warnings: missing
-seeker/mentor URL; seeker URL equal to mentor URL (`run` refuses it); condition keys other than
-`topic, ideology, openness, role` (the harness grid gate will be off: `config.grid = null`, the sandbox has
+passes the rules of `harness.survey.load_batteries` and `scale.min <= scale.max`; the `run` block's types, for
+each key present (a key left out takes the harness default; a null does not): `generation.temperature` a
+number >= 0, `top_p` in (0, 1], `n_predict` an integer >= 1, `timeout` > 0, `enable_thinking` a boolean;
+`run_seed` an integer; `now` parses with `strptime(now, "%Y-%m-%d")` (as `harness/templates.py` does);
+`concurrency` null or >= 1; `cache_reuse_limit` null or >= 0; `gguf_py_path` null or a path; `data_dir` a path;
+`seeker`, `mentor`, `judge` objects whose `url` and `gguf_path` are null or strings (a boolean is never a
+number). Warnings: missing seeker/mentor URL; seeker URL equal to mentor URL (`run` refuses it); condition keys
+other than `topic, ideology, openness, role` (the harness grid gate will be off: `config.grid = null`, the sandbox has
 validated the conditions); no factor named `topic` (the judge prompt reads `condition.topic`).
 
 ## 4. The repo study
 
-`repo_study.load_repo_study(root)` reads `prompts/grid.json`, `prompts/personas/catalogue.json` (or
-`catalogue.example.json` until the real catalogue is written), `instruments/batteries.json`, and `config.json`
-at the root (or `harness/config.example.json`). Mapping:
+`repo_study.load_repo_study(root)` reads `config.json` at the root (or `harness/config.example.json`), the grid
+and the batteries that config names (its `grid` and `batteries` keys, root-relative, as `harness run` reads them;
+`prompts/grid.json` and `instruments/batteries.json` when it names none, or a null grid), and
+`prompts/personas/catalogue.json` (or `catalogue.example.json` until the real catalogue is written). Mapping:
 
 | Spec | From |
 |---|---|
@@ -192,23 +199,35 @@ equals it, so the assignment log and `manifest.json` carry the same hashes as a 
 holds `study.compile_manifest` and `harness.randomize.build_manifest` to the same rows for the preset, so
 the GUI's preview of the repo study is the study.
 
+Repo-shaped is not the repo's study: text may change freely and the spec stays repo-shaped (still exported by
+`harness.randomize`). `repo_exact_reason(spec, root)` is None when the spec is repo-shaped **and**
+`to_repo_files(spec)` equals the grid and catalogue `repo_sources(root)` names now **and** `instrument` equals the
+batteries file (canonical JSON: key order aside, types count); else a short reason naming what differs ("the
+persona catalogue differs from prompts/personas/catalogue.example.json", "the instrument differs from
+instruments/batteries.json", "not repo-shaped: ..."). Randomization and `run` never count: they are the
+randomizer's arguments and the config. This is what the "exact repo study" badge shows. An export of a
+repo-shaped study whose catalogue differs from the repo's notes that the written catalogue keeps the repo's
+`version`, so only the assignment log's catalogue sha256 tells the two apart.
+
 ## 5. HTTP API
 
 JSON in and out. Errors are `{"error": "...", "issues": [...]?}` with status 400 (bad input), 404, 409
 (e.g. saving over the `repo` preset) or 500. Every non-GET request must carry `X-Sandbox: 1` and
 `Content-Type: application/json` (a cross-site page cannot send that header without a preflight the server
-never approves), and every request's `Host` must be the bound host, `localhost` or `127.0.0.1`
-(DNS rebinding). Run ids and dyad ids match `^[A-Za-z0-9_.-]+$`; every path is resolved and checked to lie
-inside its directory.
+never approves), and every request's `Host` must be the bound host, `localhost`, `127.0.0.1` or `[::1]`, with
+any port (DNS rebinding is defended by the name; an SSH tunnel may forward another local port, so
+`ssh -L 9000:127.0.0.1:8765` sends `Host: 127.0.0.1:9000`). Names are checked with full matches (a `$`
+would accept a trailing newline). Run ids and dyad ids match `^[A-Za-z0-9_.-]+$`; every path is resolved and
+checked to lie inside its directory.
 
 | Method, path | Body / query | Returns |
 |---|---|---|
 | `GET /` and `/static/...` | | the app |
-| `GET /api/meta` | | `root, harness_version, python, workspace, studies_dir, data_dirs, randomization_presets, gguf_importable, repo_sources` |
+| `GET /api/meta` | | `root, harness_version, python, workspace, studies_dir, data_dirs, randomization_presets, gguf_importable, repo_sources, mock_data_dir` |
 | `GET /api/studies` | | `{"studies": [{"name", "title", "kind": "preset" \| "saved", "path"}]}`; `repo` first |
 | `GET /api/studies/<name>` | | `{"name", "kind", "path", "spec"}` (`repo` is rebuilt from the files on every call) |
 | `PUT /api/studies/<name>` | `{"spec"}` | `{"path", "issues"}`; name `^[a-z0-9][a-z0-9_-]*$`; `repo` -> 409; drafts with errors may be saved |
-| `POST /api/study/validate` | `{"spec"}` | `{"issues", "summary", "slots", "repo_shaped", "repo_shape_reason"}` |
+| `POST /api/study/validate` | `{"spec"}` | `{"issues", "summary", "slots", "repo_shaped", "repo_shape_reason", "repo_exact", "repo_exact_reason"}` |
 | `POST /api/study/cells` | `{"spec"}` | `{"cells": [{"key", "kind", "condition", "variants", "n_rows"}]}` |
 | `POST /api/study/render` | `{"spec", "kind", "condition", "variant"}` | `{"persona_text", "persona_reminder", "slots"}` |
 | `POST /api/study/manifest` | `{"spec", "limit"}` | `{"rows" (first limit), "total", "assignment"}` |
@@ -237,8 +256,19 @@ list (run from the repo root) that the GUI prints as a copyable shell line.
 `survey {config, run_id, phase}`. Argv is `[sys.executable, "-m", "harness.run", kind, ...]`, cwd the repo
 root, `PYTHONUNBUFFERED=1`. A job is `{"id", "kind", "label", "argv", "run_id", "status": "running" |
 "finished" | "failed" | "stopped" | "lost", "returncode", "meaning", "started_at", "ended_at", "log_path",
-"data_dir"}` (`data_dir`: what the job's config names, so the GUI can open the run it writes); `meaning`
-follows the harness's exit codes (0 ok, 1 refused, 2 some dyads failed, 130 stopped).
+"pid", "stop_requested", "data_dir", "servers", "detached"}` (`data_dir`: what the job's config names, so the GUI
+can open the run it writes; `servers`: the seeker/mentor URLs the job talks to -- check and run both, survey the
+mentor, the others none); `meaning` follows the harness's exit codes (0 ok, 1 refused, 2 some dyads failed, 130
+stopped).
+
+Jobs run in their own session, so they outlive a restarted sandbox. On start the sandbox reloads every record;
+one still `running` whose pid is alive (and, where `/proc` exists, whose command line holds `harness.run` and
+the run id) stays `running` with `"detached": true` and meaning "started by an earlier sandbox process; still
+running"; it is polled every 2 s and, once gone, becomes `lost` with meaning "ended while no sandbox process was
+watching; exit code unknown -- see the log" and `ended_at` set. Stop works on it (SIGINT, then SIGKILL, to its
+process group). Any other record left `running` is `lost` at once. Starting a job is refused with 409 when a
+job of the same kind runs on the same run id (a detached one counts, its pid asked again), and when a `check`
+or `survey` would use a server a running `run` uses (it would probe slot 0 and evict that dyad's cache).
 
 ### 5.1 Payload shapes
 
@@ -248,11 +278,14 @@ string `"(none)"` wherever it is a key or a label; with no factor chosen there i
 ```jsonc
 // GET /api/meta
 {"root", "harness_version", "sandbox_version", "python", "workspace", "studies_dir",
- "data_dirs": ["data"], "randomization_presets": {"pilot": {...randomization}, "wave1": {...}},
- "gguf_importable": true, "repo_sources": {"grid", "catalogue", "batteries", "config"}}
+ "data_dirs": ["data"],                                // + the mock data dir once it exists
+ "randomization_presets": {"pilot": {...randomization}, "wave1": {...}},
+ "gguf_importable": true, "repo_sources": {"grid", "catalogue", "batteries", "config"},
+ "mock_data_dir": "workspace/mock-data"}               // where a study run against the mock backend writes
 
 // POST /api/study/validate
 {"issues": [{"level", "path", "message"}], "repo_shaped": true, "repo_shape_reason": null,
+ "repo_exact": true, "repo_exact_reason": null,       // exact implies shaped; the reason says what differs
  "summary": {"factors": [{"key", "label", "n_levels"}], "nested": {"key", "within", "n_variants": {"<level>": 3}} | null,
              "cells_treated", "cells_control", "rows", "rows_per_mode": {"reinforced": 2700}, "n_turns",
              "messages", "condition_keys": ["topic", "ideology", "openness", "role"]},

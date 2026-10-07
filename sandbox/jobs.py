@@ -8,8 +8,14 @@ operator stops the CLI: SIGINT, so `run` finishes its in-flight dyads, starts no
 (resume with the same run id); a second stop while it is still running sends SIGKILL.
 
 Jobs run in their own session (process group), so a Ctrl-C or a dropped SSH connection on the terminal
-running the sandbox does not take a multi-day wave down with it. The price: a sandbox restarted while a
-job runs can no longer follow it, and lists it as "lost" (its log and data/<run_id>/ keep growing)."""
+running the sandbox does not take a multi-day wave down with it. A sandbox restarted while a job runs is
+no longer its parent and cannot learn its exit code, so it follows the job by its pid instead ("detached":
+still "running", and still blocking a second job on the same run id) and lists it as "lost" once the pid is
+gone. Stop still works on it: the job's pid is its process group.
+
+A `check` or `survey` probes slot 0 of the seeker and mentor servers, which evicts the KV cache of the dyad a
+`run` has there (cache_reuse_limit then fails that dyad), so one is refused while a run uses the same
+servers. Each record lists the servers its job talks to."""
 from __future__ import annotations
 import json
 import math
@@ -34,6 +40,15 @@ EXIT_MEANINGS: dict[int, str] = {
     130: "stopped - resume with the same run id",
 }
 STATUSES = ("running", "finished", "failed", "stopped", "lost")
+DETACHED_MEANING = "started by an earlier sandbox process; still running"
+LOST_MEANING = "ended while no sandbox process was watching; exit code unknown -- see the log"
+DETACHED_POLL = 2.0                    # seconds between liveness checks of a job this process did not start
+PROC = Path("/proc")                   # Linux; absent on macOS, where a pid is checked with signal 0 only
+# The model servers each kind talks to, by config role. A run uses the seeker and mentor; score talks only to
+# the judge, which no run uses; flags and agreement read files.
+SERVER_ROLES: dict[str, tuple[str, ...]] = {"check": ("seeker", "mentor"), "run": ("seeker", "mentor"),
+                                            "survey": ("mentor",)}
+PROBES = ("check", "survey")           # kinds that would evict a running dyad's cache
 
 # The fields each kind takes: exactly the options of harness/run.py main() for that subcommand.
 FIELDS: dict[str, tuple[str, ...]] = {
@@ -52,7 +67,7 @@ _HEX_RE = re.compile(r"^[0-9a-fA-F]{1,64}$")
 
 class JobConflict(ValueError):
     """A job of the same kind is already running on the same run id (two `run`s on one run id would run
-    the same dyads twice)."""
+    the same dyads twice), or a check or survey would probe the servers a running `run` is using."""
 
 
 # ------------------------------------------------------------------------------------------------ argv
@@ -83,7 +98,7 @@ def _run_id(fields: dict, kind: str) -> str:
     v = fields.get("run_id")
     if _absent(v):
         raise ValueError(f"{kind}: run_id is required")
-    if not isinstance(v, str) or not RUN_ID_RE.match(v) or v.startswith("-") or set(v) == {"."}:
+    if not isinstance(v, str) or not RUN_ID_RE.fullmatch(v) or v.startswith("-") or set(v) == {"."}:
         raise ValueError(f"{kind}: run_id must match {RUN_ID_RE.pattern}, not start with '-' and not be "
                          f"'.' or '..', got {v!r}")
     return v
@@ -179,7 +194,7 @@ def build_argv(kind: str, fields: dict, python: str = sys.executable) -> list[st
             argv += ["--run-length", str(run_length)]
         judge = fields.get("judge")
         if not _absent(judge):
-            if not isinstance(judge, str) or not _HEX_RE.match(judge):
+            if not isinstance(judge, str) or not _HEX_RE.fullmatch(judge):
                 raise ValueError(f"{kind}: judge must be a hex sha256 prefix, got {judge!r}")
             argv += ["--judge", judge.lower()]
     elif kind == "agreement":
@@ -205,6 +220,58 @@ def exit_meaning(returncode: int | None) -> str | None:
 
 
 # ------------------------------------------------------------------------------------------------ jobs
+
+def pid_alive(pid, run_id: str | None = None) -> bool:
+    """Whether `pid` is still the harness job a record names. The pid must exist (signal 0) and lead its own
+    process group, as every job does (start_new_session). Where /proc exists (Linux) its command line must
+    also hold `harness.run`, and the run id as an argument when the record has one: a pid is reused once its
+    process is gone, and a stranger under the old number must neither hold a run id hostage nor be signalled
+    by Stop. A zombie's command line is empty, so it counts as gone. Without /proc (macOS) only signal 0 and
+    the process group are asked."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        pass                                           # it exists; it is someone else's
+    except OSError:
+        return False
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass                                           # some systems refuse it across sessions
+    if not (PROC / "self").is_dir():
+        return True
+    try:
+        args = (PROC / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    if not any(b"harness.run" in a for a in args):
+        return False
+    return run_id is None or run_id.encode("utf-8") in args
+
+
+def _url(value) -> str | None:
+    """A server URL as compared between jobs: trimmed, without a trailing slash."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().rstrip("/")
+
+
+def config_servers(cfg, kind: str) -> list[str]:
+    """The seeker/mentor URLs a job of `kind` talks to under config `cfg` (SERVER_ROLES), in role order, each
+    once. [] when the config could not be read: the harness refuses it and says why in the job's log."""
+    out: list[str] = []
+    for role in SERVER_ROLES.get(kind, ()):
+        entry = cfg.get(role) if isinstance(cfg, dict) else None
+        url = _url(entry.get("url")) if isinstance(entry, dict) else None
+        if url and url not in out:
+            out.append(url)
+    return out
+
 
 def _now() -> str:
     """The harness's timestamp format (harness.log.now_iso): local time with its UTC offset."""
@@ -237,14 +304,16 @@ class JobManager:
     """Starts, follows, stops and remembers harness jobs. Thread-safe: the HTTP server calls it from
     many request threads at once."""
 
-    def __init__(self, root, log_dir, python: str = sys.executable):
+    def __init__(self, root, log_dir, python: str = sys.executable, poll: float = DETACHED_POLL):
         """`root` is the working directory of every job (the repo root, so `-m harness.run` and the
         config's relative paths resolve); `log_dir` holds each job's log and record. Records left by an
-        earlier process are loaded; one still "running" becomes "lost", since nothing follows it now."""
+        earlier process are loaded; one still "running" whose process is still alive (pid_alive) stays
+        running, "detached", and is polled every `poll` seconds until it is gone; any other becomes "lost"."""
         self.root = Path(root).resolve()
         self.log_dir = Path(log_dir).resolve()
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.python = python
+        self.poll = poll
         self._lock = threading.RLock()
         self._jobs: dict[str, _Job] = {}
         self._seq = 0
@@ -265,28 +334,67 @@ class JobManager:
         return int(m.group(1)) if m else 0
 
     def _load(self) -> None:
+        detached = []
         for path in sorted(self.log_dir.glob("*.json")):
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(record, dict) or record.get("id") != path.stem or not JOB_ID_RE.match(path.stem):
+            if not isinstance(record, dict) or record.get("id") != path.stem or not JOB_ID_RE.fullmatch(path.stem):
                 continue
+            record.setdefault("detached", False)
+            record.setdefault("servers", [])
+            seq = self._seq_of(record["id"])
+            job = _Job(record, seq)
             if record.get("status") == "running":
-                pid = record.get("pid")
-                record["status"] = "lost"
-                record["meaning"] = ("lost: started by an earlier sandbox process, which can no longer follow it; "
-                                     f"it may still be running{f' (pid {pid})' if pid else ''} -- see its log "
-                                     "and the run's data directory")
+                if pid_alive(record.get("pid"), record.get("run_id")):
+                    record.update(detached=True, meaning=DETACHED_MEANING)
+                    detached.append(job)
+                else:
+                    record.update(status="lost", meaning=LOST_MEANING)
+                    job.done.set()
                 try:
                     self._persist(record)
                 except OSError:
                     pass
-            seq = self._seq_of(record["id"])
-            job = _Job(record, seq)
-            job.done.set()
+            else:
+                job.done.set()
             self._jobs[record["id"]] = job
             self._seq = max(self._seq, seq)
+        for job in detached:
+            threading.Thread(target=self._follow_detached, args=(job,), name=f"job-{job.record['id']}",
+                             daemon=True).start()
+
+    def _follow_detached(self, job: _Job) -> None:
+        """Poll a detached job's pid until it is gone, then record it as lost (its exit code went to the
+        process that started it)."""
+        while not job.done.wait(self.poll):
+            with self._lock:
+                if not self._still_running(job):
+                    return
+
+    def _still_running(self, job: _Job) -> bool:
+        """Whether a job counts as running now. A detached job's pid is asked again (the watcher polls only
+        every few seconds), and a gone one is marked lost here. Call with the lock held."""
+        r = job.record
+        if r["status"] != "running":
+            return False
+        if job.proc is not None or not r.get("detached"):
+            return True
+        if pid_alive(r.get("pid"), r.get("run_id")):
+            return True
+        r.update(status="lost", meaning=LOST_MEANING, ended_at=_now())
+        try:
+            with open(r["log_path"], "ab") as f:
+                f.write(f"\n[lost: {LOST_MEANING}]\n".encode("utf-8"))
+        except (OSError, TypeError, KeyError):
+            pass
+        try:
+            self._persist(r)
+        except OSError:
+            pass
+        job.done.set()
+        return False
 
     # -- starting
 
@@ -300,7 +408,8 @@ class JobManager:
     def start(self, kind: str, fields: dict, label: str = "") -> dict:
         """Start `python -m harness.run <kind>` from structured fields (build_argv). A `kind` key in
         fields is accepted when it matches, and a `label` key is used when no label is given, so an API
-        body can be passed as it came. Raises ValueError for bad fields, JobConflict for a duplicate."""
+        body can be passed as it came. The job's config is read for the data_dir and the servers it
+        names. Raises ValueError for bad fields, JobConflict for a duplicate or a server a run is using."""
         fields = dict(fields) if isinstance(fields, dict) else fields
         if isinstance(fields, dict):
             if "kind" in fields:
@@ -310,50 +419,71 @@ class JobManager:
             label = label or (body_label if isinstance(body_label, str) else "")
         argv = build_argv(kind, fields, python=self.python)
         run_id = fields.get("run_id") if kind != "check" else None
-        job = self.start_argv(argv, kind=kind, label=label, run_id=run_id)
-        data_dir = self._config_data_dir(fields.get("config"))
-        with self._lock:
-            record = self._jobs[job["id"]].record
-            record["data_dir"] = data_dir
-            self._persist(record)
-            return self._copy(record)
+        cfg = self._read_config(fields.get("config"))
+        return self.start_argv(argv, kind=kind, label=label, run_id=run_id, data_dir=self._config_data_dir(cfg),
+                               servers=config_servers(cfg, kind))
 
-    def _config_data_dir(self, config) -> str | None:
-        """The data_dir the job's config names, as written there (relative to the root the CLI runs in;
-        the harness default "data" when it names none), so the GUI can open the run the job writes.
-        None when the config cannot be read: the harness will say why in the job's log."""
+    def _read_config(self, config) -> dict | None:
+        """The job's config as written (relative to the root the CLI runs in), or None when it cannot be
+        read: the harness will say why in the job's log."""
         try:
             path = Path(config)
             cfg = json.loads((path if path.is_absolute() else self.root / path).read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             return None
-        value = cfg.get("data_dir") if isinstance(cfg, dict) else None
+        return cfg if isinstance(cfg, dict) else None
+
+    @staticmethod
+    def _config_data_dir(cfg) -> str | None:
+        """The data_dir the job's config names, as written there (the harness default "data" when it names
+        none), so the GUI can open the run the job writes. None when the config could not be read."""
+        if cfg is None:
+            return None
+        value = cfg.get("data_dir")
         return value if isinstance(value, str) and value else "data"
 
-    def start_argv(self, argv: list[str], *, kind: str, label: str = "", run_id: str | None = None) -> dict:
+    def _conflict(self, kind: str, run_id: str | None, servers: list[str]) -> str | None:
+        """Why a new job must not start now, or None. Call with the lock held."""
+        for other in self._jobs.values():
+            r = other.record
+            if r["status"] != "running" or not self._still_running(other):
+                continue
+            if run_id is not None and r["kind"] == kind and r.get("run_id") == run_id:
+                return (f"a {kind} job on run_id {run_id} is already running ({r['id']}"
+                        f"{', started by an earlier sandbox process' if r.get('detached') else ''}); "
+                        "stop it or wait for it to end")
+            if kind in PROBES and r["kind"] == "run":
+                shared = [u for u in servers if u in (r.get("servers") or [])]
+                if shared:
+                    return (f"run job {r['id']} (run_id {r.get('run_id')}) is using {', '.join(shared)}: a {kind} "
+                            "would take slot 0 there and evict that dyad's cache; wait for the run to end or "
+                            f"point the {kind} at other servers")
+        return None
+
+    def start_argv(self, argv: list[str], *, kind: str, label: str = "", run_id: str | None = None,
+                   data_dir: str | None = None, servers=()) -> dict:
         """Start any argv as a job (no shell; cwd root; PYTHONUNBUFFERED=1 so the log is live). For the
-        tests and internal callers: the API goes through start(), which builds the argv itself."""
+        tests and internal callers: the API goes through start(), which builds the argv itself and reads
+        `data_dir` and `servers` (the model server URLs the job talks to) from the job's config."""
         if not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(a, str) for a in argv):
             raise ValueError("argv must be a non-empty list of strings")
-        if not isinstance(kind, str) or not _KIND_RE.match(kind):
+        if not isinstance(kind, str) or not _KIND_RE.fullmatch(kind):
             raise ValueError(f"kind must match {_KIND_RE.pattern}, got {kind!r}")
         if not isinstance(label, str):
             raise ValueError("label must be a string")
         label = label.strip()[:200]
+        servers = [u for u in (_url(s) for s in servers or ()) if u]
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         with self._lock:
-            if run_id is not None:
-                for other in self._jobs.values():
-                    r = other.record
-                    if r["status"] == "running" and r["kind"] == kind and r.get("run_id") == run_id:
-                        raise JobConflict(f"a {kind} job on run_id {run_id} is already running ({r['id']}); "
-                                          "stop it or wait for it to end")
+            conflict = self._conflict(kind, run_id, servers)
+            if conflict:
+                raise JobConflict(conflict)
             job_id = self._new_id(kind)
             log_path = self.log_dir / f"{job_id}.log"
             record = {"id": job_id, "kind": kind, "label": label, "argv": list(argv), "run_id": run_id,
                       "status": "running", "returncode": None, "meaning": None, "started_at": _now(),
                       "ended_at": None, "log_path": str(log_path), "pid": None, "stop_requested": False,
-                      "data_dir": None}
+                      "data_dir": data_dir, "servers": servers, "detached": False}
             job = _Job(record, self._seq)
             with open(log_path, "wb") as log_file:
                 log_file.write(f"$ {shlex.join(argv)}\n".encode("utf-8"))
@@ -444,22 +574,34 @@ class JobManager:
 
     def stop(self, job_id: str) -> dict:
         """First call: SIGINT to the job's process group, as Ctrl-C in a terminal would (`run` finishes
-        in-flight dyads and exits 130). A second call while it still runs: SIGKILL. A job that has ended,
-        or was lost, is returned unchanged."""
+        in-flight dyads and exits 130). A second call while it still runs: SIGKILL. A detached job (started
+        by an earlier sandbox process) is signalled the same way through its pid, which leads its process
+        group, after its pid is checked again. A job that has ended, or was lost, is returned unchanged."""
         with self._lock:
             job = self._job(job_id)
             r = job.record
-            if job.proc is None or r["status"] != "running" or job.proc.returncode is not None:
+            if not self._still_running(job):
                 return self._copy(r)
+            if job.proc is None:
+                if not r.get("detached"):
+                    return self._copy(r)
+                pid = r["pid"]
+            elif job.proc.returncode is not None:
+                return self._copy(r)
+            else:
+                pid = job.proc.pid
             job.stops += 1
             r["stop_requested"] = True
             sig = signal.SIGINT if job.stops == 1 else signal.SIGKILL
             try:
-                os.killpg(job.proc.pid, sig)
+                os.killpg(pid, sig)
             except ProcessLookupError:
                 pass
             except PermissionError:
-                job.proc.send_signal(sig)
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
             self._persist(r)
             return self._copy(r)
 

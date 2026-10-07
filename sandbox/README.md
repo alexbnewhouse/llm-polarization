@@ -12,8 +12,9 @@ python -m sandbox --workspace /scratch/ws --studies studies   # where exports/jo
 ```
 
 On the Framework Desktop the server stays on `127.0.0.1`; reach it from the development desktop with a
-tunnel: `ssh -L 8765:127.0.0.1:8765 <box>` and open `http://127.0.0.1:8765`. There is no authentication,
-and the GUI can start runs, so do not bind it to a public interface.
+tunnel: `ssh -L 8765:127.0.0.1:8765 <box>` and open `http://127.0.0.1:8765` (any local port works:
+`ssh -L 9000:127.0.0.1:8765 <box>` and `http://127.0.0.1:9000`). There is no authentication, and the GUI can
+start runs, so do not bind it to a public interface.
 
 ## What it does
 
@@ -26,20 +27,23 @@ and the GUI can start runs, so do not bind it to a public interface.
 | Models | Point at the seeker, mentor and judge `llama-server`s; set sampling, `run_seed` and `now`. Or start the mock backend. |
 | Run | Randomize (seed, N per cell, delivery modes, turns, prefix; the repo's pilot and wave-1 presets), pick a subset of cells for a sandbox pilot, preview the manifest, export it, run `check` and `run`. Every step prints the CLI line it runs. |
 | Runs | Every run in the data directory: models and hashes, progress per dyad, live transcripts with cache accounting, pre/post survey shifts, judge scores over turns, the shift by any axis level; `score`, `flags`, `agreement` and survey re-administration. |
-| Jobs | Every CLI process the GUI started, its log, and a stop button (SIGINT: in-flight dyads finish, queued ones never start; resume with the same run id). |
+| Jobs | Every CLI process the GUI started, its log, and a stop button (SIGINT: in-flight dyads finish, queued ones never start; resume with the same run id). Jobs outlive a restarted GUI, which follows them by pid ("detached") until they end. |
 
 ## The repo study, exactly
 
-The study picker's first entry, **repo study**, is rebuilt from the files on every load:
-`prompts/grid.json`, `prompts/personas/catalogue.json` (or `catalogue.example.json` until the real
-catalogue is written), `instruments/batteries.json`, and `config.json` (or `harness/config.example.json`).
+The study picker's first entry, **repo study**, is rebuilt from the files on every load: `config.json` (or
+`harness/config.example.json`), the grid and batteries it names (`prompts/grid.json` and
+`instruments/batteries.json` when it names none), and `prompts/personas/catalogue.json` (or
+`catalogue.example.json` until the real catalogue is written).
 While the study keeps the repo's shape (the three crossed factors, `role` nested in `ideology`, the anchor
 table, one derived `opening`, the per-topic control), **Export goes through `harness.randomize` itself**
 and reuses the source files' paths whenever their content is unchanged. The manifest and assignment log it
 writes are the ones `python -m harness.randomize` writes with the printed arguments, so a run started from
-the GUI carries the same hashes as one started from a terminal. The "exact repo study" badge in the top bar
-says when that holds. Edit the persona text, the anchors or the instrument and it still holds; the changed
-files are written into the export directory and the config points at them.
+the GUI carries the same hashes as one started from a terminal. Edit the persona text, the anchors or the
+instrument and the study keeps the repo's shape (still randomized by `harness.randomize`); the changed files
+are written into the export directory and the config points at them. It is then a different study in the
+repo's shape, though, and the "exact repo study" badge in the top bar is shown only while the grid, the
+catalogue and the instrument equal the repo's files (randomization and model settings do not count).
 
 A study that is not repo-shaped (other axes) exports through `sandbox/study.py`, which follows the same
 rules (spec section 3.2, held to `harness.randomize` row for row by `sandbox/tests/test_repo_study.py`).
@@ -56,6 +60,7 @@ them.
 | `workspace/configs/` | Configs derived from a run's `manifest.json`, for `score`, `flags`, `survey` (optionally with another judge). |
 | `workspace/jobs/` | One log and one record per CLI process. |
 | `workspace/mock/` | The mock backend's GGUFs. |
+| `workspace/mock-data/` | Runs against the mock backend (never `data/`, whose `manifest.json` files are tracked). |
 | `data/<run_id>/` | Runs, written by the harness as always (`data/README.md`). The GUI only reads them. |
 
 `workspace/` is git-ignored.

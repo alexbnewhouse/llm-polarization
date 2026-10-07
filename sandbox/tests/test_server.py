@@ -66,6 +66,21 @@ def test_meta(app):
         assert meta[key]
 
 
+def test_meta_names_the_mock_data_dir_and_lists_it_once_it_exists(app, tmp_path):
+    """Mock runs go to workspace/mock-data, never the repo's data/ (whose manifests .gitignore keeps tracked)."""
+    meta = call(app, "GET", "/api/meta")[1]
+    assert meta["mock_data_dir"] == str(tmp_path / "ws" / "mock-data")
+    assert meta["mock_data_dir"] not in meta["data_dirs"]
+    (tmp_path / "ws" / "mock-data").mkdir(parents=True)
+    assert call(app, "GET", "/api/meta")[1]["data_dirs"] == ["data", str(tmp_path / "ws" / "mock-data")]
+    (tmp_path / "root").mkdir()
+    inside = App(tmp_path / "root", mock_port=0)                           # the default workspace, in the root
+    try:
+        assert call(inside, "GET", "/api/meta")[1]["mock_data_dir"] == "workspace/mock-data"
+    finally:
+        inside.close()
+
+
 def test_studies_list_get_save_reload_and_delete(app, tmp_path):
     status, out = call(app, "GET", "/api/studies")
     assert status == 200
@@ -98,6 +113,11 @@ def test_studies_list_get_save_reload_and_delete(app, tmp_path):
     assert call(app, "PUT", "/api/studies/blank", {"spec": spec})[0] == 409
     assert call(app, "PUT", "/api/studies/Bad%20Name", {"spec": spec})[0] == 400
     assert call(app, "PUT", "/api/studies/-x", {"spec": spec})[0] == 400
+    assert call(app, "PUT", "/api/studies/foo%0A", {"spec": spec})[0] == 400      # `$` matches before a final \n
+    assert call(app, "GET", "/api/studies/foo%0A")[0] == 400
+    assert not [p for p in (tmp_path / "studies").iterdir() if "\n" in p.name]
+    (tmp_path / "studies" / "foo\n.study.json").write_text("{}", encoding="utf-8")
+    assert "foo\n" not in [s["name"] for s in call(app, "GET", "/api/studies")[1]["studies"]]
     assert call(app, "PUT", "/api/studies/ok", {"spec": [1]})[0] == 400
     assert call(app, "PUT", "/api/studies/ok", {})[0] == 400
     assert call(app, "GET", "/api/studies/missing")[0] == 404
@@ -114,13 +134,23 @@ def test_validate_reports_issues_summary_slots_and_shape_and_never_fails_on_garb
     status, out = call(app, "POST", "/api/study/validate", {"spec": R.load_repo_study(ROOT)})
     assert status == 200 and not S.has_errors(out["issues"])
     assert out["repo_shaped"] is True and out["repo_shape_reason"] is None
+    assert out["repo_exact"] is True and out["repo_exact_reason"] is None
     assert out["summary"]["cells_treated"] == 20 and out["slots"]["treated"]
     status, out = call(app, "POST", "/api/study/validate", {"spec": example()})
     assert status == 200 and out["repo_shaped"] is False and out["repo_shape_reason"]
+    assert out["repo_exact"] is False and out["repo_exact_reason"] == "not repo-shaped: " + out["repo_shape_reason"]
+    # Repo-shaped but another study: exported by harness.randomize, not the repo's study (the badge's question).
+    spec = R.load_repo_study(ROOT)
+    spec["instrument"]["items"] = spec["instrument"]["items"][:1]
+    status, out = call(app, "POST", "/api/study/validate", {"spec": spec})
+    assert out["repo_shaped"] is True and out["repo_exact"] is False
+    assert out["repo_exact_reason"] == "the instrument differs from instruments/batteries.json"
     for garbage in (None, [], "x", 3, {"factors": "nope", "nested": [1], "control": {"by": 5}}):
         status, out = call(app, "POST", "/api/study/validate", {"spec": garbage})
         assert status == 200 and S.has_errors(out["issues"]), garbage
-        assert set(out) == {"issues", "summary", "slots", "repo_shaped", "repo_shape_reason"}
+        assert set(out) == {"issues", "summary", "slots", "repo_shaped", "repo_shape_reason", "repo_exact",
+                            "repo_exact_reason"}
+        assert out["repo_exact"] is False and out["repo_exact_reason"]
     assert call(app, "POST", "/api/study/validate", {})[0] == 200
 
 
@@ -270,10 +300,13 @@ def test_writes_need_x_sandbox_and_json_and_every_request_a_local_host(app):
                 headers={"Content-Type": "application/json; charset=utf-8"})[0] == 200
     assert call(app, "PUT", "/api/studies/x", body, headers={"X-Sandbox": "0"})[0] == 403
     assert call(app, "DELETE", "/api/studies/trust", headers={"X-Sandbox": ""})[0] == 403
-    for host in ("evil.example:8765", "evil.example", "127.0.0.1:9999", "127.0.0.1.evil.example:8765", ""):
+    for host in ("evil.example:8765", "evil.example", "127.0.0.1.evil.example:8765", "", "127.0.0.1:x",
+                 "127.0.0.1:", "[::1", "[::2]:8765", "localhost:8765:1"):
         status, out = call(app, "GET", "/api/meta", headers={"Host": host})
         assert status == 403 and out["error"], host
-    for host in ("127.0.0.1", "localhost:8765", "LOCALHOST", "[::1]:8765"):
+    # Any port: an SSH tunnel to another local port (ssh -L 9000:127.0.0.1:8765) sends Host 127.0.0.1:9000.
+    for host in ("127.0.0.1", "localhost:8765", "LOCALHOST", "[::1]:8765", "127.0.0.1:9000", "localhost:9999",
+                 "[::1]:9000", "[::1]"):
         assert call(app, "GET", "/api/meta", headers={"Host": host})[0] == 200, host
     status, _, _ = app.handle("GET", "/api/meta", {}, b"", {})
     assert status == 403
