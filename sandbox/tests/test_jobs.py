@@ -278,3 +278,16 @@ def test_read_log_holds_back_a_split_character_while_running(jm, tmp_path):
     finally:
         jm.stop(job["id"])
         jm.wait(job["id"], timeout=10)
+
+
+def test_a_job_records_the_data_dir_its_config_names(tmp_path):
+    """So the GUI can open the run a job writes without knowing which study started it."""
+    jm = JobManager(tmp_path, tmp_path / "jobs", python=PY)
+    (tmp_path / "with.json").write_text(json.dumps({"data_dir": "/scratch/runs"}))
+    (tmp_path / "without.json").write_text(json.dumps({"run_seed": 1}))
+    jobs = [jm.start("check", {"config": c}) for c in ("with.json", "without.json", "missing.json")]
+    assert [j["data_dir"] for j in jobs] == ["/scratch/runs", "data", None]
+    assert jm.wait(jobs[0]["id"], timeout=30)["data_dir"] == "/scratch/runs"
+    for j in jobs[1:]:
+        jm.wait(j["id"], timeout=30)
+    assert JobManager(tmp_path, tmp_path / "jobs", python=PY).get(jobs[0]["id"])["data_dir"] == "/scratch/runs"

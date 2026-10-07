@@ -310,7 +310,25 @@ class JobManager:
             label = label or (body_label if isinstance(body_label, str) else "")
         argv = build_argv(kind, fields, python=self.python)
         run_id = fields.get("run_id") if kind != "check" else None
-        return self.start_argv(argv, kind=kind, label=label, run_id=run_id)
+        job = self.start_argv(argv, kind=kind, label=label, run_id=run_id)
+        data_dir = self._config_data_dir(fields.get("config"))
+        with self._lock:
+            record = self._jobs[job["id"]].record
+            record["data_dir"] = data_dir
+            self._persist(record)
+            return self._copy(record)
+
+    def _config_data_dir(self, config) -> str | None:
+        """The data_dir the job's config names, as written there (relative to the root the CLI runs in;
+        the harness default "data" when it names none), so the GUI can open the run the job writes.
+        None when the config cannot be read: the harness will say why in the job's log."""
+        try:
+            path = Path(config)
+            cfg = json.loads((path if path.is_absolute() else self.root / path).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        value = cfg.get("data_dir") if isinstance(cfg, dict) else None
+        return value if isinstance(value, str) and value else "data"
 
     def start_argv(self, argv: list[str], *, kind: str, label: str = "", run_id: str | None = None) -> dict:
         """Start any argv as a job (no shell; cwd root; PYTHONUNBUFFERED=1 so the log is live). For the
@@ -334,7 +352,8 @@ class JobManager:
             log_path = self.log_dir / f"{job_id}.log"
             record = {"id": job_id, "kind": kind, "label": label, "argv": list(argv), "run_id": run_id,
                       "status": "running", "returncode": None, "meaning": None, "started_at": _now(),
-                      "ended_at": None, "log_path": str(log_path), "pid": None, "stop_requested": False}
+                      "ended_at": None, "log_path": str(log_path), "pid": None, "stop_requested": False,
+                      "data_dir": None}
             job = _Job(record, self._seq)
             with open(log_path, "wb") as log_file:
                 log_file.write(f"$ {shlex.join(argv)}\n".encode("utf-8"))

@@ -118,7 +118,7 @@ def test_list_runs_counts_complete_failed_running_newest_first(data, retried_run
 def test_run_summary_shape_and_per_dyad_progress(data, retried_run):
     s = runs.run_summary(data, "r1")
     assert set(s) == {"run_id", "path", "planned", "status_counts", "has_scores", "has_flags", "manifest", "roles",
-                      "judges", "dyads", "factors", "metrics", "judge_shas"}
+                      "judges", "dyads", "factors", "metrics", "judge_shas", "offsets"}
     assert s["run_id"] == "r1" and s["path"] == str(retried_run.resolve()) and s["planned"] == 6
     assert s["status_counts"] == {"complete": 5, "failed": 1, "running": 1}
     assert set(s["manifest"]) == {"started_at", "harness_commit", "harness_dirty", "input_manifest", "batteries",
@@ -368,3 +368,18 @@ def test_read_rows_contains_is_a_prefilter_only(tmp_path):
     p.write_text('{"dyad_id": "d1", "text": "mentions \\"d10\\""}\n{"dyad_id": "d10"}\n{"dyad_id": "d1"}\n')
     rows = runs.read_rows(p, contains=b'"d1"')
     assert [r["dyad_id"] for r in rows] == ["d1", "d1"]
+
+
+def test_run_summary_offsets_end_on_a_whole_line_and_tail_from_them(data, retried_run):
+    """The live view starts tailing at the summary's offsets: never from 0, never inside a row."""
+    turns = retried_run / "turns.jsonl"
+    with open(turns, "a", encoding="utf-8") as f:
+        f.write('{"dyad_id": "d07", "half')                        # the harness is mid-write
+    s = runs.run_summary(data, "r1")
+    assert s["offsets"]["turns"] == turns.stat().st_size - len('{"dyad_id": "d07", "half')
+    assert set(s["offsets"]) == {"turns", "status", "surveys", "scores"}
+    assert runs.tail(data, "r1", s["offsets"])["rows"] == {"turns": [], "status": [], "surveys": [], "scores": []}
+    with open(turns, "a", encoding="utf-8") as f:
+        f.write('": 1}\n')
+    assert runs.tail(data, "r1", s["offsets"])["rows"]["turns"] == [{"dyad_id": "d07", "half": 1}]
+    assert runs.line_end_offset(retried_run / "missing.jsonl") == 0

@@ -329,6 +329,28 @@ def list_runs(data_dir, root=None) -> list[dict]:
     return out
 
 
+def line_end_offset(path) -> int:
+    """The byte offset just past the last complete line of `path` (0 when it is missing). A tail that
+    starts here neither re-sends what the caller already has nor starts inside a row the harness is
+    still writing, so the GUI can follow a wave without ever reading its turns.jsonl from 0."""
+    try:
+        f = open(path, "rb")
+    except FileNotFoundError:
+        return 0
+    with f:
+        end = os.fstat(f.fileno()).st_size
+        pos = end
+        while pos > 0:
+            step = min(1 << 16, pos)
+            f.seek(pos - step)
+            chunk = f.read(step)
+            i = chunk.rfind(b"\n")
+            if i >= 0:
+                return pos - step + i + 1
+            pos -= step
+        return 0
+
+
 def _judges(path: Path) -> list[dict]:
     """The judge-*.json provenance files `score` wrote beside the run, by file name."""
     out = []
@@ -394,7 +416,9 @@ def run_summary(data_dir, run_id, root=None) -> dict:
             "roles": {role: _role_info((manifest or {}).get(role)) for role in ("seeker", "mentor")},
             "judges": _judges(path), "dyads": dyads,
             "factors": condition_levels(dyad_rows, level_order(data_dir, run_id, root=root)),
-            "metrics": metrics_present(scores), "judge_shas": judge_shas(scores)}
+            "metrics": metrics_present(scores), "judge_shas": judge_shas(scores),
+            # Where a live view starts tailing (GET .../tail): the files as this summary read them.
+            "offsets": {name: line_end_offset(path / f"{name}.jsonl") for name in TAIL_FILES}}
 
 
 def survey_pairs(rows: list[dict], origin: str = "run") -> list[dict]:

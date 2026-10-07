@@ -236,7 +236,8 @@ list (run from the repo root) that the GUI prints as a copyable shell line.
 `flags {config, run_id, threshold, metric?, run_length?, judge?}`, `agreement {config, run_id, metric?}`,
 `survey {config, run_id, phase}`. Argv is `[sys.executable, "-m", "harness.run", kind, ...]`, cwd the repo
 root, `PYTHONUNBUFFERED=1`. A job is `{"id", "kind", "label", "argv", "run_id", "status": "running" |
-"finished" | "failed" | "stopped", "returncode", "meaning", "started_at", "ended_at", "log_path"}`; `meaning`
+"finished" | "failed" | "stopped" | "lost", "returncode", "meaning", "started_at", "ended_at", "log_path",
+"data_dir"}` (`data_dir`: what the job's config names, so the GUI can open the run it writes); `meaning`
 follows the harness's exit codes (0 ok, 1 refused, 2 some dyads failed, 130 stopped).
 
 ### 5.1 Payload shapes
@@ -278,7 +279,8 @@ string `"(none)"` wherever it is a key or a label; with no factor chosen there i
  "dyads": [{"dyad_id", "attempt", "attempts", "condition", "persona_mode", "n_turns",
             "status": "complete" | "failed" | "running", "turns_done", "reason", "last_ts"}],
  "factors": {"ideology": ["strong_left", "..."]},     // condition keys -> levels, in level order
- "metrics": ["alignment"], "judge_shas": ["..."]}
+ "metrics": ["alignment"], "judge_shas": ["..."],
+ "offsets": {"turns", "status", "surveys", "scores"}}  // past each file's last whole line: where a live tail starts
 
 // GET /api/runs/<run_id>/dyads/<dyad_id>
 {"run_id", "dyad_id", "attempt", "attempts": [1, 2], "dyad": {...dyads.jsonl row},
