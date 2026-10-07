@@ -31,3 +31,6 @@ env/
 # pytest caches
 harness/.pytest_cache/
 .pytest_cache/
+
+# sandbox scratch: exports, derived configs, job logs, mock GGUFs
+workspace/
