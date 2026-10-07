@@ -1169,6 +1169,27 @@ def enumerate_cells(spec) -> list[dict]:
         return []
 
 
+def cell_key(spec, condition) -> str | None:
+    """The cell key of a manifest row's `condition` (spec 3.2): a treated row's level ids in factor order joined
+    with "/", a control row's `by` level ids and control.level. How a `cells` subset is applied to rows that
+    were not built here (sandbox/export.py filters harness.randomize's rows with it). None when the condition
+    lacks a level id this study's cells are keyed by; whether the key is a cell of the study is not checked."""
+    return _cell_key(_design(spec), condition)
+
+
+def _cell_key(d: _Design, condition) -> str | None:
+    if not isinstance(condition, dict):
+        return None
+    c = d.control
+    if c is not None and condition.get(c.factor) == c.level:
+        parts = [*(condition.get(f.key) for f in d.factors if f.key in c.by), c.level]
+    else:
+        parts = [condition.get(f.key) for f in d.factors]
+    if not d.factors or not all(isinstance(p, str) for p in parts):
+        return None
+    return "/".join(parts)
+
+
 def summarize(spec) -> dict:
     """The study's size for the summary cards: factors, nested variants, cells, rows (of the selected cells:
     what an export writes; `rows_design` is the full design), rows per mode, turns and messages (two per turn).

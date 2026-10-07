@@ -181,6 +181,24 @@ def test_a_cells_subset_gives_the_same_rows_as_the_full_design_for_those_cells()
     assert a["rows_per_mode"] == {"reinforced": 8}
 
 
+def test_cell_key_of_every_row_is_its_cell_and_a_subset_filter_by_it_is_the_subset():
+    spec = example()
+    full, a = S.compile_manifest(spec)
+    keys = {c["key"] for c in S.enumerate_cells(spec)}
+    assert {S.cell_key(spec, r["condition"]) for r in full} == keys
+    assert set(a["rows_per_cell"]) == keys
+    subset = ["ai_regulation/high/curious", "vaccine_mandates/none"]
+    spec["randomization"]["cells"] = subset
+    assert S.compile_manifest(spec)[0] == [r for r in full if S.cell_key(spec, r["condition"]) in subset]
+    # the control row's condition carries nulls and the nested key; only the `by` levels and control.level count
+    assert S.cell_key(spec, {"topic": "ai_regulation", "trust": "none", "certainty": None, "persona": None}) \
+        == "ai_regulation/none"
+    assert S.cell_key(minimal(), {"topic": "apples", "mood": "calm"}) == "apples/calm"
+    assert S.cell_key(minimal(), {"topic": "apples"}) is None
+    assert S.cell_key(minimal(), None) is None
+    assert S.cell_key(None, {"topic": "apples"}) is None
+
+
 # --- cells, slots, summary, rendering --------------------------------------------------------------------
 
 def test_enumerate_cells_lists_treated_then_control_cells():
