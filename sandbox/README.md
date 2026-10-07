@@ -8,6 +8,7 @@ axis. Design: `docs/superpowers/specs/2026-10-07-sandbox-gui-design.md`.
 pip install -r harness/requirements.txt         # jinja2 + numpy; nothing else for the sandbox
 python -m sandbox                               # http://127.0.0.1:8765
 python -m sandbox --port 8800 --open            # another port, and open a browser
+python -m sandbox --workspace /scratch/ws --studies studies   # where exports/jobs and saved studies go
 ```
 
 On the Framework Desktop the server stays on `127.0.0.1`; reach it from the development desktop with a
@@ -62,8 +63,9 @@ them.
 ## The mock backend
 
 `Models -> Start demo mock servers` (or `python -m sandbox.mock_server --port 18201`) starts three fake
-`llama-server`s for the seeker, mentor and judge, each with a tiny GGUF that carries only a ChatML chat
-template. They answer every endpoint the harness uses, simulate a per-slot KV cache so `check` passes, and
+`llama-server`s for the seeker, mentor and judge on ports 18201, 18202 and 18203 (fixed, so a mock run can
+be resumed with the same config; ephemeral ports if those are taken), each with a tiny GGUF that carries
+only a ChatML chat template. They answer every endpoint the harness uses, simulate a per-slot KV cache so `check` passes, and
 return deterministic synthetic text, survey answers and judge scores. Use them to learn the GUI and to test
 the pipeline on a laptop. **Never for data**: the text is not a model's, and the run's `manifest.json`
 records the mock's model path and `build_info: sandbox-mock`. The harness still needs gguf-py to read the
