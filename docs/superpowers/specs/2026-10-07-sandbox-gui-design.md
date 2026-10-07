@@ -239,6 +239,69 @@ root, `PYTHONUNBUFFERED=1`. A job is `{"id", "kind", "label", "argv", "run_id", 
 "finished" | "failed" | "stopped", "returncode", "meaning", "started_at", "ended_at", "log_path"}`; `meaning`
 follows the harness's exit codes (0 ok, 1 refused, 2 some dyads failed, 130 stopped).
 
+### 5.1 Payload shapes
+
+Fixed here so the readers and the app are built against one contract. A level that is JSON null is the
+string `"(none)"` wherever it is a key or a label; with no factor chosen there is one level, `"all"`.
+
+```jsonc
+// GET /api/meta
+{"root", "harness_version", "sandbox_version", "python", "workspace", "studies_dir",
+ "data_dirs": ["data"], "randomization_presets": {"pilot": {...randomization}, "wave1": {...}},
+ "gguf_importable": true, "repo_sources": {"grid", "catalogue", "batteries", "config"}}
+
+// POST /api/study/validate
+{"issues": [{"level", "path", "message"}], "repo_shaped": true, "repo_shape_reason": null,
+ "summary": {"factors": [{"key", "label", "n_levels"}], "nested": {"key", "within", "n_variants": {"<level>": 3}} | null,
+             "cells_treated", "cells_control", "rows", "rows_per_mode": {"reinforced": 2700}, "n_turns",
+             "messages", "condition_keys": ["topic", "ideology", "openness", "role"]},
+ "slots": {"treated": [{"name": "topic_phrase", "source": "level:topic"}], "control": [...]}}
+//   slot sources: "factor:<key>", "level:<key>", "nested:<key>", "variant:<key>", "table:<name>", "derived"
+
+// POST /api/study/cells
+{"cells": [{"key": "immigration_enforcement/strong_left/open", "kind": "treated",
+            "condition": {"topic": "...", "ideology": "...", "openness": "..."}, "variants": ["slug", ...],
+            "n_rows": 135, "selected": true}]}     // control: condition holds only the `by` keys
+
+// GET /api/runs
+{"data_dir", "runs": [{"run_id", "started_at", "mtime", "has_manifest", "has_scores", "has_flags", "n_dyads",
+  "planned",                                           // rows in the input manifest, or null if unreadable
+  "status_counts": {"complete", "failed", "running"},  // per dyad, latest attempt; "started" counts as running
+  "seeker": {"alias", "model_path", "model_sha256"} | null, "mentor": {...} | null}]}
+
+// GET /api/runs/<run_id>
+{"run_id", "path", "planned", "status_counts", "has_scores", "has_flags",
+ "manifest": {"started_at", "harness_commit", "harness_dirty", "input_manifest", "batteries", "environment", "config"} | null,
+ "roles": {"seeker": RoleInfo, "mentor": RoleInfo},   // RoleInfo: url, alias, model_path, model_sha256, family,
+                                                       //   template_sha256, build_info, total_slots
+ "judges": [{"file", "alias", "model_path", "model_sha256", "scope", "subsample", "ts"}],
+ "dyads": [{"dyad_id", "attempt", "attempts", "condition", "persona_mode", "n_turns",
+            "status": "complete" | "failed" | "running", "turns_done", "reason", "last_ts"}],
+ "factors": {"ideology": ["strong_left", "..."]},     // condition keys -> levels, in level order
+ "metrics": ["alignment"], "judge_shas": ["..."]}
+
+// GET /api/runs/<run_id>/dyads/<dyad_id>
+{"run_id", "dyad_id", "attempt", "attempts": [1, 2], "dyad": {...dyads.jsonl row},
+ "status": [...status rows], "turns": [...turns.jsonl rows in message_order],
+ "surveys": {"pre": [...], "post": [...]},
+ "survey_pairs": [{"item_id", "battery", "scale", "pre", "post", "delta"}],
+ "scores": [...scores.jsonl rows], "flag": {...} | null}
+
+// GET /api/runs/<run_id>/tail
+{"rows": {"turns": [], "status": [], "surveys": [], "scores": []}, "offsets": {"turns": 0, "status": 0, "surveys": 0, "scores": 0}}
+
+// GET /api/runs/<run_id>/analysis
+{"factor", "metric", "judge", "factors": {...}, "status_counts", "metrics_available", "judges",
+ "survey": {"factor", "levels", "n_dyads": {"<level>": n}, "items": [{"item_id", "battery", "scale"}], "batteries",
+            "by_item": {"<level>": {"<item_id>": {"n", "mean_pre", "mean_post", "mean_delta", "se_delta"}}},
+            "by_battery": {"<level>": {"<battery>": {"n", "mean_delta_norm", "se_delta_norm"}}}},
+ "scores": {"metric", "judge", "judges", "factor", "levels", "error",
+            "series": {"<level>": [{"turn", "n", "mean", "se"}]}}}
+
+// mock
+{"running": true, "seeker": {"url", "gguf_path"}, "mentor": {...}, "judge": {...}}
+```
+
 ## 6. The app
 
 One page, a top bar (study picker, New, Save, Save as, validity pill, an "exact repo study" badge when the
