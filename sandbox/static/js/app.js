@@ -7,7 +7,7 @@ import {
 } from "./ui.js";
 import {
   state, on, loadStudy, setStudy, refreshStudies, saveStudy, refreshMock, mockRoles, issues, issueCounts, NAME_RE,
-  minimalStudy, clone, readDraft, clearDraft, isRepoShaped,
+  minimalStudy, clone, readDraft, clearDraft, isRepoShaped, isRepoExact, repoExactNote, isRepoDataDir,
 } from "./state.js";
 import { VIEW_LABELS, viewForPath, consumePendingFocus, highlightPath, goto } from "./nav.js";
 import * as studyView from "./views/study.js";
@@ -236,15 +236,23 @@ function drawStatus() {
       text,
     );
   }
+  // "exact repo study" only when validate says the grid, catalogue and instrument equal the repo's files
+  // (repo_exact); repo-shaped alone is a structural check, so a rewritten study still exports through the
+  // repo's randomizer without being the repo study.
   let repoBadge = null;
-  if (isRepoShaped()) {
+  if (isRepoExact()) {
     repoBadge = badge(
       "exact repo study",
       "repo",
-      "Repo-shaped: export goes through harness.randomize (build_manifest + write_manifest), so the manifest is the one the randomize CLI writes from prompts/grid.json and the persona catalogue.",
+      "The repo's own files: the grid, catalogue and instrument equal prompts/grid.json, the persona catalogue and instruments/batteries.json, and export goes through harness.randomize (build_manifest + write_manifest), so the manifest is the one the randomize CLI writes.",
     );
+    repoBadge.dataset.repo = "exact";
+  } else if (isRepoShaped()) {
+    repoBadge = badge("harness.randomize engine", "neutral", `Exports through the repo's randomizer (harness.randomize); ${repoExactNote()}`);
+    repoBadge.dataset.repo = "shaped";
   } else if (v && state.spec && state.spec.repo) {
     repoBadge = badge("sandbox engine", "neutral", `Not expressible as the repo's files: ${v.repo_shape_reason || "see validation"}. Export goes through sandbox.study.`);
+    repoBadge.dataset.repo = "sandbox";
   }
   mount(bar, repoBadge, pill);
 }
@@ -260,6 +268,7 @@ function drawBanners() {
         { class: "banner banner-mock", role: "status" },
         h("strong", null, "MOCK — synthetic text, never for data. "),
         `This study's ${roles.join(", ")} point${roles.length === 1 ? "s" : ""} at the demo mock servers: GGUFs with no weights and deterministic filler replies. Use it to try the pipeline end to end, never for results.`,
+        isRepoDataDir(state.spec.run && state.spec.run.data_dir) ? h("strong", null, ` Its data_dir is “${(state.spec.run && state.spec.run.data_dir) || "data"}”: runs would land beside real data.`) : null,
         h("a", { href: "#/models", class: "link" }, " Models →"),
       ),
     );

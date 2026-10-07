@@ -225,10 +225,10 @@ def test_runs_list_summary_dyad_tail_analysis_and_config(app, run_data, tmp_path
     assert call(app, "GET", "/api/runs/r1/analysis", query={**q, "factor": "colour"})[0] == 400
 
     status, out = call(app, "POST", "/api/runs/r1/config", {"data_dir": str(run_data)})
-    assert status == 200 and Path(out["path"]) == tmp_path / "ws" / "configs" / "r1.json"
+    assert status == 200 and Path(out["path"]).parent == tmp_path / "ws" / "configs" and Path(out["path"]).name.startswith("r1-")
     status, out = call(app, "POST", "/api/runs/r1/config",
                        {"data_dir": str(run_data), "judge": {"url": "http://127.0.0.1:8098", "gguf_path": ""}})
-    assert status == 200 and Path(out["path"]).name.startswith("r1-judge-")
+    assert status == 200 and "-judge-" in Path(out["path"]).name and Path(out["path"]).name.startswith("r1-")
     assert call(app, "POST", "/api/runs/r1/config", {"data_dir": str(run_data), "judge": "x"})[0] == 400
 
     assert call(app, "GET", "/api/runs/nope", query=q)[0] == 404

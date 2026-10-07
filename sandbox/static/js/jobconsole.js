@@ -32,6 +32,7 @@ export function jobConsole(initialJob, { alive = () => true, onUpdate, showRunLi
         badge(job.kind || "job", "neutral"),
         h("strong", null, job.label || job.id),
         statusChip(job.status),
+        job.detached ? badge("detached", "info", "Started by an earlier sandbox process and still running; Stop still works.") : null,
         job.meaning ? h("span", { class: "muted" }, job.meaning) : null,
         job.returncode !== null && job.returncode !== undefined ? h("span", { class: "muted mono" }, `exit ${job.returncode}`) : null,
       ),
@@ -83,7 +84,7 @@ export function jobConsole(initialJob, { alive = () => true, onUpdate, showRunLi
         appendLog(res.text || "");
         if (typeof res.offset === "number") offset = res.offset;
         if (res.job) {
-          const changed = res.job.status !== job.status || res.job.returncode !== job.returncode || res.job.stop_requested !== job.stop_requested;
+          const changed = res.job.status !== job.status || res.job.returncode !== job.returncode || res.job.stop_requested !== job.stop_requested || !!res.job.detached !== !!job.detached;
           job = res.job;
           if (changed) drawHead();
         }

@@ -8,6 +8,16 @@ import { jobConsole } from "../jobconsole.js";
 
 let selected = null;
 
+// The run a job writes lives in its config's data_dir (job.data_dir): the link opens it there, not in whatever
+// data dir the Runs view last showed.
+function runLink(j) {
+  return `#/runs/${encodeURIComponent(j.run_id)}${j.data_dir ? `?data_dir=${encodeURIComponent(j.data_dir)}` : ""}`;
+}
+
+function detachedBadge() {
+  return badge("detached", "info", "Started by an earlier sandbox process and still running; Stop still works.");
+}
+
 export function render(root, ctx) {
   const listHost = h("div");
   const consoleHost = h("div");
@@ -56,8 +66,8 @@ export function render(root, ctx) {
           h("td", { class: "mono small" }, j.id),
           h("td", null, badge(j.kind || "?", "neutral")),
           labels ? h("td", { class: "small" }, j.label || "") : null,
-          h("td", null, j.run_id ? h("a", { class: "mono link", href: `#/runs/${encodeURIComponent(j.run_id)}` }, j.run_id) : h("span", { class: "muted" }, "—")),
-          h("td", null, statusChip(j.status)),
+          h("td", null, j.run_id ? h("a", { class: "mono link", href: runLink(j) }, j.run_id) : h("span", { class: "muted" }, "—")),
+          h("td", null, statusChip(j.status), j.detached ? h("span", null, " ", detachedBadge()) : null),
           h("td", { class: "small" }, j.meaning || "", j.returncode !== null && j.returncode !== undefined ? h("span", { class: "muted mono" }, ` (${j.returncode})`) : null),
           h("td", { class: "small muted" }, fmtTime(j.started_at)),
           h("td", { class: "small muted" }, fmtTime(j.ended_at)),
@@ -98,7 +108,7 @@ export function render(root, ctx) {
     const res = await api.jobs();
     if (!ctx.alive()) return false;
     const next = [...((res && res.jobs) || [])].sort((a, b) => String(b.started_at || "").localeCompare(String(a.started_at || "")));
-    const key = (list) => JSON.stringify(list.map((j) => [j.id, j.status, j.returncode, !!j.stop_requested]));
+    const key = (list) => JSON.stringify(list.map((j) => [j.id, j.status, j.returncode, !!j.stop_requested, !!j.detached, j.data_dir || null]));
     const changed = key(next) !== key(jobs);
     jobs = next;
     if (!selected && jobs.length) selected = jobs[0].id;

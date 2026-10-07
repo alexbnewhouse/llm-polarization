@@ -319,6 +319,7 @@ select.input { width: auto; max-width: 100%; padding-right: 24px; }
 .badge-warn { background: var(--warn-soft); color: var(--warn); }
 .badge-error { background: var(--error-soft); color: var(--error); }
 .badge-repo { background: var(--repo-soft); color: var(--repo); }
+.badge-mock { background: var(--mock-soft); color: var(--mock); letter-spacing: 0.04em; border: 1px solid currentColor; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chips-label { margin-right: 2px; }
 .chip {
@@ -485,6 +486,7 @@ button.chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 .run-status .progress { width: 260px; }
 .counts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .live-toggle { font-size: 13px; }
+.live-note { display: inline-flex; align-items: center; gap: 8px; }
 .run-info { margin-bottom: 4px; }
 .run-info .card { margin-bottom: 16px; }
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 6px 0 16px; }

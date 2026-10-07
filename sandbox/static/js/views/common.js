@@ -1,7 +1,7 @@
 // Pieces shared by the views: headers, cards, the per-view issue panel, slot chips.
 
-import { h, mount, badge, insertAtCursor } from "../ui.js";
-import { state, issues } from "../state.js";
+import { h, mount, badge, button, insertAtCursor, toast } from "../ui.js";
+import { state, issues, touch, mockRoles, mockDataDir, isRepoDataDir } from "../state.js";
 import { gotoIssue, viewForPath, VIEW_LABELS } from "../nav.js";
 
 export function viewHeader(title, subtitle, ...actions) {
@@ -25,6 +25,42 @@ export function card(title, ...children) {
     opts.help ? h("p", { class: "card-help" }, opts.help) : null,
     children,
   );
+}
+
+// A warning while the study points at the demo mock servers but still writes runs into the repo's data/ (where
+// manifest.json is git-trackable), with a button that moves data_dir to the mock data dir. Kept current.
+export function mockDataDirWarning(ctx) {
+  const host = h("div", { "data-testid": "mock-data-dir-warning" });
+  const draw = () => {
+    const run = state.spec && state.spec.run;
+    const roles = mockRoles();
+    if (!run || !roles.length || !isRepoDataDir(run.data_dir)) {
+      mount(host);
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    const target = mockDataDir();
+    mount(
+      host,
+      h(
+        "div",
+        { class: "banner banner-warn inline", role: "status" },
+        h("strong", null, "Mock run into data/. "),
+        `The ${roles.join(", ")} point${roles.length === 1 ? "s" : ""} at the demo mock servers, but data_dir is “${run.data_dir || "data"}”: a run would land beside real runs, where manifest.json is git-trackable.`,
+        button(`Use ${target}`, () => {
+          run.data_dir = target;
+          touch();
+          toast(`data_dir is now ${target}. Export again before running.`, { kind: "ok" });
+          ctx.rerender();
+        }, { small: true, title: "Set run.data_dir to the sandbox's mock data dir" }),
+      ),
+    );
+  };
+  ctx.on("changed", draw);
+  ctx.on("mock", draw);
+  draw();
+  return host;
 }
 
 export function issueRow(i, showView = true) {

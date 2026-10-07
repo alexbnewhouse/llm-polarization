@@ -3,9 +3,9 @@
 
 import { api } from "../api.js";
 import { h, mount, button, badge, toast, toastError, mono } from "../ui.js";
-import { state, touch, refreshMock, rememberMock, mockRoles, defaultRun } from "../state.js";
+import { state, touch, refreshMock, rememberMock, mockRoles, defaultRun, mockDataDir } from "../state.js";
 import { field } from "../forms.js";
-import { viewHeader, card, issuePanel } from "./common.js";
+import { viewHeader, card, issuePanel, mockDataDirWarning } from "./common.js";
 
 const ROLE_HELP = {
   seeker: "Plays the persona. One model across every arm; a different family from the mentor.",
@@ -53,6 +53,7 @@ function mockCard(ctx) {
             ),
           )
         : null,
+      h("p", { class: "muted small" }, `Start also sets data_dir to ${mockDataDir()}, so demo runs stay out of the repo's data/.`),
       h(
         "div",
         { class: "card-foot" },
@@ -68,8 +69,11 @@ function mockCard(ctx) {
               run[r].url = info[r].url;
               run[r].gguf_path = info[r].gguf_path ?? null;
             }
+            // Demo runs never go into data/ (its manifest.json files are git-trackable): the sandbox's own dir.
+            const dd = mockDataDir();
+            run.data_dir = dd;
             touch();
-            toast("Mock servers started; seeker, mentor and judge now point at them. Synthetic text only.", { kind: "warn", timeout: 6000 });
+            toast(`Mock servers started; seeker, mentor and judge now point at them, and data_dir is now ${dd} so demo runs stay out of data/. Synthetic text only.`, { kind: "warn", timeout: 8000 });
             ctx.rerender();
           } catch (err) {
             toastError(err, "Could not start the mock servers");
@@ -122,6 +126,7 @@ export function render(root, ctx) {
     root,
     viewHeader("Models", "The harness config for this study, minus batteries and grid (export fills those in)."),
     issuePanel(ctx, ["run"]),
+    mockDataDirWarning(ctx),
     h("div", { class: "role-grid" }, ["seeker", "mentor", "judge"].map(roleCard)),
     card(
       "Generation (dialogue turns)",

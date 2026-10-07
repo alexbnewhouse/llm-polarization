@@ -2,7 +2,7 @@
 // the cell table, and every validation issue with its path.
 
 import { h, mount, badge, fmtInt, fmtDuration, plural, pagedRows, storageGet, storageSet } from "../ui.js";
-import { state, issues, hasErrors } from "../state.js";
+import { state, issues, hasErrors, isRepoExact, repoExactNote } from "../state.js";
 import { field } from "../forms.js";
 import { viewHeader, card, issueRow, sortIssues } from "./common.js";
 
@@ -135,9 +135,11 @@ export function render(root, ctx) {
     mount(
       shapeHost,
       h("div", { class: "muted small" }, "Export engine"),
-      v.repo_shaped
-        ? h("div", null, badge("harness.randomize", "repo"), " the repo's own randomizer: this is the exact repo study")
-        : h("div", null, badge("sandbox.study", "neutral"), v.repo_shape_reason ? h("span", { class: "muted small" }, ` ${v.repo_shape_reason}`) : null),
+      isRepoExact()
+        ? h("div", null, badge("harness.randomize", "repo"), " the repo's own randomizer and files: this is the exact repo study")
+        : v.repo_shaped
+          ? h("div", null, badge("harness.randomize", "neutral"), " the repo's own randomizer; ", h("span", { class: "muted small" }, repoExactNote()))
+          : h("div", null, badge("sandbox.study", "neutral"), v.repo_shape_reason ? h("span", { class: "muted small" }, ` ${v.repo_shape_reason}`) : null),
     );
   }
 

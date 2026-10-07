@@ -238,7 +238,7 @@ checked to lie inside its directory.
 | `GET /api/runs/<run_id>/dyads/<dyad_id>` | `?data_dir=&attempt=` | dyad detail |
 | `GET /api/runs/<run_id>/tail` | `?data_dir=&turns=&status=&surveys=&scores=` (byte offsets) | `{"rows": {file: [...]}, "offsets": {...}}` |
 | `GET /api/runs/<run_id>/analysis` | `?data_dir=&factor=&metric=&judge=` | analysis (section 7) |
-| `POST /api/runs/<run_id>/config` | `{"data_dir", "judge"?}` | `{"path"}`: `workspace/configs/<run_id>[-judge-<sha8>].json` from `manifest.json -> config` |
+| `POST /api/runs/<run_id>/config` | `{"data_dir", "judge"?}` | `{"path"}`: `workspace/configs/<run_id>-<sha8 of data_dir>[-judge-<sha8>].json` from `manifest.json -> config` |
 | `GET /api/jobs` | | `{"jobs": [...]}` |
 | `POST /api/jobs` | `{"kind", ...}` (below) | the job |
 | `GET /api/jobs/<id>/log` | `?offset=` | `{"job", "text", "offset"}` |

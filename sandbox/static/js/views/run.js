@@ -5,9 +5,9 @@ import { api } from "../api.js";
 import {
   h, mount, button, badge, toast, toastError, debounce, fmtInt, kv, mono, copyButton, commandLine, details, confirmDialog,
 } from "../ui.js";
-import { state, touch, hasErrors, issueCounts, PERSONA_MODES, clone, mockRoles } from "../state.js";
+import { state, touch, hasErrors, issueCounts, PERSONA_MODES, clone, mockRoles, isRepoDataDir } from "../state.js";
 import { control, field } from "../forms.js";
-import { viewHeader, card, issuePanel } from "./common.js";
+import { viewHeader, card, issuePanel, mockDataDirWarning } from "./common.js";
 import { jobConsole } from "../jobconsole.js";
 
 const RUN_ID_RE = /^[A-Za-z0-9_.-]+$/;
@@ -319,6 +319,11 @@ function exportResult(ctx) {
   const res = ex.result || {};
   const stale = JSON.stringify(state.spec) !== ex.specJson;
   const unchanged = res.unchanged_from_repo || {};
+  // The exact repo study only when the exported grid, catalogue and batteries are the repo's own files (or the
+  // server says so outright); the repo's randomizer alone is a structural match.
+  const repoExact =
+    res.engine === "harness.randomize" &&
+    (typeof res.repo_exact === "boolean" ? res.repo_exact : ["grid", "catalogue", "batteries"].every((k) => unchanged[k] === true));
   const files = ["manifest", "assignment", "config", "batteries", "grid", "catalogue", "study"].filter((k) => res[k]);
   const cmds = res.commands || {};
   const root = state.meta && state.meta.root;
@@ -334,7 +339,14 @@ function exportResult(ctx) {
       copyButton(res.dir || ""),
     ),
     kv([
-      ["engine", res.engine === "harness.randomize" ? h("span", null, badge("harness.randomize", "repo"), " the repo's randomizer: the exact repo study") : badge(res.engine || "?", "neutral")],
+      [
+        "engine",
+        res.engine === "harness.randomize"
+          ? repoExact
+            ? h("span", null, badge("harness.randomize", "repo"), " the repo's randomizer and files: the exact repo study")
+            : h("span", null, badge("harness.randomize", "neutral"), " the repo's randomizer; the design differs from the repo's files (below)")
+          : badge(res.engine || "?", "neutral"),
+      ],
       ["rows", fmtInt(res.rows)],
       ["cells", res.cells_filter ? h("span", { class: "mono small" }, Array.isArray(res.cells_filter) ? res.cells_filter.join(", ") : JSON.stringify(res.cells_filter)) : "all"],
       [
@@ -377,9 +389,17 @@ function launchCard(ctx) {
       return;
     }
     exportBtn.disabled = true;
+    // Snapshot the spec before the request and send exactly that: edits made while it is in flight are not in
+    // the export, so they must count as changes since it (the stale-export warning).
+    const exported = state.spec;
+    const specJson = JSON.stringify(exported);
     try {
-      const res = await api.exportStudy(state.spec);
-      state.lastExport = { result: res, specJson: JSON.stringify(state.spec), at: Date.now() };
+      const res = await api.exportStudy(JSON.parse(specJson));
+      if (state.spec !== exported) {
+        toast(`Exported ${fmtInt(res.rows)} rows of the study that was open (${res.dir || "?"}); another study is loaded now.`, { kind: "warn", timeout: 7000 });
+        return;
+      }
+      state.lastExport = { result: res, specJson, at: Date.now() };
       toast(`Exported ${fmtInt(res.rows)} rows`, { kind: "ok" });
       ctx.rerender();
     } catch (err) {
@@ -410,11 +430,20 @@ function launchCard(ctx) {
       const stale = JSON.stringify(state.spec) !== ex.specJson;
       const mock = mockRoles();
       if (stale || mock.length) {
+        const exported = (() => {
+          try {
+            return JSON.parse(ex.specJson);
+          } catch {
+            return null;
+          }
+        })();
+        const dd = exported && exported.run ? exported.run.data_dir : spec.run && spec.run.data_dir;
         const msg = h(
           "div",
           null,
           stale ? h("p", null, "The study changed since the export; this run uses the exported design, not what is on screen.") : null,
           mock.length ? h("p", { class: "warn-text" }, `The ${mock.join(", ")} point at the MOCK backend: synthetic text, never for data.`) : null,
+          mock.length && isRepoDataDir(dd) ? h("p", { class: "warn-text" }, `It writes into ${dd || "data"}/, beside real runs (manifest.json there is git-trackable). Set data_dir in Models and export again to keep it out.`) : null,
           h("p", null, `Start run ${id}?`),
         );
         if (!(await confirmDialog("Start the run?", msg, "Start run"))) return;
@@ -466,6 +495,7 @@ export function render(root, ctx) {
     root,
     viewHeader("Run", "Randomize, export, check, run. Every step is the harness's own code."),
     issuePanel(ctx, ["randomization"]),
+    mockDataDirWarning(ctx),
     randomizationCard(ctx),
     subsetCard(ctx),
     manifestCard(ctx),

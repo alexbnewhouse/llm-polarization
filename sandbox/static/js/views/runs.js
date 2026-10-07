@@ -8,7 +8,9 @@ import {
 } from "../ui.js";
 import { state } from "../state.js";
 import { viewHeader, card } from "./common.js";
-import { rs, currentDataDir, setDataDir, setAuto, loadSummary, startLive, isLive, levelLabel, runHref, dyadHref } from "./runstate.js";
+import {
+  rs, currentDataDir, setDataDir, setAuto, loadSummary, startLive, pausedText, isMockRole, mockBadge, levelLabel, runHref, dyadHref,
+} from "./runstate.js";
 import { renderDyad } from "./dyad.js";
 import { renderAnalysis } from "./analysis.js";
 import { jobConsole } from "../jobconsole.js";
@@ -19,8 +21,10 @@ const TABS = [
   ["analysis", "Analysis"],
   ["actions", "Actions"],
 ];
-const ui = { tab: "dyads", filters: { status: "", search: "", cond: {} }, runIdForFilters: null };
-const actions = { runId: null, config: null, judgeConfig: null, judge: { url: "", gguf_path: "" }, jobs: [], form: {} };
+// Filters and actions belong to one run of one data dir: two data dirs can hold runs with the same id.
+const runKey = (runId) => `${currentDataDir()}\u0000${runId}`;
+const ui = { tab: "dyads", filters: { status: "", search: "", cond: {} }, keyForFilters: null };
+const actions = { key: null, config: null, judgeConfig: null, judge: { url: "", gguf_path: "" }, jobs: [], form: {} };
 
 export function render(root, ctx) {
   const dd = ctx.query.get("data_dir");
@@ -92,7 +96,7 @@ function renderList(root, ctx) {
             h("td", { class: "num" }, fmtInt(r.n_dyads)),
             h("td", { class: "small" }, modelName(r.seeker)),
             h("td", { class: "small" }, modelName(r.mentor)),
-            h("td", null, r.has_scores ? badge("scored", "info") : null, r.has_flags ? badge("flags", "neutral") : null, r.has_manifest === false ? badge("no manifest", "warn") : null),
+            h("td", null, mockRolesOf(r).length ? mockBadge(mockRolesOf(r)) : null, r.has_scores ? badge("scored", "info") : null, r.has_flags ? badge("flags", "neutral") : null, r.has_manifest === false ? badge("no manifest", "warn") : null),
           );
         },
         500,
@@ -123,6 +127,12 @@ function renderList(root, ctx) {
   load();
 }
 
+// The roles of a run (a run list item, or a summary's roles) that the demo mock backend served.
+function mockRolesOf(r) {
+  const roles = (r && r.roles) || r || {};
+  return ["seeker", "mentor"].filter((k) => isMockRole(roles[k]));
+}
+
 function modelName(m) {
   if (!m) return h("span", { class: "muted" }, "—");
   const name = m.alias || (m.model_path ? String(m.model_path).split(/[\\/]/).pop() : null) || "?";
@@ -140,9 +150,9 @@ function countChips(sc) {
 // ---- one run -------------------------------------------------------------------------------------------------------
 
 function renderRun(root, ctx, runId) {
-  if (ui.runIdForFilters !== runId) {
+  if (ui.keyForFilters !== runKey(runId)) {
     ui.filters = { status: "", search: "", cond: {} };
-    ui.runIdForFilters = runId;
+    ui.keyForFilters = runKey(runId);
   }
   const head = h("div", { class: "run-head" });
   const infoHost = h("div");
@@ -160,7 +170,8 @@ function renderRun(root, ctx, runId) {
 
   let dyads = [];
   const byId = new Map();
-  let liveStop = null;
+  let live = null; // the live loop's controller (startLive)
+  let lastSummary = null;
   const statusHost = h("div", { class: "run-status" });
 
   const recount = () => {
@@ -170,19 +181,32 @@ function renderRun(root, ctx, runId) {
   };
 
   const drawStatus = (s) => {
+    if (s) lastSummary = s;
+    s = lastSummary || {};
     const sc = dyads.length ? recount() : s.status_counts || {};
     const planned = s.planned ?? dyads.length;
     const autoBox = h("input", { type: "checkbox", checked: rs.auto });
     autoBox.addEventListener("change", () => {
       setAuto(autoBox.checked);
-      drawStatus(s);
+      // Re-enabling auto-refresh on a paused run checks it once more and resumes if it is live again.
+      if (autoBox.checked && live && live.paused) refreshNow();
+      drawStatus();
     });
+    const paused = rs.auto && live && live.paused;
     mount(
       statusHost,
       progressBar(sc.complete || 0, planned, { title: "complete / planned" }),
       h("span", { class: "counts" }, countChips(sc)),
       h("span", { class: "muted small" }, `${fmtInt(dyads.length)} started of ${planned === null || planned === undefined ? "?" : fmtInt(planned)} planned`),
-      h("label", { class: "field-check live-toggle", title: "Tail the run's files every 2 s" }, autoBox, h("span", null, "auto-refresh"), rs.auto && isLive({ status_counts: sc }) ? badge("live", "info") : null),
+      h(
+        "label",
+        { class: "field-check live-toggle", title: "While the run is live, tail its files every 2 s and refetch its summary every 10 s" },
+        autoBox,
+        h("span", null, "auto-refresh"),
+        rs.auto && live && live.running ? badge("live", "info") : null,
+      ),
+      paused ? h("span", { class: "live-paused muted small", "data-testid": "live-paused" }, pausedText(live, "run")) : null,
+      paused || !rs.auto ? button("Refresh", refreshNow, { small: true, title: "Read the run's summary again; auto-refresh resumes if the run is live" }) : null,
     );
   };
 
@@ -198,7 +222,7 @@ function renderRun(root, ctx, runId) {
       h(
         "tr",
         null,
-        h("td", null, name),
+        h("td", null, name, isMockRole(r) ? h("span", null, " ", mockBadge([name])) : null),
         modelCell(r),
         h("td", null, r ? shortHash(r.model_sha256) : "—"),
         h("td", null, r ? shortHash(r.template_sha256, 8) : "—"),
@@ -438,15 +462,37 @@ function renderRun(root, ctx, runId) {
     }
   };
 
+  // The Refresh button: one summary fetch; the live loop resumes when it shows the run live again.
+  const refreshNow = async () => {
+    try {
+      if (live) await live.refresh();
+      else await refreshSummary();
+    } catch (err) {
+      toastError(err, `Run ${runId}`);
+    }
+    if (ctx.alive()) drawStatus();
+  };
+
   const onSummary = (s) => {
     dyads = (s.dyads || []).map((d) => ({ ...d }));
     drawStatus(s);
     drawInfo(s);
+    drawTitle(s);
     if (ui.tab === "dyads" && body._redrawTable) body._redrawTable();
+  };
+
+  const drawTitle = (s) => {
+    const mock = mockRolesOf(s.roles);
+    mount(
+      head,
+      h("div", { class: "run-title" }, h("h1", { class: "mono title-id" }, runId), mock.length ? mockBadge(mock) : null, s.has_scores ? badge("scored", "info") : null, s.has_flags ? badge("flags", "neutral") : null),
+      statusHost,
+    );
   };
 
   const drawBody = () => {
     body._redrawTable = null;
+    body._onJobDone = () => refreshSummary();
     if (ui.tab === "analysis") renderAnalysis(body, ctx, runId);
     else if (ui.tab === "actions") drawActions(body, ctx, runId);
     else drawDyads();
@@ -458,14 +504,20 @@ function renderRun(root, ctx, runId) {
       const s = cached ? rs.summary : await loadSummary(runId);
       if (!ctx.alive()) return;
       dyads = (s.dyads || []).map((d) => ({ ...d }));
-      mount(head, h("div", { class: "run-title" }, h("h1", { class: "mono title-id" }, runId), s.has_scores ? badge("scored", "info") : null, s.has_flags ? badge("flags", "neutral") : null), statusHost);
+      drawTitle(s);
       drawStatus(s);
       drawInfo(s);
       drawTabs();
       drawBody();
-      if (cached) refreshSummary();
-      liveStop = startLive(ctx, runId, { onRows: applyRows, onSummary, isOn: () => rs.auto && (ui.tab === "dyads" || ui.tab === "actions") });
-      ctx.cleanup(() => liveStop && liveStop());
+      if (cached) await refreshSummary();
+      if (!ctx.alive()) return;
+      live = startLive(ctx, runId, {
+        onRows: applyRows,
+        onSummary,
+        isOn: () => rs.auto && (ui.tab === "dyads" || ui.tab === "actions"),
+        onState: () => drawStatus(),
+      });
+      ctx.cleanup(() => live && live.stop());
     } catch (err) {
       if (!ctx.alive()) return;
       toastError(err, `Could not open run ${runId}`);
@@ -478,8 +530,8 @@ function renderRun(root, ctx, runId) {
 // ---- actions ---------------------------------------------------------------------------------------------------
 
 function drawActions(body, ctx, runId) {
-  if (actions.runId !== runId) {
-    actions.runId = runId;
+  if (actions.key !== runKey(runId)) {
+    actions.key = runKey(runId);
     actions.config = null;
     actions.judgeConfig = null;
     actions.jobs = [];
@@ -487,7 +539,15 @@ function drawActions(body, ctx, runId) {
   const s = rs.summary || {};
   const f = actions.form;
   const jobsHost = h("div", { class: "job-list" });
-  const drawJobs = () => mount(jobsHost, actions.jobs.map((j) => jobConsole(j, { alive: ctx.alive, showRunLink: false })));
+  // A finished score/flags job changes the run (scores, flags): read its summary again, since a finished run's
+  // summary is no longer polled.
+  const seenStatus = new Map(actions.jobs.map((j) => [j.id, j.status]));
+  const onJob = (j) => {
+    const was = seenStatus.get(j.id);
+    seenStatus.set(j.id, j.status);
+    if (was === "running" && j.status !== "running" && body._onJobDone) body._onJobDone();
+  };
+  const drawJobs = () => mount(jobsHost, actions.jobs.map((j) => jobConsole(j, { alive: ctx.alive, showRunLink: false, onUpdate: onJob })));
 
   const configBox = h("div");
   const drawConfig = () => {

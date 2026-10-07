@@ -4,10 +4,12 @@
 
 import { api } from "../api.js";
 import {
-  h, mount, badge, statusChip, fmtInt, fmtNum, fmtSigned, fmtTime, details, toastError, deltaClass, debounce, poll, emptyState,
+  h, mount, badge, button, statusChip, fmtInt, fmtNum, fmtSigned, fmtTime, details, toastError, deltaClass, debounce, emptyState,
 } from "../ui.js";
 import { lineChart } from "../charts.js";
-import { rs, currentDataDir, loadSummary, startLive, levelLabel, runHref, dyadHref } from "./runstate.js";
+import {
+  rs, currentDataDir, loadSummary, startLive, levelLabel, runHref, dyadHref, runJobRunning, parseTs, STALL_MS, pausedText, isMockRole, mockBadge,
+} from "./runstate.js";
 
 function latestStatus(detail) {
   const rows = (detail.status || []).filter((r) => r.attempt === undefined || r.attempt === detail.attempt);
@@ -90,6 +92,8 @@ export function renderDyad(root, ctx, runId, dyadId) {
   );
 
   let detail = null;
+  let live = null; // the live loop's controller (startLive)
+  const liveHost = h("span", { class: "live-note" });
   const seen = new Set();
   let scoresByKey = new Map();
   let lastTurn = 0;
@@ -131,9 +135,11 @@ export function renderDyad(root, ctx, runId, dyadId) {
     const st = latestStatus(detail);
     const attempts = detail.attempts || [detail.attempt];
     const flag = detail.flag;
+    const roles = (rs.summaryRunId === runId && rs.summary && rs.summary.roles) || {};
+    const mock = ["seeker", "mentor"].filter((k) => isMockRole(roles[k]));
     mount(
       head,
-      h("div", { class: "run-title" }, h("h1", { class: "mono title-id" }, dyadId), statusChip(st), flag ? (flag.flagged ? badge(`flagged at turn ${flag.first_flag_turn ?? "?"}`, "warn", `metric ${flag.metric}, threshold ${flag.threshold}, run length ${flag.run_length}`) : badge("not flagged", "neutral")) : null),
+      h("div", { class: "run-title" }, h("h1", { class: "mono title-id" }, dyadId), statusChip(st), mock.length ? mockBadge(mock) : null, flag ? (flag.flagged ? badge(`flagged at turn ${flag.first_flag_turn ?? "?"}`, "warn", `metric ${flag.metric}, threshold ${flag.threshold}, run length ${flag.run_length}`) : badge("not flagged", "neutral")) : null, liveHost),
       h(
         "div",
         { class: "dyad-meta" },
@@ -266,11 +272,45 @@ export function renderDyad(root, ctx, runId, dyadId) {
       drawSide();
       appendTurns((detail.turns || []).filter((t) => t.attempt === undefined || t.attempt === detail.attempt), true);
     }
+    afterLoad();
   };
   const refetch = debounce(() => load(false).catch((err) => toastError(err, `Dyad ${dyadId}`)), 800);
   ctx.cleanup(() => refetch.cancel());
 
-  const live = () => rs.auto && detail && latestStatus(detail) === "running" && (!attemptQ || Number(attemptQ) === detail.attempt);
+  // The dyad is live while its latest attempt (the one shown) is running and something still writes the run: a
+  // run job of this sandbox, or a row newer than STALL_MS (a killed run leaves its dyads at "started").
+  const dyadRunning = () => !!detail && latestStatus(detail) === "running" && (!attemptQ || Number(attemptQ) === detail.attempt);
+  let lastSeen = 0;
+  const dyadLiveness = async () => {
+    if (!dyadRunning()) return { live: false, reason: "finished" };
+    if (await runJobRunning(runId)) return { live: true, reason: "job" };
+    let last = lastSeen;
+    for (const r of [...(detail.status || []), ...(detail.turns || [])]) last = Math.max(last, parseTs(r.ts));
+    if (!last || Date.now() - last > STALL_MS) return { live: false, reason: "stalled", since: last || null };
+    return { live: true, reason: "running" };
+  };
+  const drawLive = () => {
+    if (!live || !rs.auto) return mount(liveHost);
+    if (!live.paused) return mount(liveHost, live.running ? badge("live", "info", "Auto-refresh: new messages appear as they are written") : null);
+    mount(
+      liveHost,
+      h("span", { class: "live-paused muted small", "data-testid": "live-paused" }, pausedText(live, "dyad")),
+      button("Refresh", async () => {
+        try {
+          await load(false);
+          if (live) await live.refresh();
+        } catch (err) {
+          toastError(err, `Dyad ${dyadId}`);
+        }
+        drawLive();
+      }, { small: true, title: "Read the dyad again; auto-refresh resumes if it is still running" }),
+    );
+  };
+  // After every re-read: a dyad that finished stops the loop.
+  const afterLoad = () => {
+    if (live && !live.paused && !dyadRunning()) live.pause("finished");
+    drawLive();
+  };
 
   (async () => {
     try {
@@ -281,35 +321,37 @@ export function renderDyad(root, ctx, runId, dyadId) {
       mount(head, h("h1", { class: "mono" }, dyadId), h("div", { class: "error-box" }, err.message, err.status === 404 ? ` (data dir: ${currentDataDir()})` : ""), h("p", null, h("a", { class: "link", href: runHref(runId) }, `← back to ${runId}`)));
       return;
     }
-    // Live: tail the run's files when the server gives offsets, else re-read this dyad every 3 s.
+    // Live: tail the run's files when the server gives offsets, else re-read this dyad every 3 s; either way
+    // only while the dyad is live (a finished dyad is never polled; Refresh reads it again).
     try {
       if (rs.summaryRunId !== runId || !rs.summary) await loadSummary(runId);
     } catch {
-      /* the summary only provides offsets; without it we fall back to polling the dyad */
+      /* the summary only provides offsets and the models; without it we fall back to polling the dyad */
     }
     if (!ctx.alive()) return;
-    if (rs.summary && rs.summary.offsets) {
-      const stop = startLive(ctx, runId, {
-        isOn: live,
-        onRows: (rows) => {
-          const mine = (list) => (list || []).filter((r) => r.dyad_id === dyadId && (r.attempt === undefined || r.attempt === detail.attempt));
-          const turns = mine(rows.turns);
-          if (turns.length) appendTurns(turns, true);
-          const newAttempt = (rows.status || []).some((r) => r.dyad_id === dyadId && r.attempt > detail.attempt);
-          if (newAttempt && !attemptQ) {
-            load(true).catch((err) => toastError(err, `Dyad ${dyadId}`));
-            return;
-          }
-          if (mine(rows.status).length || mine(rows.surveys).length || mine(rows.scores).length) refetch();
-        },
-      });
-      ctx.cleanup(stop);
-    } else {
-      const stop = poll(async () => {
-        if (live()) await load(false);
-        return true;
-      }, 3000, ctx.alive, (err) => toastError(err, `Dyad ${dyadId}`));
-      ctx.cleanup(stop);
-    }
+    drawHead();
+    const tailing = !!(rs.summaryRunId === runId && rs.summary && rs.summary.offsets);
+    live = startLive(ctx, runId, {
+      summary: false, // this view needs no run summary; liveness is the dyad's own
+      liveness: dyadLiveness,
+      onState: drawLive,
+      isOn: () => rs.auto && dyadRunning(),
+      interval: tailing ? 2000 : 3000,
+      onTick: tailing ? null : () => load(false),
+      onRows: (rows) => {
+        const mine = (list) => (list || []).filter((r) => r.dyad_id === dyadId && (r.attempt === undefined || r.attempt === detail.attempt));
+        const turns = mine(rows.turns);
+        for (const r of [...turns, ...mine(rows.status)]) lastSeen = Math.max(lastSeen, parseTs(r.ts));
+        if (turns.length) appendTurns(turns, true);
+        const newAttempt = (rows.status || []).some((r) => r.dyad_id === dyadId && r.attempt > detail.attempt);
+        if (newAttempt && !attemptQ) {
+          load(true).catch((err) => toastError(err, `Dyad ${dyadId}`));
+          return;
+        }
+        if (mine(rows.status).length || mine(rows.surveys).length || mine(rows.scores).length) refetch();
+      },
+    });
+    ctx.cleanup(() => live && live.stop());
+    drawLive();
   })();
 }

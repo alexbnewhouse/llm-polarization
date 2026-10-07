@@ -250,12 +250,17 @@ def _judge(judge) -> dict:
     return {"url": url.strip(), "gguf_path": gguf.strip() if gguf else None}
 
 
+def _sha8(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
 def config_from_manifest(data_dir, run_id, workspace, judge=None, *, root=None) -> Path:
     """A config for `score`, `flags`, `survey` and `agreement` on an existing run: the config its manifest.json
     records, with data_dir set to where the run was found (data_dir is operational, not run-affecting, in the
     harness; root-relative when `root` is given and it lies inside), and, with `judge` {url, gguf_path}, that
     judge instead of the recorded one (a second judge for the two-judge design). Written to
-    workspace/configs/<run_id>.json, or <run_id>-judge-<sha256 of the judge JSON, 8 hex>.json; returns the path.
+    workspace/configs/<run_id>-<sha8 of the resolved data_dir>.json, with -judge-<sha8 of the judge JSON> before
+    .json for a judge override; returns the path.
     RunNotFound when the run or its manifest.json is missing, ValueError for a bad id, judge or manifest."""
     path = runs.run_dir(data_dir, run_id)
     manifest_path = path / "manifest.json"
@@ -270,11 +275,14 @@ def config_from_manifest(data_dir, run_id, workspace, judge=None, *, root=None) 
         raise ValueError(f"{manifest_path} has no config object")
     config = json.loads(json.dumps(config))
     config["data_dir"] = display_path(data_dir, root) if root is not None else str(Path(data_dir).resolve())
-    name = run_id
+    # The same run_id can exist in two data directories (a mock run and a real one, a NAS copy): the file
+    # name carries the data directory too, or deriving one run's config would overwrite the other's and a
+    # later score would quietly target the wrong run.
+    name = f"{run_id}-{_sha8(str(Path(data_dir).resolve()))}"
     if judge is not None:
         j = _judge(judge)
         config["judge"] = j
-        name = f"{run_id}-judge-{hashlib.sha256(json.dumps(j, sort_keys=True).encode('utf-8')).hexdigest()[:8]}"
+        name = f"{name}-judge-{_sha8(json.dumps(j, sort_keys=True))}"
     out = Path(workspace) / "configs" / f"{name}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     return _write_json(out, config)

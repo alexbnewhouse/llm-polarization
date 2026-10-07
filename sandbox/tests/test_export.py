@@ -244,7 +244,8 @@ def test_config_from_manifest_with_and_without_a_judge_override(tmp_path):
     ws = tmp_path / "ws"
 
     path = E.config_from_manifest(data, "r1", ws)
-    assert path == ws / "configs" / "r1.json"
+    dd8 = hashlib.sha256(str(data.resolve()).encode()).hexdigest()[:8]
+    assert path == ws / "configs" / f"r1-{dd8}.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     assert config == {**manifest["config"], "data_dir": str(data)}
     assert load_config(path)["judge"] == manifest["config"]["judge"]
@@ -253,11 +254,16 @@ def test_config_from_manifest_with_and_without_a_judge_override(tmp_path):
     jpath = E.config_from_manifest(data, "r1", ws, judge=judge)
     sha8 = hashlib.sha256(json.dumps({"url": "http://127.0.0.1:8098", "gguf_path": None},
                                      sort_keys=True).encode()).hexdigest()[:8]
-    assert jpath == ws / "configs" / f"r1-judge-{sha8}.json"
+    assert jpath == ws / "configs" / f"r1-{dd8}-judge-{sha8}.json"
     jconfig = json.loads(jpath.read_text(encoding="utf-8"))
     assert jconfig["judge"] == {"url": "http://127.0.0.1:8098", "gguf_path": None}
     assert {k: v for k, v in jconfig.items() if k != "judge"} == {k: v for k, v in config.items() if k != "judge"}
     assert E.config_from_manifest(data, "r1", ws, judge=judge) == jpath
+
+    other = tmp_path / "other-data"                     # the same run_id in another data directory
+    make_fake_run(other, "r1", scores=False)
+    opath = E.config_from_manifest(other, "r1", ws)
+    assert opath != path and json.loads(path.read_text(encoding="utf-8"))["data_dir"] == str(data)
 
     with pytest.raises(ValueError):
         E.config_from_manifest(data, "r1", ws, judge={"url": ""})

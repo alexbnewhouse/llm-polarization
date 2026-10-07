@@ -21,7 +21,7 @@ export const state = {
   path: null,
   dirty: false,
   version: 0, // bumped on every edit
-  validation: null, // {issues, summary, slots, repo_shaped, repo_shape_reason}
+  validation: null, // {issues, summary, slots, repo_shaped, repo_shape_reason, repo_exact, repo_exact_reason}
   validating: false,
   validatedVersion: -1,
   cells: null,
@@ -121,6 +121,8 @@ async function runValidate() {
       slots: null,
       repo_shaped: false,
       repo_shape_reason: null,
+      repo_exact: false,
+      repo_exact_reason: null,
       failed: true,
     };
     toastError(err, "Validation request failed");
@@ -173,8 +175,25 @@ export function issueCounts() {
   return { errors, warnings };
 }
 
+// Repo-shaped: expressible as the repo's files, so export goes through harness.randomize. A structural check
+// only: the topics, personas and instrument may all differ from the repo's.
 export function isRepoShaped() {
   return !!(state.validation && state.validation.repo_shaped);
+}
+
+// The exact repo study: repo-shaped, and its grid, catalogue and instrument equal the repo's current files
+// (validate's repo_exact). A server that does not report repo_exact never gets "exact".
+export function isRepoExact() {
+  const v = state.validation;
+  return !!(v && v.repo_shaped && v.repo_exact === true);
+}
+
+// Why a repo-shaped study is not the exact repo study, as a phrase for a tooltip or a note.
+export function repoExactNote() {
+  const v = state.validation;
+  if (!v || isRepoExact()) return null;
+  if (!("repo_exact" in v)) return "whether it equals the repo's files is unknown (this server does not report repo_exact)";
+  return `differs from the repo's files: ${v.repo_exact_reason || "see validation"}`;
 }
 
 // ---- loading and saving -------------------------------------------------------------------------------------------
@@ -279,6 +298,23 @@ export function mockRoles(spec = state.spec) {
     if ((r.url && urls.has(r.url)) || (g && (ggufs.has(g) || /[\\/]workspace[\\/]mock[\\/]/.test(g)))) out.push(role);
   }
   return out;
+}
+
+// Where demo runs against the mock servers go: never data/, whose manifest.json files are git-trackable.
+export function mockDataDir() {
+  const m = state.meta || {};
+  if (typeof m.mock_data_dir === "string" && m.mock_data_dir) return m.mock_data_dir;
+  if (typeof m.workspace === "string" && m.workspace) return `${m.workspace.replace(/[\\/]+$/, "")}/mock-data`;
+  return "workspace/mock-data";
+}
+
+// Whether a run.data_dir is the repo's data/ (or under it): where real runs, and their trackable manifests, live.
+export function isRepoDataDir(dataDir) {
+  const norm = (x) => String(x || "").replace(/\\/g, "/").replace(/\/+$/, "").replace(/^(\.\/)+/, "");
+  const d = norm(dataDir === null || dataDir === undefined || dataDir === "" ? "data" : dataDir);
+  const root = state.meta && state.meta.root ? norm(state.meta.root) : null;
+  const under = (base) => d === base || d.startsWith(`${base}/`);
+  return under("data") || (!!root && under(`${root}/data`));
 }
 
 // ---- new studies --------------------------------------------------------------------------------------------------
